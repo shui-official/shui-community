@@ -1,5 +1,4 @@
 import type { FC } from "react";
-import Image from "next/image";
 import Link from "next/link";
 
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -14,13 +13,12 @@ export const HomeView: FC = () => {
       <div className="mx-auto max-w-6xl px-6 pt-8">
         <div className="flex items-center justify-between rounded-2xl bg-[#2a313b] px-5 py-4 shadow-lg">
           <div className="flex items-center gap-3">
-            <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10">
-              <Image
+            {/* Token logo (left) */}
+            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10">
+              <img
                 src="/shui-token.png"
                 alt="SHUI Token"
-                layout="fill"
-                objectFit="cover"
-                priority
+                className="h-full w-full object-cover"
               />
             </div>
 
@@ -30,12 +28,15 @@ export const HomeView: FC = () => {
             </div>
           </div>
 
+          {/* KEEP WALLET BUTTON */}
           <WalletMultiButton className="!bg-white/10 hover:!bg-white/15 !text-white !border !border-white/10 !rounded-xl" />
         </div>
       </div>
 
+      {/* Hero */}
       <main className="mx-auto max-w-6xl px-6 pb-20 pt-10">
         <div className="grid items-center gap-10 lg:grid-cols-2">
+          {/* Text */}
           <div>
             <h1 className="text-4xl font-semibold leading-tight md:text-5xl">
               SHUI — a community token built for{" "}
@@ -56,14 +57,12 @@ export const HomeView: FC = () => {
               >
                 Explore Token
               </a>
-
               <a
                 href="#community"
                 className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Join Community
               </a>
-
               <Link
                 href="/mint"
                 className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
@@ -82,26 +81,26 @@ export const HomeView: FC = () => {
             </div>
           </div>
 
+          {/* Visual */}
           <div className="relative">
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl">
-              <div className="relative h-[360px] w-full md:h-[420px]">
-                <Image
+              {/* locked hero image */}
+              <div className="h-[360px] w-full md:h-[420px]">
+                <img
                   src="/shui-hero.png"
                   alt="SHUI hero"
-                  layout="fill"
-                  objectFit="cover"
-                  priority
+                  className="h-full w-full object-cover"
                 />
               </div>
 
+              {/* Token coin overlay */}
               <div className="absolute -bottom-10 left-6 rounded-3xl border border-white/10 bg-[#1f2630]/60 p-4 backdrop-blur">
                 <div className="flex items-center gap-4">
-                  <div className="relative h-16 w-16 overflow-hidden rounded-2xl ring-1 ring-white/10">
-                    <Image
+                  <div className="h-16 w-16 overflow-hidden rounded-2xl ring-1 ring-white/10 bg-black/10">
+                    <img
                       src="/shui-token.png"
                       alt="SHUI Token"
-                      layout="fill"
-                      objectFit="contain"
+                      className="h-full w-full object-contain"
                     />
                   </div>
                   <div>
@@ -120,7 +119,7 @@ export const HomeView: FC = () => {
                     <div className="mt-1 text-sm font-semibold">Solana</div>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs text-white/60">Total Supply</div>
+                    <div className="text-xs text-white/60">Supply</div>
                     <div className="mt-1 text-sm font-semibold">1,000,000,000</div>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -137,10 +136,8 @@ export const HomeView: FC = () => {
           </div>
         </div>
 
-        <section
-          id="token"
-          className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
+        {/* Sections */}
+        <section id="token" className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8">
           <h2 className="text-xl font-semibold">Token Overview</h2>
           <p className="mt-3 text-white/70">
             SHUI rewards meaningful participation, supports initiatives via a
@@ -154,14 +151,12 @@ export const HomeView: FC = () => {
                 Incentives for builders, contributors, and community actions.
               </div>
             </div>
-
             <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
               <div className="text-sm font-semibold">Community Treasury</div>
               <div className="mt-2 text-sm text-white/65">
                 Funding proposals with traceable decisions and spending.
               </div>
             </div>
-
             <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
               <div className="text-sm font-semibold">Serious Structure</div>
               <div className="mt-2 text-sm text-white/65">
@@ -171,10 +166,7 @@ export const HomeView: FC = () => {
           </div>
         </section>
 
-        <section
-          id="community"
-          className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
+        <section id="community" className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8">
           <h2 className="text-xl font-semibold">Community</h2>
           <p className="mt-3 text-white/70">
             Join the movement and help shape SHUI. Connect your wallet to access
