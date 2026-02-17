@@ -63,12 +63,11 @@ export const HomeView: FC = () => {
               >
                 Join Community
               </a>
-              <Link
-                href="/mint"
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Go to DApp
-              </Link>
+             <Link href="/mint" passHref>
+  <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+    Go to DApp
+  </a>
+</Link>
             </div>
 
             <div className="mt-5 text-xs text-white/50">
