@@ -1,19 +1,18 @@
-import type { NextPage } from "next";
 import Head from "next/head";
-import { HomeView } from "../views";
+import type { NextPage } from "next";
+import { HomeView } from "../views/HomeView";
 
-const Home: NextPage = (props) => {
+const Home: NextPage = () => {
   return (
-    <div>
+    <>
       <Head>
-        <title>Caw Caw!</title>
-        <meta
-          name="description"
-          content="This site will fly high 🦤"
-        />
+        <title>SHUI (水)</title>
+        <meta name="description" content="SHUI (水) — Solana Community Token" />
+        <link rel="icon" href="/favicon.ico" />
       </Head>
+
       <HomeView />
-    </div>
+    </>
   );
 };
 
