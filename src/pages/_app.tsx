@@ -1,3 +1,4 @@
+import "@solana/wallet-adapter-react-ui/styles.css";
 import React from "react";
 import type { AppProps } from "next/app";
 import dynamic from "next/dynamic";
