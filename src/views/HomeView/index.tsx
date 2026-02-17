@@ -19,8 +19,8 @@ export const HomeView: FC = () => {
               <Image
                 src="/shui-token.png"
                 alt="SHUI Token"
-                fill
-                className="object-cover"
+                layout="fill"
+                objectFit="cover"
                 priority
               />
             </div>
@@ -94,8 +94,8 @@ export const HomeView: FC = () => {
                 <Image
                   src="/shui-hero.png"
                   alt="SHUI hero"
-                  fill
-                  className="object-cover"
+                  layout="fill"
+                  objectFit="cover"
                   priority
                 />
               </div>
@@ -107,8 +107,8 @@ export const HomeView: FC = () => {
                     <Image
                       src="/shui-token.png"
                       alt="SHUI Token"
-                      fill
-                      className="object-contain"
+                      layout="fill"
+                      objectFit="contain"
                     />
                   </div>
                   <div>
