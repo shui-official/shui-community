@@ -14,7 +14,6 @@ export const HomeView: FC = () => {
       <div className="mx-auto max-w-6xl px-6 pt-8">
         <div className="flex items-center justify-between rounded-2xl bg-[#2a313b] px-5 py-4 shadow-lg">
           <div className="flex items-center gap-3">
-            {/* Token logo (left) */}
             <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10">
               <Image
                 src="/shui-token.png"
@@ -31,15 +30,12 @@ export const HomeView: FC = () => {
             </div>
           </div>
 
-          {/* KEEP WALLET BUTTON */}
           <WalletMultiButton className="!bg-white/10 hover:!bg-white/15 !text-white !border !border-white/10 !rounded-xl" />
         </div>
       </div>
 
-      {/* Hero */}
       <main className="mx-auto max-w-6xl px-6 pb-20 pt-10">
         <div className="grid items-center gap-10 lg:grid-cols-2">
-          {/* Text */}
           <div>
             <h1 className="text-4xl font-semibold leading-tight md:text-5xl">
               SHUI — a community token built for{" "}
@@ -86,10 +82,8 @@ export const HomeView: FC = () => {
             </div>
           </div>
 
-          {/* Visual */}
           <div className="relative">
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl">
-              {/* Locked hero image */}
               <div className="relative h-[360px] w-full md:h-[420px]">
                 <Image
                   src="/shui-hero.png"
@@ -100,7 +94,6 @@ export const HomeView: FC = () => {
                 />
               </div>
 
-              {/* Token coin overlay */}
               <div className="absolute -bottom-10 left-6 rounded-3xl border border-white/10 bg-[#1f2630]/60 p-4 backdrop-blur">
                 <div className="flex items-center gap-4">
                   <div className="relative h-16 w-16 overflow-hidden rounded-2xl ring-1 ring-white/10">
@@ -144,7 +137,6 @@ export const HomeView: FC = () => {
           </div>
         </div>
 
-        {/* Sections */}
         <section
           id="token"
           className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8"
