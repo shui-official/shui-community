@@ -50,6 +50,7 @@ export const HomeView: FC = () => {
               accountable with clear structure and on-chain transparency.
             </p>
 
+            {/* Buttons */}
             <div className="mt-8 flex flex-wrap gap-3">
               <a
                 href="#token"
@@ -57,17 +58,21 @@ export const HomeView: FC = () => {
               >
                 Explore Token
               </a>
+
               <a
                 href="#community"
                 className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Join Community
               </a>
-      <Link href="/mint" passHref>
-  <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
-    Go to DApp
-  </a>
-</Link>
+
+              <Link href="/mint" passHref>
+                <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+                  Go to DApp
+                </a>
+              </Link>
+            </div>
+
             <div className="mt-5 text-xs text-white/50">
               Wallet status:{" "}
               {publicKey ? (
@@ -115,10 +120,14 @@ export const HomeView: FC = () => {
                     <div className="text-xs text-white/60">Network</div>
                     <div className="mt-1 text-sm font-semibold">Solana</div>
                   </div>
+
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="text-xs text-white/60">Supply</div>
-                    <div className="mt-1 text-sm font-semibold">1,000,000,000</div>
+                    <div className="mt-1 text-sm font-semibold">
+                      1,000,000,000
+                    </div>
                   </div>
+
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="text-xs text-white/60">Symbol</div>
                     <div className="mt-1 text-sm font-semibold">SHUI</div>
@@ -128,13 +137,17 @@ export const HomeView: FC = () => {
             </div>
 
             <div className="mt-14 text-center text-xs text-white/40">
-              © {new Date().getFullYear()} SHUI — Community-driven, transparency-first.
+              © {new Date().getFullYear()} SHUI — Community-driven,
+              transparency-first.
             </div>
           </div>
         </div>
 
         {/* Sections */}
-        <section id="token" className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8">
+        <section
+          id="token"
+          className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8"
+        >
           <h2 className="text-xl font-semibold">Token Overview</h2>
           <p className="mt-3 text-white/70">
             SHUI rewards meaningful participation, supports initiatives via a
@@ -148,12 +161,14 @@ export const HomeView: FC = () => {
                 Incentives for builders, contributors, and community actions.
               </div>
             </div>
+
             <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
               <div className="text-sm font-semibold">Community Treasury</div>
               <div className="mt-2 text-sm text-white/65">
                 Funding proposals with traceable decisions and spending.
               </div>
             </div>
+
             <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
               <div className="text-sm font-semibold">Serious Structure</div>
               <div className="mt-2 text-sm text-white/65">
@@ -163,7 +178,10 @@ export const HomeView: FC = () => {
           </div>
         </section>
 
-        <section id="community" className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8">
+        <section
+          id="community"
+          className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8"
+        >
           <h2 className="text-xl font-semibold">Community</h2>
           <p className="mt-3 text-white/70">
             Join the movement and help shape SHUI. Connect your wallet to access
