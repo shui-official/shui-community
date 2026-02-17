@@ -1,193 +1,235 @@
 import type { FC } from "react";
 import Link from "next/link";
-
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+
+const TOKEN_NAME = "Shui";
+const TOKEN_SYMBOL = "SHUI";
+const TOKEN_NETWORK = "Solana";
+const TOKEN_SUPPLY = "1,000,000,000";
+const TOKEN_DECIMALS = "9";
+const TOKEN_MINT = "CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C";
+const SOLSCAN_URL = `https://solscan.io/token/${TOKEN_MINT}`;
 
 export const HomeView: FC = () => {
   const { publicKey } = useWallet();
 
+  const copyMint = async () => {
+    try {
+      await navigator.clipboard.writeText(TOKEN_MINT);
+      // eslint-disable-next-line no-alert
+      alert("Token address copied ✅");
+    } catch {
+      // eslint-disable-next-line no-alert
+      alert("Copy failed. Please copy manually.");
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#2f3742] text-white">
-      {/* Top bar */}
-      <div className="mx-auto max-w-6xl px-6 pt-8">
-        <div className="flex items-center justify-between rounded-2xl bg-[#2a313b] px-5 py-4 shadow-lg">
+    <div className="min-h-screen bg-[#0b1220] text-white">
+      {/* Subtle background */}
+      <div className="pointer-events-none fixed inset-0">
+        <div className="absolute -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
+        <div className="absolute bottom-[-260px] right-[-160px] h-[520px] w-[520px] rounded-full bg-white/5 blur-3xl" />
+      </div>
+
+      {/* Header */}
+      <header className="relative mx-auto max-w-6xl px-6 pt-8">
+        <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur-md">
           <div className="flex items-center gap-3">
-            {/* Token logo (left) */}
-            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10">
+            <div className="h-10 w-10 overflow-hidden rounded-full border border-white/10 bg-white/5">
               <img
                 src="/shui-token.png"
-                alt="SHUI Token"
+                alt="SHUI"
                 className="h-full w-full object-cover"
               />
             </div>
 
             <div className="leading-tight">
-              <div className="text-lg font-semibold tracking-wide">SHUI</div>
-              <div className="text-xs text-white/60">Solana Community Token</div>
+              <div className="text-sm font-semibold tracking-wide">
+                {TOKEN_SYMBOL}
+              </div>
+              <div className="text-xs text-white/60">{TOKEN_NAME} • {TOKEN_NETWORK}</div>
             </div>
           </div>
 
           {/* KEEP WALLET BUTTON */}
-          <WalletMultiButton className="!bg-white/10 hover:!bg-white/15 !text-white !border !border-white/10 !rounded-xl" />
+          <div className="flex items-center gap-3">
+            <div className="hidden text-xs text-white/60 md:block">
+              {publicKey ? (
+                <span className="text-emerald-300">Connected</span>
+              ) : (
+                <span>Not connected</span>
+              )}
+            </div>
+            <WalletMultiButton className="!rounded-xl !border !border-white/10 !bg-white/10 hover:!bg-white/15 !text-white" />
+          </div>
         </div>
-      </div>
+      </header>
 
-      {/* Hero */}
-      <main className="mx-auto max-w-6xl px-6 pb-20 pt-10">
-        <div className="grid items-center gap-10 lg:grid-cols-2">
-          {/* Text */}
+      {/* Main */}
+      <main className="relative mx-auto max-w-6xl px-6 pb-24 pt-12">
+        {/* Hero */}
+        <section className="grid items-center gap-10 lg:grid-cols-2">
+          {/* Left copy */}
           <div>
-            <h1 className="text-4xl font-semibold leading-tight md:text-5xl">
-              SHUI — a community token built for{" "}
-              <span className="text-white/80">participation</span> and{" "}
-              <span className="text-white/80">transparent treasury</span>.
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-300/80" />
+              Community token • Transparency-first
+            </div>
+
+            <h1 className="mt-5 text-4xl font-semibold leading-tight md:text-5xl">
+              Build together.
+              <span className="block text-white/70">
+                Reward participation, fund initiatives, and govern transparently.
+              </span>
             </h1>
 
             <p className="mt-5 max-w-xl text-base text-white/70 md:text-lg">
-              SHUI is a Solana-native token designed to reward contributors,
-              fund initiatives through a community treasury, and keep everything
-              accountable with clear structure and on-chain transparency.
+              {TOKEN_SYMBOL} is a Solana-native community token designed to reward contributors,
+              finance projects via a shared treasury, and operate with clear rules and public accountability.
             </p>
 
-            {/* Buttons */}
+            {/* CTA */}
             <div className="mt-8 flex flex-wrap gap-3">
               <a
                 href="#token"
-                className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#1f2630] hover:bg-white/90"
+                className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90"
               >
-                Explore Token
+                Token Overview
               </a>
 
               <a
                 href="#community"
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
+                className="rounded-xl border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
               >
-                Join Community
+                Community
               </a>
 
               <Link href="/mint" passHref>
-                <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
-                  Go to DApp
+                <a className="rounded-xl border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+                  Open dApp
                 </a>
               </Link>
             </div>
 
-            <div className="mt-5 text-xs text-white/50">
-              Wallet status:{" "}
-              {publicKey ? (
-                <span className="text-emerald-300">Connected</span>
-              ) : (
-                <span className="text-white/60">Not connected</span>
-              )}
+            {/* Mint address */}
+            <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-xs text-white/60">Token Mint Address</div>
+                  <div className="mt-1 font-mono text-xs text-white/80 break-all">
+                    {TOKEN_MINT}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={copyMint}
+                    className="rounded-xl border border-white/12 bg-white/5 px-4 py-2 text-xs font-semibold hover:bg-white/10"
+                  >
+                    Copy
+                  </button>
+                  <a
+                    href={SOLSCAN_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-xl bg-white px-4 py-2 text-xs font-semibold text-[#0b1220] hover:bg-white/90"
+                  >
+                    View on Solscan
+                  </a>
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Visual */}
+          {/* Right visual */}
           <div className="relative">
-            <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl">
-              {/* locked hero image */}
-              <div className="h-[360px] w-full md:h-[420px]">
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-3 shadow-2xl backdrop-blur-md">
+              <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
                 <img
                   src="/shui-hero.png"
                   alt="SHUI hero"
-                  className="h-full w-full object-cover"
+                  className="h-[360px] w-full object-cover md:h-[440px]"
                 />
               </div>
 
-              {/* Token coin overlay */}
-              <div className="absolute -bottom-10 left-6 rounded-3xl border border-white/10 bg-[#1f2630]/60 p-4 backdrop-blur">
-                <div className="flex items-center gap-4">
-                  <div className="h-16 w-16 overflow-hidden rounded-2xl ring-1 ring-white/10 bg-black/10">
-                    <img
-                      src="/shui-token.png"
-                      alt="SHUI Token"
-                      className="h-full w-full object-contain"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-sm font-semibold">SHUI Token</div>
-                    <div className="text-xs text-white/60">
-                      Built on Solana • Fast & low fees
-                    </div>
-                  </div>
+              {/* Overlay mini token card */}
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/60">Network</div>
+                  <div className="mt-1 text-sm font-semibold">{TOKEN_NETWORK}</div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/60">Supply</div>
+                  <div className="mt-1 text-sm font-semibold">{TOKEN_SUPPLY}</div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/60">Decimals</div>
+                  <div className="mt-1 text-sm font-semibold">{TOKEN_DECIMALS}</div>
                 </div>
               </div>
-
-              <div className="px-6 pb-8 pt-12">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs text-white/60">Network</div>
-                    <div className="mt-1 text-sm font-semibold">Solana</div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs text-white/60">Supply</div>
-                    <div className="mt-1 text-sm font-semibold">
-                      1,000,000,000
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs text-white/60">Symbol</div>
-                    <div className="mt-1 text-sm font-semibold">SHUI</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-14 text-center text-xs text-white/40">
-              © {new Date().getFullYear()} SHUI — Community-driven,
-              transparency-first.
             </div>
           </div>
-        </div>
+        </section>
 
         {/* Sections */}
-        <section
-          id="token"
-          className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
+        <section id="token" className="mt-16 rounded-3xl border border-white/10 bg-white/5 p-8">
           <h2 className="text-xl font-semibold">Token Overview</h2>
-          <p className="mt-3 text-white/70">
-            SHUI rewards meaningful participation, supports initiatives via a
-            community treasury, and aims for professional-grade transparency.
+          <p className="mt-3 max-w-3xl text-white/70">
+            A simple, serious structure: reward contribution, fund proposals via treasury,
+            and document decisions publicly for long-term trust.
           </p>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
-              <div className="text-sm font-semibold">Participation Rewards</div>
-              <div className="mt-2 text-sm text-white/65">
-                Incentives for builders, contributors, and community actions.
-              </div>
+          <div className="mt-6 grid gap-4 md:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-black/10 p-6">
+              <div className="text-sm font-semibold">Rewards</div>
+              <p className="mt-2 text-sm text-white/65">
+                Incentivize builders and active members with transparent criteria.
+              </p>
             </div>
-
-            <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
-              <div className="text-sm font-semibold">Community Treasury</div>
-              <div className="mt-2 text-sm text-white/65">
-                Funding proposals with traceable decisions and spending.
-              </div>
+            <div className="rounded-2xl border border-white/10 bg-black/10 p-6">
+              <div className="text-sm font-semibold">Treasury</div>
+              <p className="mt-2 text-sm text-white/65">
+                Fund initiatives through a community treasury with traceable spending.
+              </p>
             </div>
-
-            <div className="rounded-2xl border border-white/10 bg-[#1f2630]/30 p-5">
-              <div className="text-sm font-semibold">Serious Structure</div>
-              <div className="mt-2 text-sm text-white/65">
-                Clear rules, processes, and public documentation.
-              </div>
+            <div className="rounded-2xl border border-white/10 bg-black/10 p-6">
+              <div className="text-sm font-semibold">Governance</div>
+              <p className="mt-2 text-sm text-white/65">
+                Make decisions with clear rules and open documentation.
+              </p>
             </div>
           </div>
         </section>
 
-        <section
-          id="community"
-          className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
+        <section id="community" className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8">
           <h2 className="text-xl font-semibold">Community</h2>
-          <p className="mt-3 text-white/70">
-            Join the movement and help shape SHUI. Connect your wallet to access
-            dApp features when available.
+          <p className="mt-3 max-w-3xl text-white/70">
+            Connect your wallet to access the dApp and future community features. We build SHUI together:
+            transparency, structure, and long-term execution.
           </p>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link href="/mint" passHref>
+              <a className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90">
+                Open dApp
+              </a>
+            </Link>
+            <a
+              href={SOLSCAN_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-xl border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold hover:bg-white/10"
+            >
+              Solscan
+            </a>
+          </div>
         </section>
+
+        <footer className="mt-14 text-center text-xs text-white/40">
+          © {new Date().getFullYear()} {TOKEN_SYMBOL} — Community-driven, transparency-first.
+        </footer>
       </main>
     </div>
   );
