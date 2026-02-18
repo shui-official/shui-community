@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { PublicKey } from "@solana/web3.js";
+import { getShuiBalance } from "../../utils/solana";
 import type { FC } from "react";
 import Link from "next/link";
 
