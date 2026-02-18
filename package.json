@@ -13,6 +13,7 @@
     "@nfteyez/sol-rayz-react": "^0.8.2",
     "@project-serum/anchor": "^0.19.1-beta.1",
     "@solana/spl-token": "^0.1.8",
+    "@solana/web3.js": "^1.95.0",
     "@solana/wallet-adapter-base": "^0.7.0",
     "@solana/wallet-adapter-phantom": "^0.7.0",
     "@solana/wallet-adapter-react": "^0.13.1",
