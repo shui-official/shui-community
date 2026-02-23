@@ -1,41 +1,10 @@
-import { serverSideTranslations } from "next-i18next/serverSideTranslations";
-import type { NextPage } from "next";
-import Head from "next/head";
-import { CandyMachineMintView } from "../views";
-import { transitions, positions, Provider as AlertProvider } from "react-alert";
-import AlertTemplate from "react-alert-template-basic";
+import type { GetServerSideProps } from "next";
 
-// optional configuration
-const options = {
-  // you can also just use 'bottom center'
-  position: positions.BOTTOM_LEFT,
-  timeout: 5000,
-  offset: "10px",
-  // you can also just use 'scale'
-  transition: transitions.SCALE,
-};
-
-const Mint: NextPage = (props) => {
-  return (
-    <div>
-      <Head>
-        <title>Mint NFT!</title>
-        <meta name="description" content="This site will fly high 🦤" />
-      </Head>
-      <AlertProvider template={AlertTemplate} {...options}>
-        <CandyMachineMintView />
-      </AlertProvider>
-    </div>
-  );
-};
-
-export default Mint;
-
-
-export async function getServerSideProps({ locale }: { locale?: string }) {
-  return {
-    props: {
-      ...(await serverSideTranslations(locale ?? "fr", ["common"])),
-    },
-  };
+export default function MintDisabled() {
+  // Ne sera jamais rendu (notFound), mais on laisse un composant safe.
+  return null;
 }
+
+export const getServerSideProps: GetServerSideProps = async () => {
+  return { notFound: true };
+};
