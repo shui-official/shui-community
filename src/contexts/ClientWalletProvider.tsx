@@ -17,8 +17,9 @@ export function ClientWalletProvider(
 
   return (
     <WalletProvider wallets={wallets} {...props}>
-      <WalletModalProvider />
-      {props.children}
+      <WalletModalProvider>
+        {props.children}
+      </WalletModalProvider>
     </WalletProvider>
   );
 }

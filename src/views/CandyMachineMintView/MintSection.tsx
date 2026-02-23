@@ -6,7 +6,7 @@ import { useAlert } from "react-alert";
 
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
-import { Loader, SelectAndConnectWalletButton } from "components";
+import { Loader, SelectAndConnectWalletButton } from "../../components";
 import { useAnchorWallet } from "@solana/wallet-adapter-react";
 
 import {
@@ -65,7 +65,7 @@ export const MintSection = (props: HomeProps) => {
           false
         );
 
-        if (!status?.err) {
+      if (!status || !("err" in status) || !status.err) {
           alert.success("Congratulations! Mint succeeded!");
         } else {
           alert.error("Mint failed! Please try again!");

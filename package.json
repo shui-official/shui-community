@@ -15,33 +15,38 @@
     "@solana/spl-token": "^0.1.8",
     "@solana/wallet-adapter-base": "^0.7.0",
     "@solana/wallet-adapter-phantom": "^0.9.28",
-    "@solana/wallet-adapter-react": "^0.13.1",
-    "@solana/wallet-adapter-react-ui": "^0.6.0",
+    "@solana/wallet-adapter-react": "^0.15.39",
+    "@solana/wallet-adapter-react-ui": "^0.9.39",
     "@solana/wallet-adapter-solflare": "^0.6.32",
     "@solana/wallet-adapter-sollet": "^0.8.0",
-    "@solana/wallet-adapter-wallets": "^0.11.3",
+    "@solana/wallet-adapter-wallets": "^0.19.37",
     "@solana/web3.js": "^1.98.4",
     "@tailwindcss/typography": "^0.4.1",
     "@types/lodash.orderby": "^4.6.6",
+    "@types/node": "18.19.0",
+    "@types/react": "17.0.91",
+    "@types/react-dom": "17.0.26",
+    "bs58": "^6.0.0",
     "daisyui": "^1.16.2",
     "lodash.orderby": "^4.6.0",
-    "next": "12.1.0",
+    "next": "^12.1.0",
     "next-compose-plugins": "^2.2.1",
     "next-transpile-modules": "^9.0.0",
-    "react": "17.0.2",
+    "react": "^17.0.2",
     "react-alert": "^7.0.3",
     "react-alert-template-basic": "^1.0.2",
     "react-countdown": "^2.3.2",
-    "react-dom": "17.0.2"
+    "react-dom": "^17.0.2",
+    "tweetnacl": "^1.0.3",
+    "typescript": "4.9.5"
   },
   "devDependencies": {
-    "@types/react": "17.0.34",
     "@types/react-alert": "^5.2.1",
     "autoprefixer": "^10.4.0",
     "eslint": "7",
     "eslint-config-next": "12.0.3",
     "postcss": "^8.3.11",
-    "tailwindcss": "^2.2.19",
-    "typescript": "4.4.4"
-  }
+    "tailwindcss": "^2.2.19"
+  },
+  "packageManager": "yarn@1.22.19+sha512.ff4579ab459bb25aa7c0ff75b62acebe576f6084b36aa842971cf250a5d8c6cd3bc9420b22ce63c7f93a0857bc6ef29291db39c3e7a23aab5adfd5a4dd6c5d71"
 }

@@ -127,12 +127,12 @@ export const HomeView: FC = () => {
                 Token Overview
               </a>
 
-              <a
-                href="#community"
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Community
-              </a>
+              {/* ✅ FIX: Community doit aller sur /community */}
+              <Link href="/community" passHref>
+                <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+                  Community
+                </a>
+              </Link>
 
               <Link href="/mint" passHref>
                 <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
@@ -221,8 +221,29 @@ export const HomeView: FC = () => {
         >
           <h2 className="text-xl font-semibold">Community</h2>
           <p className="mt-3 text-white/70">
-            Join the movement and help shape SHUI. Connect your wallet to access dApp
-            features when available.
+            Section community (info). Pour l’espace membres, utilise la page{" "}
+            <span className="text-white font-semibold">/community</span>.
+          </p>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link href="/community" passHref>
+              <a className="rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white hover:bg-purple-500">
+                Accéder à la communauté
+              </a>
+            </Link>
+
+            <a
+              href={SOCIALS.tg}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
+            >
+              Rejoindre Telegram
+            </a>
+          </div>
+
+          <p className="mt-4 text-xs text-white/50">
+            Aucune transaction n’est demandée pour accéder aux membres (V1).
           </p>
         </section>
 

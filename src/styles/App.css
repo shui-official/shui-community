@@ -14,3 +14,89 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
     monospace;
 }
+
+/* --- FIX wallet-adapter dropdown not clickable (z-index / overlay) --- */
+.wallet-adapter-button-trigger,
+.wallet-adapter-dropdown,
+.wallet-adapter-dropdown-list {
+  position: relative;
+  z-index: 9999 !important;
+}
+
+.wallet-adapter-dropdown-list {
+  z-index: 10000 !important;
+}
+
+/* Some layouts create a new stacking context; avoid clipping */
+.topbar,
+.card,
+.wrap {
+  overflow: visible;
+}
+
+/* --- FIX (clean): wallet-adapter dropdown should be above topbar/cards --- */
+/* Target only wallet-adapter dropdown + list */
+.wallet-adapter-dropdown {
+  position: relative;
+  z-index: 50;
+}
+
+/* The dropdown list is the one you click */
+.wallet-adapter-dropdown-list {
+  position: absolute;
+  z-index: 9999;
+}
+
+/* Ensure the button itself stays in the same stacking context */
+.wallet-adapter-button-trigger {
+  position: relative;
+  z-index: 60;
+}
+
+/* === FIX wallet dropdown clicks over embeds/iframes (BubbleMaps) === */
+.topbar{
+  position: relative;
+  z-index: 99999;
+  isolation: isolate; /* key: creates a new stacking context above embeds */
+}
+
+/* Wallet adapter dropdown */
+.wallet-adapter-dropdown{
+  position: relative;
+  z-index: 100000;
+}
+.wallet-adapter-dropdown-list{
+  position: absolute;
+  z-index: 100001;
+  pointer-events: auto;
+}
+
+/* Optional: make sure any iframe doesn't sit above UI (safe) */
+iframe{
+  position: relative;
+  z-index: 0;
+}
+
+/* Fallback: if BubbleMaps wrapper uses high z-index */
+.bubblemaps, .bubblemaps *{
+  z-index: 0 !important;
+}
+
+/* --- FIX wallet-adapter dropdown not clickable (z-index / overlay) --- */
+.wallet-adapter-button-trigger,
+.wallet-adapter-dropdown,
+.wallet-adapter-dropdown-list {
+  position: relative;
+  z-index: 9999 !important;
+}
+
+.wallet-adapter-dropdown-list {
+  z-index: 10000 !important;
+}
+
+/* Some layouts create a new stacking context; avoid clipping */
+.topbar,
+.card,
+.wrap {
+  overflow: visible;
+}

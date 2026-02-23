@@ -2,7 +2,7 @@ import { FC, useState, useEffect } from "react";
 import useSWR from "swr";
 import { EyeOffIcon } from "@heroicons/react/outline";
 
-import { fetcher } from "utils/fetcher";
+import { fetcher } from "../../utils/fetcher";
 
 type Props = {
   details: any;
