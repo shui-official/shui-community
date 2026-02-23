@@ -1,56 +1,126 @@
 import type { Quest } from "./catalog";
 
+export type PointsBreakdown = {
+  activity: number; // daily/social/learn/community
+  onchain: number;  // holder/lp
+  total: number;    // activity + onchain
+};
+
+type ClaimRecord = {
+  questId: string;
+  claimedAt: number; // ms
+  pointsAwarded: number;
+  bucket: "activity" | "onchain";
+};
+
 type WalletClaims = {
-  claimed: Set<string>;
-  points: number;
+  claimed: Map<string, ClaimRecord>;
+  points: PointsBreakdown;
   updatedAt: number;
 };
 
-const claimsByWallet = new Map<string, WalletClaims>();
+// 👉 Stockage par mois (YYYY-MM) pour un système “mensuel”
+const claimsByMonth = new Map<string, Map<string, WalletClaims>>();
 
-export function getOrCreateWalletClaims(wallet: string): WalletClaims {
-  const existing = claimsByWallet.get(wallet);
+function monthKey(ts = Date.now()) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function startOfDayMs(ts: number) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function getMonthMap(mk: string) {
+  let mm = claimsByMonth.get(mk);
+  if (!mm) {
+    mm = new Map<string, WalletClaims>();
+    claimsByMonth.set(mk, mm);
+  }
+  return mm;
+}
+
+export function getOrCreateWalletClaims(wallet: string, mk = monthKey()): WalletClaims {
+  const mm = getMonthMap(mk);
+  const existing = mm.get(wallet);
   if (existing) return existing;
 
-  const fresh: WalletClaims = { claimed: new Set(), points: 0, updatedAt: Date.now() };
-  claimsByWallet.set(wallet, fresh);
+  const fresh: WalletClaims = {
+    claimed: new Map(),
+    points: { activity: 0, onchain: 0, total: 0 },
+    updatedAt: Date.now(),
+  };
+  mm.set(wallet, fresh);
   return fresh;
 }
 
-export function hasClaimed(wallet: string, questId: string): boolean {
-  return getOrCreateWalletClaims(wallet).claimed.has(questId);
+export function hasClaimed(wallet: string, quest: Quest, mk = monthKey()): boolean {
+  const wc = getOrCreateWalletClaims(wallet, mk);
+  const rec = wc.claimed.get(quest.id);
+  if (!rec) return false;
+
+  if (quest.cooldown === "once") return true;
+
+  // daily
+  const today = startOfDayMs(Date.now());
+  const claimedDay = startOfDayMs(rec.claimedAt);
+  return claimedDay === today;
 }
 
-export function claimQuest(wallet: string, quest: Quest) {
-  const wc = getOrCreateWalletClaims(wallet);
+export function claimQuest(wallet: string, quest: Quest, pointsToAward: number, mk = monthKey()) {
+  const wc = getOrCreateWalletClaims(wallet, mk);
 
-  // idempotent
-  if (wc.claimed.has(quest.id)) {
+  if (hasClaimed(wallet, quest, mk)) {
     return { ok: true as const, alreadyClaimed: true as const, points: wc.points };
   }
 
-  wc.claimed.add(quest.id);
-  wc.points += quest.points;
+  const bucket: "activity" | "onchain" = quest.kind === "onchain" ? "onchain" : "activity";
+
+  const rec: ClaimRecord = {
+    questId: quest.id,
+    claimedAt: Date.now(),
+    pointsAwarded: pointsToAward,
+    bucket,
+  };
+
+  wc.claimed.set(quest.id, rec);
+
+  if (bucket === "onchain") wc.points.onchain += pointsToAward;
+  else wc.points.activity += pointsToAward;
+
+  wc.points.total = wc.points.activity + wc.points.onchain;
   wc.updatedAt = Date.now();
-  claimsByWallet.set(wallet, wc);
+
+  const mm = getMonthMap(mk);
+  mm.set(wallet, wc);
 
   return { ok: true as const, alreadyClaimed: false as const, points: wc.points };
 }
 
-export function getClaimsSnapshot(wallet: string) {
-  const wc = getOrCreateWalletClaims(wallet);
+export function getClaimsSnapshot(wallet: string, mk = monthKey()) {
+  const wc = getOrCreateWalletClaims(wallet, mk);
   return {
+    month: mk,
     wallet,
     points: wc.points,
-    claimedIds: Array.from(wc.claimed),
+    claimedIds: Array.from(wc.claimed.keys()),
     updatedAt: wc.updatedAt,
+    claims: Array.from(wc.claimed.values()),
   };
 }
 
-// ✅ utilisé par Rewards : total points des wallets
-export function getAllWalletPoints(): Array<{ wallet: string; points: number }> {
-  return Array.from(claimsByWallet.entries()).map(([wallet, wc]) => ({
+export function getAllWalletPoints(mk = monthKey()): Array<{ wallet: string; points: PointsBreakdown }> {
+  const mm = getMonthMap(mk);
+  return Array.from(mm.entries()).map(([wallet, wc]) => ({
     wallet,
     points: wc.points,
   }));
+}
+
+export function getCurrentMonthKey() {
+  return monthKey();
 }

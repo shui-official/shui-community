@@ -1,17 +1,25 @@
-import dynamic from "next/dynamic";
-import Script from "next/script";
-import RequireWallet from "../components/RequireWallet";
-
-const CommunityView = dynamic(() => import("../views/CommunityView"), { ssr: false });
+import type { GetStaticProps } from "next";
+import Head from "next/head";
+import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+import { useTranslation } from "next-i18next";
+import CommunityView from "../views/CommunityView";
 
 export default function CommunityPage() {
+  const { t } = useTranslation("common");
   return (
     <>
-      {/* Jupiter Plugin script (doit être dans le code, pas dans le terminal) */}
-      <Script src="https://plugin.jup.ag/plugin-v1.js" strategy="beforeInteractive" />
-      <RequireWallet>
-        <CommunityView />
-      </RequireWallet>
+      <Head>
+        <title>{t("community.pageTitle")}</title>
+      </Head>
+      <CommunityView />
     </>
   );
 }
+
+export const getStaticProps: GetStaticProps = async ({ locale }) => {
+  return {
+    props: {
+      ...(await serverSideTranslations(locale ?? "fr", ["common"]))
+    }
+  };
+};

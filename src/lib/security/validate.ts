@@ -13,23 +13,43 @@ export function getHost(req: NextApiRequest): string {
   return typeof h === "string" && h.length > 3 ? h : "localhost:3000";
 }
 
-export function requireSameOrigin(req: NextApiRequest) {
-  // Anti-CSRF “pragmatique” : on refuse les POST venant d’un autre origin.
-  // (utile même si l’attaquant ne peut pas signer, ça évite des calls cross-site parasites)
-  const origin = req.headers.origin;
-  const referer = req.headers.referer;
-  const host = getHost(req);
+export function requireSameOrigin(req: any) {
+  // Anti-CSRF: si Origin est présent, il doit matcher exactement l'origine attendue.
+  // Si Origin est absent (curl / certains contextes), on tolère et on se base sur Host.
+  const origin = String(req.headers?.origin || "");
+  const referer = String(req.headers?.referer || "");
 
-  const ok =
-    (typeof origin === "string" && origin.includes(host)) ||
-    (typeof referer === "string" && referer.includes(host));
+  const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "");
+  const proto =
+    String(req.headers?.["x-forwarded-proto"] || "") ||
+    (req.socket && req.socket.encrypted ? "https" : "http");
 
-  if (!ok) {
-    const err: any = new Error("Bad Origin");
-    err.statusCode = 403;
-    throw err;
+  const expected = host ? `${proto}://${host}` : "";
+
+  // 1) Si Origin est présent, il doit matcher expected
+  if (origin) {
+    if (!expected || origin !== expected) {
+      const err: any = new Error("Bad Origin");
+      err.statusCode = 403;
+      throw err;
+    }
+    return;
   }
+
+  // 2) Si Origin absent mais Referer présent, il doit commencer par expected
+  if (referer) {
+    if (!expected || !referer.startsWith(expected)) {
+      const err: any = new Error("Bad Origin");
+      err.statusCode = 403;
+      throw err;
+    }
+    return;
+  }
+
+  // 3) Origin + Referer absents => on tolère (ex: curl) et on laisse la session + SameSite protéger.
+  return;
 }
+
 
 export function isString(x: any): x is string {
   return typeof x === "string" && x.length > 0;

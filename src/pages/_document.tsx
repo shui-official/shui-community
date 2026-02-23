@@ -1,14 +1,19 @@
-import Document, { Html, Head, Main, NextScript } from "next/document";
+import Document, { Html, Head, Main, NextScript, DocumentContext } from "next/document";
 
-export default class MyDocument extends Document {
+type Props = { locale?: string };
+
+export default class MyDocument extends Document<Props> {
+  static async getInitialProps(ctx: DocumentContext) {
+    const initialProps = await Document.getInitialProps(ctx);
+    return { ...initialProps, locale: (ctx as any).locale || "fr" };
+  }
+
   render() {
+    const locale = (this.props as any).locale || "fr";
     return (
-      <Html lang="fr">
+      <Html lang={locale}>
         <Head>
-          {/* Favicon */}
           <link rel="icon" href="/favicon.ico" />
-          {/* Optionnel: PNG fallback si tu préfères */}
-          {/* <link rel="icon" type="image/png" href="/shui-token.png" /> */}
         </Head>
         <body>
           <Main />

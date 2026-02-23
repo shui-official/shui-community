@@ -1,5 +1,7 @@
+import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import Head from "next/head";
 import Link from "next/link";
+import Image from "next/image";
 
 export default function RewardsPage() {
   return (
@@ -17,8 +19,8 @@ export default function RewardsPage() {
       <div className="relative mx-auto max-w-4xl px-6 py-10 space-y-6">
         <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <img src="/shui-token.png" alt="SHUI Token" className="h-full w-full object-cover" />
+            <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
+              <Image src="/shui-token.png" alt="SHUI Token" layout="fill" objectFit="cover" priority />
             </div>
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
@@ -69,4 +71,13 @@ export default function RewardsPage() {
       </div>
     </div>
   );
+}
+
+
+export async function getServerSideProps({ locale }: { locale?: string }) {
+  return {
+    props: {
+      ...(await serverSideTranslations(locale ?? "fr", ["common"])),
+    },
+  };
 }

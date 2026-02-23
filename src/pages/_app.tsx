@@ -14,12 +14,14 @@ import BeginnerModeToggle from "../components/BeginnerModeToggle";
 import BeginnerCoachPanel from "../components/BeginnerCoachPanel";
 import BeginnerNextStepFloating from "../components/BeginnerNextStepFloating";
 import WalletSessionBridge from "../components/WalletSessionBridge";
+import LocalePersist from "../components/LocalePersist";
+
+import { appWithTranslation } from "next-i18next";
 
 const endpoint = "https://ssc-dao.genesysgo.net";
-
 const WalletProvider = dynamic(() => import("../contexts/ClientWalletProvider"), { ssr: false });
 
-export default function MyApp({ Component, pageProps }: AppProps) {
+function MyApp({ Component, pageProps }: AppProps) {
   return (
     <>
       <Head>
@@ -32,6 +34,9 @@ export default function MyApp({ Component, pageProps }: AppProps) {
       <BeginnerModeProvider>
         <ConnectionProvider endpoint={endpoint}>
           <WalletProvider>
+            {/* ✅ Persistance locale (Home -> tout le site) */}
+            <LocalePersist />
+
             {/* ✅ Tout ce qui utilise useWallet() doit être ici */}
             <WalletSessionBridge />
 
@@ -46,3 +51,5 @@ export default function MyApp({ Component, pageProps }: AppProps) {
     </>
   );
 }
+
+export default appWithTranslation(MyApp);

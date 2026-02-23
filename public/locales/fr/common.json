@@ -1,0 +1,344 @@
+{
+  "nav": {
+    "connected": "Connecté",
+    "notConnected": "Non connecté",
+    "community": "Communauté",
+    "dashboard": "Dashboard",
+    "backHome": "← Retour accueil"
+  },
+  "home": {
+    "tagline": "Token communautaire Solana • Transparence d’abord",
+    "pill": "Token communautaire • Trésorerie • Gouvernance",
+    "title": "Construisons ensemble.",
+    "subtitle": "Récompenser la participation, financer des initiatives, et gouverner en toute transparence.",
+    "intro": "SHUI est un token communautaire natif Solana conçu pour récompenser les contributeurs, financer des projets via une trésorerie partagée et fonctionner avec des règles claires et une responsabilité publique.",
+    "ctaToken": "Aperçu du token",
+    "ctaCommunity": "Communauté",
+    "ctaDapp": "Ouvrir la dApp",
+    "liveHolderMapPowered": "Carte des holders en direct via Bubblemaps (Top 80).",
+    "liveHolderMapTitle": "Carte des holders (live)",
+    "openFullView": "Ouvrir en plein écran →",
+    "dataRefreshNote": "La mise à jour dépend de la fréquence de rafraîchissement Bubblemaps.",
+    "tokenSectionTitle": "Aperçu du token",
+    "tokenSectionIntro": "SHUI récompense la participation utile, soutient des initiatives via une trésorerie communautaire et vise une transparence de niveau professionnel.",
+    "tokenCard1Title": "Récompenses de participation",
+    "tokenCard1Text": "Des incitations pour les builders, contributeurs et actions communautaires.",
+    "tokenCard2Title": "Trésorerie communautaire",
+    "tokenCard2Text": "Financer des propositions avec décisions et dépenses traçables.",
+    "tokenCard3Title": "Structure sérieuse",
+    "tokenCard3Text": "Règles claires, processus, et documentation publique.",
+    "communitySectionIntro": "Section communauté (info). Pour l’espace membres, utilise la page /community.",
+    "communityCtaAccess": "Accéder à la communauté",
+    "communityCtaJoinTelegram": "Rejoindre Telegram",
+    "noTxNoticeV1": "Aucune transaction n’est demandée pour accéder aux membres (V1).",
+    "footer": "© {{year}} SHUI — Communauté d’abord, transparence toujours."
+  },
+  "community": {
+    "pageTitle": "SHUI — Communauté",
+    "topTagline": "Espace membres • Connexion sans transaction",
+    "dashboardMembers": "Espace membres",
+    "connected": "Connecté",
+    "notConnected": "Non connecté",
+    "backHome": "← Retour accueil",
+    "walletLabel": "Wallet",
+    "toolsIntro": "Ici tu trouveras les outils de la communauté SHUI.",
+    "accessNoTxStrong": "Connexion = accès (sans transaction).",
+    "buySellJupiter": "Acheter / Vendre sur Jupiter",
+    "swapSolToShui": "Swap SOL → SHUI",
+    "viewOnSolscan": "Voir sur Solscan",
+    "mintLabel": "Mint SHUI",
+    "loginNoTx": "✅ Connexion : aucune transaction.",
+    "swapTxNormal": "⚠️ Swap : si tu swaps, Jupiter te fera signer une transaction (normal).",
+    "integratedSwapTitle": "Swap intégré (Jupiter)",
+    "integratedSwapText": "Swap directement ici (pré-config SOL → SHUI). Aucun swap n’est lancé sans ton action.",
+    "nextStepsTitle": "Prochaines étapes",
+    "nextSteps1": "• Quêtes / rewards (allowlist serveur)",
+    "nextSteps2": "• Votes / propositions",
+    "nextSteps3": "• Tableau de bord trésorerie",
+    "securityUltra": "Sécurité ULTRA : signMessage + nonce + session serveur anti-replay.",
+    "coach": {
+      "dashboardAccessTitle": "Accès Dashboard",
+      "dashboardNeedWalletText": "Pour accéder au dashboard :\n1) Connecte d’abord ton wallet (bouton en haut).\n2) Active la connexion sécurisée (V2) : tu signes un message (pas une transaction).\n3) Ensuite : clique sur Dashboard.",
+      "dashboardNeedSessionText": "Le dashboard est réservé aux membres avec Session OK.\nActive d’abord la connexion sécurisée (V2) :\n→ tu signes un message lisible (gratuit), PAS une transaction."
+    }
+  },
+  "dashboard": {
+    "pageTitle": "SHUI — Dashboard",
+    "pageDescription": "Espace membres SHUI — accès protégé par session (V2).",
+    "topTagline": "Dashboard membres (protégé V2)",
+    "walletShort": "Wallet",
+    "backCommunity": "← Retour à /community",
+    "solscanWallet": "Solscan (wallet)",
+    "solscanShui": "Solscan (SHUI)",
+    "statusLabel": "Statut",
+    "statusOk": "Session OK",
+    "title": "Espace membres",
+    "intro": "Tu es connecté via V2 ULTRA : signature d’un message lisible + nonce + session serveur (cookie httpOnly).",
+    "beginnerDashboardTitle": "Dashboard (simple)",
+    "beginnerDashboardHint": "Ici tu es déjà “connecté” (Session OK).\nLa session vient d’une signature de message (pas de transaction).\nSi la session expire : retourne sur /community et réactive la connexion sécurisée.",
+    "securityBoxTitle": "Sécurité — ce que tu dois retenir",
+    "security1": "✅ Connexion = signature d’un message (pas de transaction).",
+    "security2": "✅ Anti-replay : nonce unique + expiration courte.",
+    "security3": "✅ Session : cookie httpOnly (non lisible par le JS).",
+    "security4": "⚠️ Swap = transaction (normal). Tu vois toujours la transaction dans Phantom.",
+    "sessionStartTitle": "Session (début)",
+    "issuedAt": "Issued At (iat)",
+    "sessionExpTitle": "Session (expiration)",
+    "expiresAuto": "Expire automatiquement",
+    "questsTitle": "Quêtes (simple)",
+    "questsHint": "Les quêtes servent à récompenser l’activité.\nTu suis les étapes proposées, puis tu valides.\nCertaines quêtes peuvent demander une action on-chain plus tard (swap/hold), mais pas le login.",
+    "rewardsTitle": "Rewards (simple)",
+    "rewardsHint": "Ici tu vois tes récompenses / ton statut.\nUn export CSV ou des actions “admin” peuvent exister : elles sont réservées aux wallets allowlist.\nSi tu n’es pas admin, tu peux juste consulter.",
+    "memberIdentityTitle": "Identité membre",
+    "fullWallet": "Wallet complet",
+    "identityNote": "Ce wallet a prouvé la possession via signature de message. Aucune clé privée n’est partagée.",
+    "quickHelpTitle": "Aide rapide",
+    "help1": "• Si “Session OK” disparaît : retourne sur /community et reconnecte V2.",
+    "help2": "• Si Phantom affiche une transaction pour login : STOP.",
+    "help3": "• Les swaps demandent une transaction : c’est normal."
+  },
+  "beginner": {
+    "toggle": {
+      "title": "Active/désactive l’aide simplifiée (Mode Débutant).",
+      "label": "Mode Débutant :",
+      "on": "ON",
+      "off": "OFF",
+      "quickTitle": "Aide rapide",
+      "quickText": "Je te guide étape par étape (wallet, achat SHUI, swap, pool) avec des mots simples.",
+      "openGuide": "Ouvrir le guide",
+      "restart": "Recommencer"
+    },
+    "coach": {
+      "label": "Coach Débutant",
+      "close": "Fermer",
+      "openGuide": "Ouvrir le guide",
+      "tip": "Astuce : clique sur “?” sur une zone pour voir l’explication ici."
+    },
+    "progress": {
+      "title": "Parcours débutant",
+      "subtitle": "4 étapes simples • objectif : éviter les erreurs",
+      "resetTitle": "Remettre à zéro",
+      "reset": "Reset",
+      "progressLabel": "Progress",
+      "totalSteps": "4",
+      "ok": "OK",
+      "markOk": "Marquer OK",
+      "guide": "Guide",
+      "go": "Aller",
+      "step1": {
+        "title": "1) Installer Phantom",
+        "subtitle": "Extension navigateur. Sauvegarde ta seed hors-ligne.",
+        "coachTitle": "Installer Phantom (rappel sécurité)",
+        "coachText": "Ne partage jamais ta seed phrase.\nÉvite les liens inconnus.\nQuand tu es prêt : connecte le wallet sur le site (étape 2)."
+      },
+      "step2": {
+        "title": "2) Connecter le wallet",
+        "subtitle": "Clique sur le bouton wallet (en haut). Connexion wallet ≠ transaction."
+      },
+      "step3": {
+        "title": "3) Activer la connexion sécurisée (V2)",
+        "subtitle": "Signature d’un message (gratuit) → Session OK → accès Dashboard.",
+        "coachTitle": "Connexion sécurisée (V2)",
+        "coachText": "Tu signes un message lisible (gratuit).\nAucune transaction.\nSi Phantom te propose une transaction ici : STOP."
+      },
+      "step4": {
+        "title": "4) Premier test (petit montant)",
+        "subtitle": "Swap SOL→SHUI ou LP : transaction normale. Commence petit."
+      },
+      "reminder": "Rappel : login = message signé • swap/LP = transaction."
+    },
+    "floating": {
+      "label": "Mode Débutant",
+      "guide": "Guide",
+      "step1": {
+        "title": "Étape suivante : connecter le wallet",
+        "body": "Clique sur le bouton wallet en haut à droite (Phantom / Solflare).\nConnexion wallet ≠ connexion sécurisée : ici tu fais juste apparaître ton adresse.\nAucune transaction n’est nécessaire pour se connecter au site.",
+        "ctaLabel": "Ouvrir le guide"
+      },
+      "step2": {
+        "title": "Étape suivante : activer la connexion sécurisée (V2)",
+        "body": "Tu es connecté au wallet. Maintenant active V2.\nTu vas signer un message lisible (signMessage) — PAS une transaction.\nSi Phantom te propose une transaction ici : STOP.",
+        "ctaLabel": "Aller au login V2",
+        "coachTitle": "Connexion sécurisée (V2)",
+        "coachText": "Objectif : créer une session serveur.\nTu signes un message lisible (gratuit) — pas de transaction.\nEnsuite : ‘Session OK’ apparaît, et /dashboard devient accessible."
+      },
+      "step3": {
+        "title": "Étape suivante : aller au dashboard",
+        "body": "Session OK ✅\nLe dashboard regroupe Quêtes / Rewards.\nTu peux y suivre tes points et ton statut mensuel.",
+        "ctaLabel": "Aller au dashboard"
+      },
+      "step4": {
+        "title": "Étape suivante : faire une quête",
+        "body": "Choisis une quête simple pour commencer.\nV1 : claim off-chain (pas de transaction).\nPlus tard : certaines preuves pourront être on-chain (swap/hold), mais pas le login.",
+        "ctaLabel": "Aller aux quêtes"
+      }
+    },
+    "guide": {
+      "ariaLabel": "Guide Débutant",
+      "header": "Guide Débutant • Étape {{n}}/{{total}}",
+      "recommendedPage": "Page conseillée :",
+      "close": "Fermer",
+      "glossaryTitle": "Mini-glossaire",
+      "glossaryNote": "(Le glossaire complet s’étendra plus tard — là c’est la version “utile tout de suite”.)",
+      "restart": "Recommencer",
+      "prev": "← Précédent",
+      "next": "Suivant →",
+      "tip1": "Astuce : ce guide explique “quoi faire” + “quoi signer”. Les swaps/LP demanderont toujours une transaction (normal).",
+      "tip2": "Raccourci : appuie sur ESC pour fermer.",
+      "steps": {
+        "safety": {
+          "title": "Avant de commencer (sécurité)",
+          "b1": "Un wallet = ton coffre-fort. Tu ne donnes JAMAIS ta phrase secrète (seed).",
+          "b2": "Connexion au site = signature d’un message (pas une transaction).",
+          "b3": "Swap / Achat / Vente = transaction (normal : Phantom te le montrera).",
+          "b4": "Si une fenêtre te demande une transaction alors que tu voulais juste te connecter : STOP.",
+          "warning": "Règle d’or : aucune “seed phrase” n’est demandée par un site légitime."
+        },
+        "wallet": {
+          "title": "Créer un wallet (Phantom)",
+          "b1": "Installe Phantom (extension navigateur).",
+          "b2": "Crée un nouveau wallet.",
+          "b3": "Sauvegarde la phrase secrète hors-ligne (papier / coffre).",
+          "b4": "Active un code / biométrie sur ton appareil.",
+          "warning": "Perdre ta seed = perdre l’accès à tes fonds. Personne ne peut “récupérer” à ta place."
+        },
+        "connect": {
+          "title": "Se connecter au site",
+          "b1": "Clique sur le bouton wallet (en haut à droite).",
+          "b2": "Choisis Phantom, puis “Connect”.",
+          "b3": "Ton adresse apparaît (format 7x…9k)."
+        },
+        "secureLogin": {
+          "title": "Activer la connexion sécurisée (V2)",
+          "b1": "Clique “Activer la connexion sécurisée”.",
+          "b2": "Tu signes un message lisible (PAS une transaction).",
+          "b3": "Le site crée une session serveur (cookie httpOnly).",
+          "b4": "Le statut passe à “Session OK”.",
+          "warning": "Si Phantom affiche une transaction ici : c’est anormal → n’accepte pas."
+        },
+        "buy": {
+          "title": "Acheter / Swap SHUI (débutant)",
+          "b1": "Le swap intégré (Jupiter) te permet d’échanger SOL → SHUI.",
+          "b2": "Un swap = transaction : Phantom te demandera de signer.",
+          "b3": "Commence petit pour tester (ex: 0.01 SOL).",
+          "b4": "Vérifie toujours le token (mint) avant de confirmer.",
+          "ctaLabel": "Ouvrir Jupiter (site)"
+        },
+        "lp": {
+          "title": "Comprendre la liquidité (LP)",
+          "b1": "LP = tu déposes 2 tokens (ex: SOL + SHUI) dans une “pool”.",
+          "b2": "Tu reçois un token LP qui représente ta part.",
+          "b3": "Ajouter/Retirer LP = transaction Raydium (normal).",
+          "b4": "À connaître : l’impermanent loss (ça peut bouger).",
+          "warning": "LP n’est pas un “placement garanti”. Fais-le seulement si tu comprends le principe."
+        },
+        "dashboard": {
+          "title": "Dashboard & Quêtes (récompenses)",
+          "b1": "Les quêtes donnent des points off-chain (pour récompenser l’activité).",
+          "b2": "Certaines actions sont “claim” (pas forcément on-chain).",
+          "b3": "Le site protège les endpoints (session + allowlist)."
+        },
+        "next": {
+          "title": "Ce qui arrive ensuite (vision grand public)",
+          "b1": "Plus tard : échanges simplifiés (SOL/SHUI, USDC/SHUI, etc.) via pools plus liquides.",
+          "b2": "On ajoutera un parcours débutant plus guidé (étapes + images + mini-coach).",
+          "b3": "Objectif : rendre SHUI utilisable aussi par les néophytes."
+        }
+      },
+      "glossary": {
+        "wallet": {
+          "k": "Wallet",
+          "v": "Application qui garde tes clés et te permet de signer."
+        },
+        "seed": {
+          "k": "Seed phrase",
+          "v": "Phrase secrète de récupération. À ne jamais partager."
+        },
+        "mint": {
+          "k": "Mint",
+          "v": "Adresse du token (son identifiant sur Solana)."
+        },
+        "swap": {
+          "k": "Swap",
+          "v": "Échange d’un token contre un autre (transaction)."
+        },
+        "lp": {
+          "k": "LP / Pool",
+          "v": "Réserve de 2 tokens permettant les échanges. Ajouter LP = déposer les 2."
+        },
+        "tx": {
+          "k": "Transaction",
+          "v": "Action on-chain signée (envoi, swap, LP, etc.)."
+        },
+        "msgsig": {
+          "k": "Signature message",
+          "v": "Preuve d’identité sans transaction."
+        }
+      }
+    }
+  },
+  "quests": {
+    "panelTitle": "Quêtes & Rewards",
+    "panelSubtitle": "Points off-chain (sans transaction). Bonus on-chain (holder/LP) : pondérés + plafonnés.",
+    "period": "Période",
+    "refresh": "Rafraîchir",
+    "pointsTotal": "Points total",
+    "pointsActivity": "Activité",
+    "pointsOnchain": "On-chain",
+    "pointsTotalShort": "Total",
+    "pointsSuffix": "pts",
+    "verify": "vérif",
+    "claim": "Valider",
+    "claiming": "Validation…",
+    "claimed": "Validé",
+    "empty": "Aucune quête disponible.",
+    "securityNote": "Sécurité : endpoints protégés par session + allowlist “quest-claim” + rate-limit.",
+    "pointsPerShui": "/ SHUI",
+    "pointsPerLp": "/ LP",
+    "items": {
+      "join-telegram": {
+        "title": "Rejoindre le Telegram SHUI",
+        "description": "Rejoins le groupe officiel Telegram SHUI (preuve manuelle)."
+      },
+      "follow-x": {
+        "title": "Suivre SHUI sur X",
+        "description": "Suis le compte officiel SHUI sur X (preuve sociale)."
+      },
+      "follow-instagram": {
+        "title": "Suivre SHUI sur Instagram",
+        "description": "Suis le compte officiel SHUI sur Instagram (preuve sociale)."
+      },
+      "read-safety": {
+        "title": "Lire les règles de sécurité",
+        "description": "Comprendre la règle clé : connexion = signature message, pas de transaction."
+      },
+      "daily-checkin": {
+        "title": "Check-in quotidien",
+        "description": "Valide ta présence aujourd’hui (1 fois par jour)."
+      },
+      "daily-share": {
+        "title": "Partager SHUI (quotidien)",
+        "description": "Partage un post SHUI aujourd’hui (1 fois par jour)."
+      },
+      "hold-shui": {
+        "title": "Bonus Holder SHUI",
+        "description": "Bonus on-chain : points selon ton montant de SHUI détenu."
+      },
+      "lp-raydium": {
+        "title": "Bonus LP Raydium",
+        "description": "Bonus on-chain : points selon tes LP SHUI/SOL (Raydium)."
+      }
+    },
+    "telegram": {
+      "open": "Ouvrir Telegram",
+      "verify": "Vérifier",
+      "verifying": "Vérification…",
+      "help": "Étapes : ouvrir le bot Telegram → appuyer Start → revenir ici et cliquer Vérifier."
+    },
+    "x": {
+      "open": "Connecter X",
+      "verify": "Vérifier",
+      "verifying": "Vérification…"
+    }
+  }
+}

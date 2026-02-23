@@ -1,15 +1,19 @@
 import React, { useEffect, useMemo } from "react";
-import { GUIDE_STEPS, GLOSSARY } from "../lib/beginner/guideSteps";
+import { buildGuideSteps, buildGlossary } from "../lib/beginner/guideSteps";
 import { useBeginnerMode } from "../contexts/BeginnerMode";
+import { useTranslation } from "next-i18next";
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
 export default function BeginnerGuideModal() {
+  const { t } = useTranslation("common");
   const { isBeginner, guideOpen, setGuideOpen, stepIndex, nextStep, prevStep, resetGuide } = useBeginnerMode();
 
-  const steps = GUIDE_STEPS;
+  const steps = useMemo(() => buildGuideSteps(t), [t]);
+  const glossary = useMemo(() => buildGlossary(t), [t]);
+
   const idx = clamp(stepIndex, 0, steps.length - 1);
   const step = steps[idx];
 
@@ -18,8 +22,8 @@ export default function BeginnerGuideModal() {
 
   const title = useMemo(() => {
     const n = idx + 1;
-    return `Guide Débutant • Étape ${n}/${steps.length}`;
-  }, [idx, steps.length]);
+    return t("beginner.guide.header", { n, total: steps.length });
+  }, [idx, steps.length, t]);
 
   const close = () => setGuideOpen(false);
 
@@ -60,7 +64,7 @@ export default function BeginnerGuideModal() {
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Guide Débutant"
+        aria-label={t("beginner.guide.ariaLabel")}
       >
         {/* Header sticky */}
         <div className="sticky top-0 z-[2] border-b border-white/10 bg-[#0b1220]/95 p-5 backdrop-blur">
@@ -70,7 +74,7 @@ export default function BeginnerGuideModal() {
               <div className="mt-1 text-lg font-semibold text-white">{step.title}</div>
               {step.pageHint ? (
                 <div className="mt-1 text-xs text-white/50">
-                  Page conseillée : <code className="text-white/70">{step.pageHint}</code>
+                  {t("beginner.guide.recommendedPage")} <code className="text-white/70">{step.pageHint}</code>
                 </div>
               ) : null}
             </div>
@@ -80,8 +84,8 @@ export default function BeginnerGuideModal() {
                 type="button"
                 onClick={close}
                 className="h-9 w-9 rounded-xl border border-white/15 bg-white/5 text-white/80 hover:bg-white/10"
-                aria-label="Fermer"
-                title="Fermer"
+                aria-label={t("beginner.guide.close")}
+                title={t("beginner.guide.close")}
               >
                 ✕
               </button>
@@ -91,7 +95,7 @@ export default function BeginnerGuideModal() {
                 onClick={close}
                 className="hidden sm:inline-flex rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10"
               >
-                Fermer
+                {t("beginner.guide.close")}
               </button>
             </div>
           </div>
@@ -125,17 +129,15 @@ export default function BeginnerGuideModal() {
           </div>
 
           <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
-            <div className="text-xs font-semibold text-white/80">Mini-glossaire</div>
+            <div className="text-xs font-semibold text-white/80">{t("beginner.guide.glossaryTitle")}</div>
             <div className="mt-2 grid gap-2 text-xs text-white/70">
-              {GLOSSARY.slice(0, 6).map((g) => (
+              {glossary.slice(0, 6).map((g) => (
                 <div key={g.k}>
                   <span className="text-white/85 font-semibold">{g.k}</span> — {g.v}
                 </div>
               ))}
             </div>
-            <div className="mt-2 text-[11px] text-white/45">
-              (Le glossaire complet s’étendra plus tard — là c’est la version “utile tout de suite”.)
-            </div>
+            <div className="mt-2 text-[11px] text-white/45">{t("beginner.guide.glossaryNote")}</div>
           </div>
 
           <div className="mt-4 flex items-center justify-between gap-2">
@@ -144,7 +146,7 @@ export default function BeginnerGuideModal() {
               onClick={resetGuide}
               className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10"
             >
-              Recommencer
+              {t("beginner.guide.restart")}
             </button>
 
             <div className="flex items-center gap-2">
@@ -154,7 +156,7 @@ export default function BeginnerGuideModal() {
                 disabled={!canPrev}
                 className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-40"
               >
-                ← Précédent
+                {t("beginner.guide.prev")}
               </button>
               <button
                 type="button"
@@ -162,18 +164,14 @@ export default function BeginnerGuideModal() {
                 disabled={!canNext}
                 className="rounded-xl bg-emerald-500/20 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40"
               >
-                Suivant →
+                {t("beginner.guide.next")}
               </button>
             </div>
           </div>
 
-          <div className="mt-3 text-[11px] text-white/45">
-            Astuce : ce guide explique “quoi faire” + “quoi signer”. Les swaps/LP demanderont toujours une transaction (normal).
-          </div>
+          <div className="mt-3 text-[11px] text-white/45">{t("beginner.guide.tip1")}</div>
 
-          <div className="mt-2 text-[11px] text-white/40">
-            Raccourci : appuie sur <span className="text-white/60">ESC</span> pour fermer.
-          </div>
+          <div className="mt-2 text-[11px] text-white/40">{t("beginner.guide.tip2")}</div>
 
           {/* padding bottom for mobile safe area */}
           <div className="h-2" />

@@ -1,0 +1,344 @@
+{
+  "nav": {
+    "connected": "已连接",
+    "notConnected": "未连接",
+    "community": "社区",
+    "dashboard": "仪表盘",
+    "backHome": "← 返回首页"
+  },
+  "home": {
+    "tagline": "Solana 社区代币 • 透明优先",
+    "pill": "社区代币 • 金库 • 治理",
+    "title": "一起建设。",
+    "subtitle": "奖励参与、资助倡议、透明治理。",
+    "intro": "SHUI 是 Solana 原生社区代币，用于奖励贡献者、通过共享金库资助项目，并以清晰规则和公开责任运行。",
+    "ctaToken": "代币概览",
+    "ctaCommunity": "社区",
+    "ctaDapp": "打开 dApp",
+    "liveHolderMapPowered": "Bubblemaps 实时持币地图（Top 80）。",
+    "liveHolderMapTitle": "实时持币地图",
+    "openFullView": "打开完整视图 →",
+    "dataRefreshNote": "数据更新取决于 Bubblemaps 刷新频率。",
+    "tokenSectionTitle": "代币概览",
+    "tokenSectionIntro": "SHUI 奖励有意义的参与，通过社区金库支持倡议，并追求专业级透明度。",
+    "tokenCard1Title": "参与奖励",
+    "tokenCard1Text": "为建设者、贡献者与社区行动提供激励。",
+    "tokenCard2Title": "社区金库",
+    "tokenCard2Text": "资助提案，决策与支出可追踪。",
+    "tokenCard3Title": "严谨结构",
+    "tokenCard3Text": "清晰规则、流程与公开文档。",
+    "communitySectionIntro": "社区信息区。成员区请使用 /community。",
+    "communityCtaAccess": "进入社区",
+    "communityCtaJoinTelegram": "加入 Telegram",
+    "noTxNoticeV1": "访问成员区（V1）不需要任何交易。",
+    "footer": "© {{year}} SHUI — 社区驱动，透明优先。"
+  },
+  "community": {
+    "pageTitle": "SHUI — 社区",
+    "topTagline": "成员区 • 无交易登录",
+    "dashboardMembers": "成员区",
+    "connected": "已连接",
+    "notConnected": "未连接",
+    "backHome": "← 返回首页",
+    "walletLabel": "钱包",
+    "toolsIntro": "这里是 SHUI 社区工具入口。",
+    "accessNoTxStrong": "登录 = 访问（无交易）。",
+    "buySellJupiter": "在 Jupiter 买 / 卖",
+    "swapSolToShui": "兑换 SOL → SHUI",
+    "viewOnSolscan": "在 Solscan 查看",
+    "mintLabel": "SHUI Mint",
+    "loginNoTx": "✅ 登录：不需要交易。",
+    "swapTxNormal": "⚠️ 兑换：进行 swap 时，Jupiter 会要求签名交易（正常）。",
+    "integratedSwapTitle": "内置兑换（Jupiter）",
+    "integratedSwapText": "直接在这里兑换（预设 SOL → SHUI）。没有你的操作不会执行。",
+    "nextStepsTitle": "下一步",
+    "nextSteps1": "• 任务 / 奖励（服务器 allowlist）",
+    "nextSteps2": "• 投票 / 提案",
+    "nextSteps3": "• 金库仪表盘",
+    "securityUltra": "ULTRA 安全：signMessage + nonce + 服务器 anti-replay 会话。",
+    "coach": {
+      "dashboardAccessTitle": "访问仪表盘",
+      "dashboardNeedWalletText": "访问仪表盘：\n1) 先连接钱包（顶部按钮）。\n2) 启用安全登录（V2）：签名消息（不是交易）。\n3) 然后点击 Dashboard。",
+      "dashboardNeedSessionText": "仪表盘仅对 Session OK 成员开放。\n请先启用安全登录（V2）：\n→ 签名可读消息（免费），不是交易。"
+    }
+  },
+  "dashboard": {
+    "pageTitle": "SHUI — 仪表盘",
+    "pageDescription": "SHUI 成员区 — 会话保护访问（V2）。",
+    "topTagline": "成员仪表盘（V2 保护）",
+    "walletShort": "钱包",
+    "backCommunity": "← 返回 /community",
+    "solscanWallet": "Solscan（钱包）",
+    "solscanShui": "Solscan（SHUI）",
+    "statusLabel": "状态",
+    "statusOk": "Session OK",
+    "title": "成员区",
+    "intro": "你已通过 V2 ULTRA 登录：可读消息签名 + nonce + 服务器会话（httpOnly cookie）。",
+    "beginnerDashboardTitle": "仪表盘（简单）",
+    "beginnerDashboardHint": "这里你已“登录”（Session OK）。\n会话来自消息签名（无交易）。\n会话过期：回到 /community 重新启用安全登录。",
+    "securityBoxTitle": "安全要点",
+    "security1": "✅ 登录 = 签名消息（无交易）。",
+    "security2": "✅ Anti-replay：唯一 nonce + 短过期。",
+    "security3": "✅ 会话：httpOnly cookie（JS 无法读取）。",
+    "security4": "⚠️ 兑换 = 交易（正常），你会在 Phantom 里看到交易。",
+    "sessionStartTitle": "会话（开始）",
+    "issuedAt": "Issued At (iat)",
+    "sessionExpTitle": "会话（过期）",
+    "expiresAuto": "自动过期",
+    "questsTitle": "任务（简单）",
+    "questsHint": "任务用于奖励活跃。\n按步骤完成并验证。\n部分任务可能需要后续链上动作（swap/hold），但不是登录。",
+    "rewardsTitle": "奖励（简单）",
+    "rewardsHint": "这里显示你的奖励/状态。\n可能存在 CSV 导出或 admin 操作：仅限 allowlist 钱包。\n非管理员只能查看。",
+    "memberIdentityTitle": "成员身份",
+    "fullWallet": "完整钱包地址",
+    "identityNote": "该钱包通过消息签名证明所有权。不会共享私钥。",
+    "quickHelpTitle": "快速帮助",
+    "help1": "• 若“Session OK”消失：回到 /community 重新连接 V2。",
+    "help2": "• 若 Phantom 显示登录交易：STOP。",
+    "help3": "• Swap 需要交易：正常。"
+  },
+  "beginner": {
+    "toggle": {
+      "title": "开启/关闭简化帮助（新手模式）。",
+      "label": "新手模式：",
+      "on": "ON",
+      "off": "OFF",
+      "quickTitle": "快速帮助",
+      "quickText": "我会用简单的话一步步引导你（钱包、买 SHUI、兑换、池子）。",
+      "openGuide": "打开指南",
+      "restart": "重新开始"
+    },
+    "coach": {
+      "label": "新手教练",
+      "close": "关闭",
+      "openGuide": "打开指南",
+      "tip": "提示：点击某个区域的“?”，解释会显示在这里。"
+    },
+    "progress": {
+      "title": "新手路线",
+      "subtitle": "4 个简单步骤 • 目标：避免错误",
+      "resetTitle": "重置",
+      "reset": "Reset",
+      "progressLabel": "进度",
+      "totalSteps": "4",
+      "ok": "OK",
+      "markOk": "标记 OK",
+      "guide": "指南",
+      "go": "前往",
+      "step1": {
+        "title": "1) 安装 Phantom",
+        "subtitle": "浏览器扩展。请离线保存 seed。",
+        "coachTitle": "安装 Phantom（安全提醒）",
+        "coachText": "永远不要分享 seed phrase。\n避免未知链接。\n准备好后：在网站上连接钱包（步骤 2）。"
+      },
+      "step2": {
+        "title": "2) 连接钱包",
+        "subtitle": "点击顶部的钱包按钮。连接钱包 ≠ 交易。"
+      },
+      "step3": {
+        "title": "3) 启用安全登录（V2）",
+        "subtitle": "签名消息（免费）→ Session OK → 进入仪表盘。",
+        "coachTitle": "安全登录（V2）",
+        "coachText": "你会签名一段可读消息（免费）。\n不需要交易。\n如果 Phantom 提示交易：STOP。"
+      },
+      "step4": {
+        "title": "4) 首次测试（小额）",
+        "subtitle": "兑换 SOL→SHUI 或 LP：正常交易。先小额测试。"
+      },
+      "reminder": "提醒：登录 = 消息签名 • 兑换/LP = 交易。"
+    },
+    "floating": {
+      "label": "新手模式",
+      "guide": "指南",
+      "step1": {
+        "title": "下一步：连接钱包",
+        "body": "点击右上角的钱包按钮（Phantom / Solflare）。\n连接钱包 ≠ 安全登录：这里只是显示你的地址。\n连接网站不需要任何交易。",
+        "ctaLabel": "打开指南"
+      },
+      "step2": {
+        "title": "下一步：启用安全登录（V2）",
+        "body": "钱包已连接。现在启用 V2。\n你将签名可读消息（signMessage）— 不是交易。\n若 Phantom 显示交易：STOP。",
+        "ctaLabel": "前往 V2 登录",
+        "coachTitle": "安全登录（V2）",
+        "coachText": "目标：创建服务器会话。\n你签名可读消息（免费）— 不需要交易。\n随后出现 “Session OK”，/dashboard 可访问。"
+      },
+      "step3": {
+        "title": "下一步：进入仪表盘",
+        "body": "Session OK ✅\n仪表盘包含任务/奖励。\n你可以查看积分与月度状态。",
+        "ctaLabel": "进入仪表盘"
+      },
+      "step4": {
+        "title": "下一步：完成一个任务",
+        "body": "先选择一个简单任务。\nV1：off-chain 领取（不需要交易）。\n以后：部分证明可能上链（swap/hold），但不是登录。",
+        "ctaLabel": "去任务"
+      }
+    },
+    "guide": {
+      "ariaLabel": "新手指南",
+      "header": "新手指南 • 第 {{n}}/{{total}} 步",
+      "recommendedPage": "推荐页面：",
+      "close": "关闭",
+      "glossaryTitle": "迷你术语表",
+      "glossaryNote": "（完整术语表会后续扩展 — 现在是“立刻有用”的版本。）",
+      "restart": "重新开始",
+      "prev": "← 上一步",
+      "next": "下一步 →",
+      "tip1": "提示：本指南解释“做什么”+“签什么”。兑换/LP 始终需要交易（正常）。",
+      "tip2": "快捷键：按 ESC 关闭。",
+      "steps": {
+        "safety": {
+          "title": "开始前（安全）",
+          "b1": "钱包就像保险箱。永远不要分享 seed phrase。",
+          "b2": "登录网站 = 签名消息（不是交易）。",
+          "b3": "兑换/买/卖 = 交易（正常：Phantom 会显示）。",
+          "b4": "如果你只是想登录却被要求交易：STOP。",
+          "warning": "黄金规则：任何正规网站都不会要求你的 seed phrase。"
+        },
+        "wallet": {
+          "title": "创建钱包（Phantom）",
+          "b1": "安装 Phantom（浏览器扩展）。",
+          "b2": "创建新钱包。",
+          "b3": "离线保存 seed（纸 / 保险箱）。",
+          "b4": "启用 PIN / 生物识别。",
+          "warning": "丢失 seed = 丢失资金访问权限。没有人能替你找回。"
+        },
+        "connect": {
+          "title": "连接网站",
+          "b1": "点击右上角的钱包按钮。",
+          "b2": "选择 Phantom，然后点 “Connect”。",
+          "b3": "地址会显示（格式 7x…9k）。"
+        },
+        "secureLogin": {
+          "title": "启用安全登录（V2）",
+          "b1": "点击“启用安全登录”。",
+          "b2": "签名可读消息（不是交易）。",
+          "b3": "网站创建服务器会话（httpOnly cookie）。",
+          "b4": "状态变为 “Session OK”。",
+          "warning": "如果 Phantom 这里显示交易：异常 → 不要确认。"
+        },
+        "buy": {
+          "title": "购买/兑换 SHUI（新手）",
+          "b1": "内置兑换（Jupiter）可将 SOL → SHUI。",
+          "b2": "兑换 = 交易：Phantom 会要求签名。",
+          "b3": "先小额测试（例如 0.01 SOL）。",
+          "b4": "确认前务必核对 token（mint）。",
+          "ctaLabel": "打开 Jupiter（网站）"
+        },
+        "lp": {
+          "title": "理解流动性（LP）",
+          "b1": "LP = 向池子存入两种代币（如 SOL + SHUI）。",
+          "b2": "你会收到 LP 代币代表你的份额。",
+          "b3": "添加/移除 LP = Raydium 交易（正常）。",
+          "b4": "了解无常损失（会波动）。",
+          "warning": "LP 不是“保证收益”。仅在理解原理后再操作。"
+        },
+        "dashboard": {
+          "title": "仪表盘与任务（奖励）",
+          "b1": "任务提供 off-chain 积分（奖励活跃）。",
+          "b2": "部分操作是“领取”（不一定上链）。",
+          "b3": "网站保护接口（会话 + allowlist）。"
+        },
+        "next": {
+          "title": "后续计划（大众版本）",
+          "b1": "未来：更简单的兑换（SOL/SHUI、USDC/SHUI 等）与更深流动性。",
+          "b2": "将加入更强引导的新手路径（步骤 + 图片 + 迷你教练）。",
+          "b3": "目标：让新用户也能轻松使用 SHUI。"
+        }
+      },
+      "glossary": {
+        "wallet": {
+          "k": "Wallet",
+          "v": "保存密钥并用于签名的应用。"
+        },
+        "seed": {
+          "k": "Seed phrase",
+          "v": "恢复用的秘密短语。绝不要分享。"
+        },
+        "mint": {
+          "k": "Mint",
+          "v": "代币地址（Solana 上的标识）。"
+        },
+        "swap": {
+          "k": "Swap",
+          "v": "用一种代币兑换另一种（交易）。"
+        },
+        "lp": {
+          "k": "LP / Pool",
+          "v": "两种代币的储备池，用于兑换。添加 LP = 同时存入两种代币。"
+        },
+        "tx": {
+          "k": "Transaction",
+          "v": "需要签名的链上操作（转账、兑换、LP 等）。"
+        },
+        "msgsig": {
+          "k": "Message signature",
+          "v": "不发生交易的身份证明。"
+        }
+      }
+    }
+  },
+  "quests": {
+    "panelTitle": "任务 & Rewards",
+    "panelSubtitle": "链下积分（无需交易）。链上加成（holder/LP）：加权并设上限。",
+    "period": "周期",
+    "refresh": "刷新",
+    "pointsTotal": "总积分",
+    "pointsActivity": "活动",
+    "pointsOnchain": "链上",
+    "pointsTotalShort": "合计",
+    "pointsSuffix": "pts",
+    "verify": "验证",
+    "claim": "确认",
+    "claiming": "确认中…",
+    "claimed": "已确认",
+    "empty": "暂无可用任务。",
+    "securityNote": "安全：接口受会话保护 + allowlist “quest-claim” + rate-limit。",
+    "pointsPerShui": "/ SHUI",
+    "pointsPerLp": "/ LP",
+    "items": {
+      "join-telegram": {
+        "title": "加入 SHUI Telegram",
+        "description": "加入 SHUI 官方 Telegram 群（人工验证）。"
+      },
+      "follow-x": {
+        "title": "在 X 关注 SHUI",
+        "description": "关注 SHUI 官方 X 账号（社交验证）。"
+      },
+      "follow-instagram": {
+        "title": "在 Instagram 关注 SHUI",
+        "description": "关注 SHUI 官方 Instagram 账号（社交验证）。"
+      },
+      "read-safety": {
+        "title": "阅读安全规则",
+        "description": "关键规则：登录 = 签名消息，不是交易。"
+      },
+      "daily-checkin": {
+        "title": "每日签到",
+        "description": "今天确认签到（每天 1 次）。"
+      },
+      "daily-share": {
+        "title": "分享 SHUI（每日）",
+        "description": "今天分享一条 SHUI 内容（每天 1 次）。"
+      },
+      "hold-shui": {
+        "title": "SHUI 持仓加成",
+        "description": "链上加成：积分根据你的 SHUI 持仓计算。"
+      },
+      "lp-raydium": {
+        "title": "Raydium LP 加成",
+        "description": "链上加成：积分根据你的 SHUI/SOL LP（Raydium）计算。"
+      }
+    },
+    "telegram": {
+      "open": "打开 Telegram",
+      "verify": "验证",
+      "verifying": "验证中…",
+      "help": "步骤：打开 Telegram 机器人 → 点击 Start → 回到这里点击 验证。"
+    },
+    "x": {
+      "open": "连接 X",
+      "verify": "验证",
+      "verifying": "验证中…"
+    }
+  }
+}

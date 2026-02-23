@@ -3,6 +3,7 @@ import { useRouter } from "next/router";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useBeginnerMode } from "../contexts/BeginnerMode";
 import { useSessionMe } from "../lib/security/useSessionMe";
+import { useTranslation } from "next-i18next";
 
 function StepRow({
   done,
@@ -38,6 +39,7 @@ function StepRow({
 }
 
 export default function BeginnerProgress() {
+  const { t } = useTranslation("common");
   const router = useRouter();
   const { connected, publicKey } = useWallet();
   const {
@@ -70,24 +72,26 @@ export default function BeginnerProgress() {
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-sm font-semibold text-white/90">Parcours débutant</div>
-          <div className="mt-1 text-xs text-white/60">4 étapes simples • objectif : éviter les erreurs</div>
+          <div className="text-sm font-semibold text-white/90">{t("beginner.progress.title")}</div>
+          <div className="mt-1 text-xs text-white/60">{t("beginner.progress.subtitle")}</div>
         </div>
 
         <button
           type="button"
           onClick={resetProgress}
           className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10"
-          title="Remettre à zéro"
+          title={t("beginner.progress.resetTitle")}
         >
-          Reset
+          {t("beginner.progress.reset")}
         </button>
       </div>
 
       <div className="mt-4">
         <div className="flex items-center justify-between text-[11px] text-white/55">
-          <span>Progress</span>
-          <span>{doneCount}/4</span>
+          <span>{t("beginner.progress.progressLabel")}</span>
+          <span>
+            {doneCount}/{t("beginner.progress.totalSteps")}
+          </span>
         </div>
         <div className="mt-2 h-2 w-full overflow-hidden rounded-full border border-white/10 bg-black/30">
           <div className="h-full bg-emerald-400/30" style={{ width: `${(doneCount / 4) * 100}%` }} />
@@ -97,18 +101,15 @@ export default function BeginnerProgress() {
       <div className="mt-4 space-y-3">
         <StepRow
           done={step1}
-          title="1) Installer Phantom"
-          subtitle="Extension navigateur. Sauvegarde ta seed hors-ligne."
+          title={t("beginner.progress.step1.title")}
+          subtitle={t("beginner.progress.step1.subtitle")}
           action={
             <button
               type="button"
               onClick={() => {
                 setDidInstallWallet(!didInstallWallet);
                 if (!didInstallWallet) {
-                  openCoach(
-                    "Installer Phantom (rappel sécurité)",
-                    "Ne partage jamais ta seed phrase.\nÉvite les liens inconnus.\nQuand tu es prêt : connecte le wallet sur le site (étape 2)."
-                  );
+                  openCoach(t("beginner.progress.step1.coachTitle"), t("beginner.progress.step1.coachText"));
                 }
               }}
               className={[
@@ -116,51 +117,48 @@ export default function BeginnerProgress() {
                 step1 ? "border-emerald-300/25 bg-emerald-400/10 text-emerald-200" : "border-white/15 bg-white/10 text-white/80 hover:bg-white/15",
               ].join(" ")}
             >
-              {step1 ? "OK" : "Marquer OK"}
+              {step1 ? t("beginner.progress.ok") : t("beginner.progress.markOk")}
             </button>
           }
         />
 
         <StepRow
           done={step2}
-          title="2) Connecter le wallet"
-          subtitle="Clique sur le bouton wallet (en haut). Connexion wallet ≠ transaction."
+          title={t("beginner.progress.step2.title")}
+          subtitle={t("beginner.progress.step2.subtitle")}
           action={
             <button
               type="button"
               onClick={() => setGuideOpen(true)}
               className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15"
             >
-              Guide
+              {t("beginner.progress.guide")}
             </button>
           }
         />
 
         <StepRow
           done={step3}
-          title="3) Activer la connexion sécurisée (V2)"
-          subtitle="Signature d’un message (gratuit) → Session OK → accès Dashboard."
+          title={t("beginner.progress.step3.title")}
+          subtitle={t("beginner.progress.step3.subtitle")}
           action={
             <button
               type="button"
               onClick={() => {
                 router.push("/community#secure-login");
-                openCoach(
-                  "Connexion sécurisée (V2)",
-                  "Tu signes un message lisible (gratuit).\nAucune transaction.\nSi Phantom te propose une transaction ici : STOP."
-                );
+                openCoach(t("beginner.progress.step3.coachTitle"), t("beginner.progress.step3.coachText"));
               }}
               className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15"
             >
-              Aller
+              {t("beginner.progress.go")}
             </button>
           }
         />
 
         <StepRow
           done={step4}
-          title="4) Premier test (petit montant)"
-          subtitle="Swap SOL→SHUI ou LP : transaction normale. Commence petit."
+          title={t("beginner.progress.step4.title")}
+          subtitle={t("beginner.progress.step4.subtitle")}
           action={
             <button
               type="button"
@@ -170,14 +168,14 @@ export default function BeginnerProgress() {
                 step4 ? "border-emerald-300/25 bg-emerald-400/10 text-emerald-200" : "border-white/15 bg-white/10 text-white/80 hover:bg-white/15",
               ].join(" ")}
             >
-              {step4 ? "OK" : "Marquer OK"}
+              {step4 ? t("beginner.progress.ok") : t("beginner.progress.markOk")}
             </button>
           }
         />
       </div>
 
       <div className="mt-4 text-[11px] text-white/50">
-        Rappel : <span className="text-white/70">login = message signé</span> • <span className="text-white/70">swap/LP = transaction</span>.
+        {t("beginner.progress.reminder")}
       </div>
     </div>
   );

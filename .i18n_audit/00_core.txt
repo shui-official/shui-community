@@ -1,0 +1,173 @@
+=== DATE ===
+Lun 23 fév 2026 19:02:16 CET
+
+=== NODE / NPM ===
+v20.20.0
+10.8.2
+
+=== NEXT CONFIG (i18n + headers) ===
+/** @type {import('next').NextConfig} */
+
+function buildCsp() {
+  const isDev = process.env.NODE_ENV !== "production";
+
+  // Dev: Next HMR utilise souvent eval/WS -> on autorise en dev uniquement
+  const scriptSrc = [
+    "'self'",
+    "'unsafe-inline'",
+    ...(isDev ? ["'unsafe-eval'"] : []),
+    "https://plugin.jup.ag",
+  ];
+
+  const connectSrc = [
+    "'self'",
+    "https:",
+    "wss:",
+    ...(isDev ? ["ws://localhost:3000"] : []),
+  ];
+
+  const csp = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+
+    // Anti-iframe phishing (ultra important)
+    "frame-ancestors 'none'",
+
+    `script-src ${scriptSrc.join(" ")}`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    `connect-src ${connectSrc.join(" ")}`,
+
+    // Embeds autorisés
+    "frame-src 'self' https://v2.bubblemaps.io https://plugin.jup.ag https://jup.ag",
+
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+  ];
+
+  return csp.join("; ");
+}
+
+const securityHeaders = [
+  { key: "Content-Security-Policy", value: buildCsp() },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+
+  // En prod HTTPS: utile. En local HTTP: ignoré.
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
+];
+
+const nextConfig = {
+  reactStrictMode: true,
+  swcMinify: true,
+  poweredByHeader: false,
+
+  i18n: require("./next-i18next.config").i18n,
+
+  async headers() {
+    return [
+      // ✅ Match explicite de la home
+      {
+        source: "/",
+        headers: securityHeaders,
+      },
+      // ✅ Match universel Next.js (pages + api + assets)
+      {
+        source: "/:path*",
+        headers: securityHeaders,
+      },
+    ];
+  },
+};
+
+module.exports = nextConfig;
+
+=== next-i18next.config.js ===
+/** @type {import('next-i18next').UserConfig} */
+module.exports = {
+  i18n: {
+    defaultLocale: "fr",
+    locales: ["fr", "en", "es", "it", "de", "ru", "zh"],
+  },
+  reloadOnPrerender: process.env.NODE_ENV !== "production",
+};
+
+=== _app.tsx ===
+import "@solana/wallet-adapter-react-ui/styles.css";
+import type { AppProps } from "next/app";
+import Head from "next/head";
+
+import dynamic from "next/dynamic";
+import { ConnectionProvider } from "@solana/wallet-adapter-react";
+
+import "tailwindcss/tailwind.css";
+import "../styles/globals.css";
+import "../styles/App.css";
+
+import { BeginnerModeProvider } from "../contexts/BeginnerMode";
+import BeginnerModeToggle from "../components/BeginnerModeToggle";
+import BeginnerCoachPanel from "../components/BeginnerCoachPanel";
+import BeginnerNextStepFloating from "../components/BeginnerNextStepFloating";
+import WalletSessionBridge from "../components/WalletSessionBridge";
+
+import { appWithTranslation } from "next-i18next";
+
+const endpoint = "https://ssc-dao.genesysgo.net";
+
+const WalletProvider = dynamic(() => import("../contexts/ClientWalletProvider"), { ssr: false });
+
+function MyApp({ Component, pageProps }: AppProps) {
+  return (
+    <>
+      <Head>
+        <title>SHUI (水)</title>
+        <meta name="theme-color" content="#0b1220" />
+        <link rel="icon" type="image/png" href="/shui-token.png" />
+        <link rel="apple-touch-icon" href="/shui-token.png" />
+      </Head>
+
+      <BeginnerModeProvider>
+        <ConnectionProvider endpoint={endpoint}>
+          <WalletProvider>
+            {/* ✅ Tout ce qui utilise useWallet() doit être ici */}
+            <WalletSessionBridge />
+
+            <BeginnerModeToggle />
+            <BeginnerCoachPanel />
+            <BeginnerNextStepFloating />
+
+            <Component {...pageProps} />
+          </WalletProvider>
+        </ConnectionProvider>
+      </BeginnerModeProvider>
+    </>
+  );
+}
+
+export default appWithTranslation(MyApp);
+
+=== _document.tsx ===
+import Document, { Html, Head, Main, NextScript } from "next/document";
+
+export default class MyDocument extends Document {
+  render() {
+    return (
+      <Html lang="fr">
+        <Head>
+          {/* Favicon */}
+          <link rel="icon" href="/favicon.ico" />
+          {/* Optionnel: PNG fallback si tu préfères */}
+          {/* <link rel="icon" type="image/png" href="/shui-token.png" /> */}
+        </Head>
+        <body>
+          <Main />
+          <NextScript />
+        </body>
+      </Html>
+    );
+  }
+}

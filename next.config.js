@@ -42,25 +42,35 @@ function buildCsp() {
   return csp.join("; ");
 }
 
+const securityHeaders = [
+  { key: "Content-Security-Policy", value: buildCsp() },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+
+  // En prod HTTPS: utile. En local HTTP: ignoré.
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
+];
+
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
   poweredByHeader: false,
 
+  i18n: require("./next-i18next.config").i18n,
+
   async headers() {
     return [
+      // ✅ Match explicite de la home
       {
-        source: "/(.*)",
-        headers: [
-          { key: "Content-Security-Policy", value: buildCsp() },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-
-          // En prod HTTPS: utile. En local HTTP: ignoré.
-          { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
-        ],
+        source: "/",
+        headers: securityHeaders,
+      },
+      // ✅ Match universel Next.js (pages + api + assets)
+      {
+        source: "/:path*",
+        headers: securityHeaders,
       },
     ];
   },

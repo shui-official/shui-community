@@ -1,0 +1,8 @@
+=== BAD NAV SUSPECTS ===
+--- <a href="/..."> ---
+
+--- href='/...' ---
+
+--- window.location / location.href ---
+
+--- router.push('/'...) without locale object ---

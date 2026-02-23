@@ -3,6 +3,7 @@ import { useRouter } from "next/router";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useBeginnerMode } from "../contexts/BeginnerMode";
 import { useSessionMe } from "../lib/security/useSessionMe";
+import { useTranslation } from "next-i18next";
 
 type Step = {
   title: string;
@@ -12,6 +13,7 @@ type Step = {
 };
 
 export default function BeginnerNextStepFloating() {
+  const { t } = useTranslation("common");
   const router = useRouter();
   const pathname = router.pathname;
 
@@ -30,12 +32,9 @@ export default function BeginnerNextStepFloating() {
     // 1) Wallet non connecté
     if (!connected || !wallet) {
       return {
-        title: "Étape suivante : connecter le wallet",
-        body:
-          "Clique sur le bouton wallet en haut à droite (Phantom / Solflare).\n" +
-          "Connexion wallet ≠ connexion sécurisée : ici tu fais juste apparaître ton adresse.\n" +
-          "Aucune transaction n’est nécessaire pour se connecter au site.",
-        ctaLabel: "Ouvrir le guide",
+        title: t("beginner.floating.step1.title"),
+        body: t("beginner.floating.step1.body"),
+        ctaLabel: t("beginner.floating.step1.ctaLabel"),
         cta: () => setGuideOpen(true),
       };
     }
@@ -43,12 +42,9 @@ export default function BeginnerNextStepFloating() {
     // 2) Wallet connecté mais session V2 non active
     if (!sessionOk) {
       return {
-        title: "Étape suivante : activer la connexion sécurisée (V2)",
-        body:
-          "Tu es connecté au wallet. Maintenant active V2.\n" +
-          "Tu vas signer un message lisible (signMessage) — PAS une transaction.\n" +
-          "Si Phantom te propose une transaction ici : STOP.",
-        ctaLabel: "Aller au login V2",
+        title: t("beginner.floating.step2.title"),
+        body: t("beginner.floating.step2.body"),
+        ctaLabel: t("beginner.floating.step2.ctaLabel"),
         cta: () => {
           if (pathname !== "/community") {
             router.push("/community#secure-login");
@@ -56,12 +52,7 @@ export default function BeginnerNextStepFloating() {
             const el = document.getElementById("secure-login");
             if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
           }
-          openCoach(
-            "Connexion sécurisée (V2)",
-            "Objectif : créer une session serveur.\n" +
-              "Tu signes un message lisible (gratuit) — pas de transaction.\n" +
-              "Ensuite : ‘Session OK’ apparaît, et /dashboard devient accessible."
-          );
+          openCoach(t("beginner.floating.step2.coachTitle"), t("beginner.floating.step2.coachText"));
         },
       };
     }
@@ -69,30 +60,24 @@ export default function BeginnerNextStepFloating() {
     // 3) Session OK → dashboard
     if (pathname !== "/dashboard") {
       return {
-        title: "Étape suivante : aller au dashboard",
-        body:
-          "Session OK ✅\n" +
-          "Le dashboard regroupe Quêtes / Rewards.\n" +
-          "Tu peux y suivre tes points et ton statut mensuel.",
-        ctaLabel: "Aller au dashboard",
+        title: t("beginner.floating.step3.title"),
+        body: t("beginner.floating.step3.body"),
+        ctaLabel: t("beginner.floating.step3.ctaLabel"),
         cta: () => router.push("/dashboard"),
       };
     }
 
     // 4) Dashboard → quêtes
     return {
-      title: "Étape suivante : faire une quête",
-      body:
-        "Choisis une quête simple pour commencer.\n" +
-        "V1 : claim off-chain (pas de transaction).\n" +
-        "Plus tard : certaines preuves pourront être on-chain (swap/hold), mais pas le login.",
-      ctaLabel: "Aller aux quêtes",
+      title: t("beginner.floating.step4.title"),
+      body: t("beginner.floating.step4.body"),
+      ctaLabel: t("beginner.floating.step4.ctaLabel"),
       cta: () => {
         const el = document.getElementById("quest-panel");
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
       },
     };
-  }, [isBeginner, connected, wallet, sessionOk, pathname, router, openCoach, setGuideOpen]);
+  }, [isBeginner, connected, wallet, sessionOk, pathname, router, openCoach, setGuideOpen, t]);
 
   // Anti-chevauchement (pro)
   if (!isBeginner || !step || guideOpen || coachOpen) return null;
@@ -100,7 +85,7 @@ export default function BeginnerNextStepFloating() {
   return (
     <div className="fixed bottom-[24px] left-5 z-[9998] w-[92vw] max-w-[360px]">
       <div className="rounded-2xl border border-white/10 bg-black/40 p-4 text-white shadow-[0_20px_60px_rgba(0,0,0,0.55)] backdrop-blur">
-        <div className="text-xs text-white/60">Mode Débutant</div>
+        <div className="text-xs text-white/60">{t("beginner.floating.label")}</div>
         <div className="mt-1 text-sm font-semibold text-white">{step.title}</div>
         <div className="mt-2 text-xs text-white/80 whitespace-pre-line">{step.body}</div>
 
@@ -118,7 +103,7 @@ export default function BeginnerNextStepFloating() {
             onClick={() => setGuideOpen(true)}
             className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10"
           >
-            Guide
+            {t("beginner.floating.guide")}
           </button>
         </div>
       </div>

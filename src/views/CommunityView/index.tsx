@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -28,6 +29,20 @@ export default function CommunityView() {
   const router = useRouter();
   const { publicKey, connected } = useWallet();
   const { isBeginner, openCoach, setGuideOpen } = useBeginnerMode();
+
+  const wallet = useMemo(() => publicKey?.toBase58() || "", [publicKey]);
+
+  // ✅ GUARD: /community réservé aux wallets connectés
+  // (petit délai pour laisser l'auto-connect se faire)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!connected && !publicKey) {
+        router.replace("/");
+      }
+    }, 350);
+
+    return () => clearTimeout(t);
+  }, [connected, publicKey, router]);
 
   async function onDashboardClick(e: any) {
     if (!isBeginner) return;
@@ -129,11 +144,11 @@ Active d’abord la connexion sécurisée (V2) :
           </Link>
 
           <div className="text-xs text-white/50 break-all">
-            {publicKey ? (
+            {wallet ? (
               <>
                 Wallet :{" "}
                 <span className="text-white/80">
-                  {publicKey.toBase58().slice(0, 4)}…{publicKey.toBase58().slice(-4)}
+                  {wallet.slice(0, 4)}…{wallet.slice(-4)}
                 </span>
               </>
             ) : null}

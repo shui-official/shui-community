@@ -1,45 +1,64 @@
-type WalletRewardState = {
-  claimedEpochs: Set<string>;
-  totalClaimedShui: number;
-  updatedAt: number;
-};
+type EpochClaims = Set<string>;
 
-const rewardsByWallet = new Map<string, WalletRewardState>();
+// In-memory store (MVP)
+// epochId -> set(wallets who claimed)
+const claimedByEpoch = new Map<string, EpochClaims>();
 
-function getOrCreate(wallet: string): WalletRewardState {
-  const existing = rewardsByWallet.get(wallet);
-  if (existing) return existing;
+// Optional: reward snapshots per wallet (placeholder for now)
+const rewardSnapshotByWallet = new Map<string, { totalClaimedShui: number }>();
 
-  const fresh: WalletRewardState = { claimedEpochs: new Set(), totalClaimedShui: 0, updatedAt: Date.now() };
-  rewardsByWallet.set(wallet, fresh);
-  return fresh;
+function normWallet(w: string) {
+  return (w || "").trim();
 }
 
-export function hasClaimedEpoch(wallet: string, epochId: string): boolean {
-  return getOrCreate(wallet).claimedEpochs.has(epochId);
+// --- New API (already used by claim.ts) ---
+export function hasClaimed(epochId: string, wallet: string): boolean {
+  const w = normWallet(wallet);
+  if (!epochId || !w) return false;
+  const set = claimedByEpoch.get(epochId);
+  return Boolean(set && set.has(w));
 }
 
-export function claimEpoch(wallet: string, epochId: string, amountShui: number) {
-  const s = getOrCreate(wallet);
+export function markClaimed(epochId: string, wallet: string): void {
+  const w = normWallet(wallet);
+  if (!epochId || !w) return;
 
-  if (s.claimedEpochs.has(epochId)) {
-    return { ok: true as const, alreadyClaimed: true as const, totalClaimedShui: s.totalClaimedShui };
+  let set = claimedByEpoch.get(epochId);
+  if (!set) {
+    set = new Set<string>();
+    claimedByEpoch.set(epochId, set);
   }
+  set.add(w);
 
-  s.claimedEpochs.add(epochId);
-  s.totalClaimedShui += Math.max(0, Math.floor(amountShui));
-  s.updatedAt = Date.now();
-  rewardsByWallet.set(wallet, s);
-
-  return { ok: true as const, alreadyClaimed: false as const, totalClaimedShui: s.totalClaimedShui };
+  // keep snapshot entry initialized
+  if (!rewardSnapshotByWallet.has(w)) rewardSnapshotByWallet.set(w, { totalClaimedShui: 0 });
 }
 
-export function getRewardSnapshot(wallet: string) {
-  const s = getOrCreate(wallet);
-  return {
-    wallet,
-    claimedEpochs: Array.from(s.claimedEpochs),
-    totalClaimedShui: s.totalClaimedShui,
-    updatedAt: s.updatedAt,
-  };
+// --- Compat aliases (older code expects these names) ---
+export function hasClaimedEpoch(wallet: string, epochId: string): boolean {
+  return hasClaimed(epochId, wallet);
+}
+
+export function setClaimed(epochId: string, wallet: string): void {
+  markClaimed(epochId, wallet);
+}
+
+export function isClaimed(epochId: string, wallet: string): boolean {
+  return hasClaimed(epochId, wallet);
+}
+
+// Rewards snapshot (historical)
+// For now, totalClaimedShui stays 0 until distribution is wired.
+export function getRewardSnapshot(wallet: string): { totalClaimedShui: number } {
+  const w = normWallet(wallet);
+  return rewardSnapshotByWallet.get(w) || { totalClaimedShui: 0 };
+}
+
+// Debug helpers (optional)
+export function getClaimedWallets(epochId: string): string[] {
+  return Array.from(claimedByEpoch.get(epochId) || []);
+}
+
+export function resetEpoch(epochId: string): void {
+  claimedByEpoch.delete(epochId);
 }

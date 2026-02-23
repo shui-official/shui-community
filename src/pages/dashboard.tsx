@@ -2,9 +2,13 @@ import type { GetServerSideProps } from "next";
 import { useEffect } from "react";
 import Head from "next/head";
 import Link from "next/link";
+import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/router";
+import { useTranslation } from "next-i18next";
+import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+
 import { getSession } from "../lib/security/session";
 import BeginnerHint from "../components/BeginnerHint";
 
@@ -20,17 +24,20 @@ type Props = {
 
 export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
   const req = ctx.req as any;
-
   const session = getSession(req);
+
+  // ✅ Pas de session => retour accueil
   if (!session) {
-    return { redirect: { destination: "/community", permanent: false } };
+    return { redirect: { destination: "/", permanent: false } };
   }
 
+  const locale = ctx.locale ?? "fr";
+  const i18nProps = await serverSideTranslations(locale, ["common"]);
+
   return {
-    props: { wallet: session.wallet, exp: session.exp, iat: session.iat },
+    props: { wallet: session.wallet, exp: session.exp, iat: session.iat, ...i18nProps } as any,
   };
 };
-
 
 async function logoutSession() {
   try {
@@ -49,18 +56,23 @@ function short(addr: string) {
 }
 
 export default function DashboardPage({ wallet, exp, iat }: Props) {
+  const { t } = useTranslation("common");
   const router = useRouter();
   const { connected, publicKey } = useWallet();
 
   // ✅ CLIENT GUARD: wallet doit être connecté ET matcher la session
   useEffect(() => {
     const w = publicKey?.toBase58() || "";
+
+    // Wallet déconnecté => logout cookie + retour accueil
     if (!connected || !w) {
-      logoutSession().finally(() => router.replace("/community?reason=wallet_required"));
+      logoutSession().finally(() => router.replace("/"));
       return;
     }
+
+    // Wallet mismatch => logout cookie + retour accueil
     if (wallet && w && wallet !== w) {
-      logoutSession().finally(() => router.replace("/community?reason=wallet_mismatch"));
+      logoutSession().finally(() => router.replace("/"));
     }
   }, [connected, publicKey, wallet, router]);
 
@@ -70,8 +82,8 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
       <Head>
-        <title>SHUI — Dashboard</title>
-        <meta name="description" content="Espace membres SHUI — accès protégé par session (V2)." />
+        <title>{t("dashboard.pageTitle")}</title>
+        <meta name="description" content={t("dashboard.pageDescription")} />
       </Head>
 
       {/* Background */}
@@ -84,18 +96,18 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
         {/* Top card */}
         <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <img src="/shui-token.png" alt="SHUI Token" className="h-full w-full object-cover" />
+            <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
+              <Image src="/shui-token.png" alt="SHUI Token" layout="fill" objectFit="cover" priority />
             </div>
 
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
-              <div className="text-xs text-white/60">Dashboard membres (protégé V2)</div>
+              <div className="text-xs text-white/60">{t("dashboard.topTagline")}</div>
             </div>
           </div>
 
           <div className="text-xs text-white/70">
-            Wallet : <span className="text-white/90 font-semibold">{short(wallet)}</span>
+            {t("dashboard.walletShort")} : <span className="text-white/90 font-semibold">{short(wallet)}</span>
           </div>
         </div>
 
@@ -104,7 +116,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
           <div className="flex flex-wrap gap-3">
             <Link href="/community" passHref>
               <a className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-                ← Retour à /community
+                {t("dashboard.backCommunity")}
               </a>
             </Link>
 
@@ -114,7 +126,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
               target="_blank"
               rel="noreferrer"
             >
-              Solscan (wallet)
+              {t("dashboard.solscanWallet")}
             </a>
 
             <a
@@ -123,12 +135,12 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
               target="_blank"
               rel="noreferrer"
             >
-              Solscan (SHUI)
+              {t("dashboard.solscanShui")}
             </a>
           </div>
 
           <div className="text-xs text-white/60">
-            Statut : <span className="text-emerald-300 font-semibold">Session OK</span>
+            {t("dashboard.statusLabel")} : <span className="text-emerald-300 font-semibold">{t("dashboard.statusOk")}</span>
           </div>
         </div>
 
@@ -136,37 +148,17 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
         <div className="mt-6 grid gap-6 lg:grid-cols-3">
           {/* Main */}
           <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur lg:col-span-2">
-            <h1 className="text-3xl font-bold">Espace membres</h1>
-            <p className="mt-2 text-white/70">
-              Tu es connecté via <strong className="text-white">V2 ULTRA</strong> : signature d’un message lisible + nonce +
-              session serveur (cookie httpOnly).
-            </p>
+            <h1 className="text-3xl font-bold">{t("dashboard.title")}</h1>
+            <p className="mt-2 text-white/70">{t("dashboard.intro")}</p>
 
-            {/* Security banner */}
-            <BeginnerHint
-              title="Dashboard (simple)"
-hintText={
-                "Ici tu es déjà “connecté” (Session OK).\n" +
-                "La session vient d’une signature de message (pas de transaction).\n" +
-                "Si la session expire : retourne sur /community et réactive la connexion sécurisée."
-              }
-            >
+            <BeginnerHint title={t("dashboard.beginnerDashboardTitle")} hintText={t("dashboard.beginnerDashboardHint")}>
               <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-5">
-                <div className="text-sm font-semibold">Sécurité — ce que tu dois retenir</div>
+                <div className="text-sm font-semibold">{t("dashboard.securityBoxTitle")}</div>
                 <ul className="mt-3 space-y-2 text-sm text-white/70">
-                  <li>
-                    ✅ <strong className="text-white">Connexion</strong> = signature d’un <strong className="text-white">message</strong> (pas de
-                    transaction).
-                  </li>
-                  <li>
-                    ✅ Anti-replay : <strong className="text-white">nonce unique</strong> + expiration courte.
-                  </li>
-                  <li>
-                    ✅ Session : cookie <strong className="text-white">httpOnly</strong> (non lisible par le JS).
-                  </li>
-                  <li>
-                    ⚠️ <strong className="text-white">Swap</strong> = transaction (normal). Tu vois toujours la transaction dans Phantom.
-                  </li>
+                  <li>{t("dashboard.security1")}</li>
+                  <li>{t("dashboard.security2")}</li>
+                  <li>{t("dashboard.security3")}</li>
+                  <li>{t("dashboard.security4")}</li>
                 </ul>
               </div>
             </BeginnerHint>
@@ -174,44 +166,30 @@ hintText={
             {/* Session info */}
             <div className="mt-5 grid gap-3 md:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-                <div className="text-sm font-semibold">Session (début)</div>
+                <div className="text-sm font-semibold">{t("dashboard.sessionStartTitle")}</div>
                 <div className="mt-2 text-sm text-white/70">{iatDate.toLocaleString()}</div>
-                <div className="mt-2 text-xs text-white/50">Issued At (iat)</div>
+                <div className="mt-2 text-xs text-white/50">{t("dashboard.issuedAt")}</div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-                <div className="text-sm font-semibold">Session (expiration)</div>
+                <div className="text-sm font-semibold">{t("dashboard.sessionExpTitle")}</div>
                 <div className="mt-2 text-sm text-white/70">{expDate.toLocaleString()}</div>
-                <div className="mt-2 text-xs text-white/50">Expire automatiquement</div>
+                <div className="mt-2 text-xs text-white/50">{t("dashboard.expiresAuto")}</div>
               </div>
             </div>
 
-            {/* ✅ Quêtes */}
+            {/* Quêtes */}
             <div className="mt-6" id="quest-panel">
-              <BeginnerHint
-                title="Quêtes (simple)"
-hintText={
-                  "Les quêtes servent à récompenser l’activité.\n" +
-                  "Tu suis les étapes proposées, puis tu valides.\n" +
-                  "Certaines quêtes peuvent demander une action on-chain plus tard (swap/hold), mais pas le login."
-                }
-              >
+              <BeginnerHint title={t("dashboard.questsTitle")} hintText={t("dashboard.questsHint")}>
                 <div>
                   <QuestPanel />
                 </div>
               </BeginnerHint>
             </div>
 
-            {/* ✅ Rewards mensuels */}
+            {/* Rewards */}
             <div className="mt-6" id="rewards-panel">
-              <BeginnerHint
-                title="Rewards (simple)"
-hintText={
-                  "Ici tu vois tes récompenses / ton statut.\n" +
-                  "Un export CSV ou des actions “admin” peuvent exister : elles sont réservées aux wallets allowlist.\n" +
-                  "Si tu n’es pas admin, tu peux juste consulter."
-                }
-              >
+              <BeginnerHint title={t("dashboard.rewardsTitle")} hintText={t("dashboard.rewardsHint")}>
                 <div>
                   <RewardsPanel />
                 </div>
@@ -222,29 +200,24 @@ hintText={
           {/* Side */}
           <aside className="space-y-6">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-              <div className="text-sm font-semibold text-white/90">Identité membre</div>
+              <div className="text-sm font-semibold text-white/90">{t("dashboard.memberIdentityTitle")}</div>
               <div className="mt-3 text-sm text-white/70">
-                Wallet complet :
+                {t("dashboard.fullWallet")} :
                 <div className="mt-2 break-all rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/80">{wallet}</div>
               </div>
 
-              <p className="mt-4 text-xs text-white/50">
-                Ce wallet a prouvé la possession via signature de message. Aucune clé privée n’est partagée.
-              </p>
+              <p className="mt-4 text-xs text-white/50">{t("dashboard.identityNote")}</p>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-              <div className="text-sm font-semibold text-white/90">Aide rapide</div>
+              <div className="text-sm font-semibold text-white/90">{t("dashboard.quickHelpTitle")}</div>
               <ul className="mt-3 space-y-2 text-sm text-white/70">
-                <li>• Si “Session OK” disparaît : retourne sur /community et reconnecte V2.</li>
-                <li>
-                  • Si Phantom affiche une transaction pour login : <strong className="text-white">STOP</strong>.
-                </li>
-                <li>• Les swaps demandent une transaction : c’est normal.</li>
+                <li>{t("dashboard.help1")}</li>
+                <li>{t("dashboard.help2")}</li>
+                <li>{t("dashboard.help3")}</li>
               </ul>
             </div>
 
-            {/* ✅ Raydium Pool panel */}
             <RaydiumPoolPanel />
           </aside>
         </div>

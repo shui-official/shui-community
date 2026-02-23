@@ -81,19 +81,30 @@ export function BeginnerModeProvider({ children }: { children: React.ReactNode }
     }
   }, []);
 
-  const setBeginner = (v: boolean) => {
-    setIsBeginner(v);
+  const persist = (key: string, value: string) => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(KEY_MODE, v ? "1" : "0");
-      if (v) {
-        window.localStorage.setItem(KEY_GUIDE, "1");
-        setGuideOpenState(true);
-      } else {
-        setCoachOpen(false);
-      }
+      window.localStorage.setItem(key, value);
     } catch {
       // noop
+    }
+  };
+
+  const setBeginner = (v: boolean) => {
+    setIsBeginner(v);
+    persist(KEY_MODE, v ? "1" : "0");
+
+    if (v) {
+      // ✅ IMPORTANT: quand on active, on remet un état "guidé" propre
+      setCoachOpen(false);
+      setCoachTitle("");
+      setCoachText("");
+
+      setStepIndex(0);
+      setGuideOpen(true);
+    } else {
+      // Désactivation : on ferme le coach (le guide peut rester fermé)
+      setCoachOpen(false);
     }
   };
 
@@ -101,23 +112,13 @@ export function BeginnerModeProvider({ children }: { children: React.ReactNode }
 
   const setGuideOpen = (v: boolean) => {
     setGuideOpenState(v);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(KEY_GUIDE, v ? "1" : "0");
-    } catch {
-      // noop
-    }
+    persist(KEY_GUIDE, v ? "1" : "0");
   };
 
   const setStepIndex = (n: number) => {
     const safe = Math.max(0, Math.min(9999, n));
     setStepIndexState(safe);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(KEY_STEP, String(safe));
-    } catch {
-      // noop
-    }
+    persist(KEY_STEP, String(safe));
   };
 
   const nextStep = () => setStepIndex(stepIndex + 1);
@@ -137,22 +138,12 @@ export function BeginnerModeProvider({ children }: { children: React.ReactNode }
 
   const setDidInstallWallet = (v: boolean) => {
     setDidInstallWalletState(v);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(KEY_INSTALL, v ? "1" : "0");
-    } catch {
-      // noop
-    }
+    persist(KEY_INSTALL, v ? "1" : "0");
   };
 
   const setDidFirstTest = (v: boolean) => {
     setDidFirstTestState(v);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(KEY_FIRST_TEST, v ? "1" : "0");
-    } catch {
-      // noop
-    }
+    persist(KEY_FIRST_TEST, v ? "1" : "0");
   };
 
   const resetProgress = () => {
@@ -183,16 +174,7 @@ export function BeginnerModeProvider({ children }: { children: React.ReactNode }
       setDidFirstTest,
       resetProgress,
     }),
-    [
-      isBeginner,
-      guideOpen,
-      stepIndex,
-      coachOpen,
-      coachTitle,
-      coachText,
-      didInstallWallet,
-      didFirstTest,
-    ]
+    [isBeginner, guideOpen, stepIndex, coachOpen, coachTitle, coachText, didInstallWallet, didFirstTest]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

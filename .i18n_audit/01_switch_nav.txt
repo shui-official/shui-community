@@ -1,0 +1,40 @@
+=== FILES: LanguageSwitch / Navbar / Layout ===
+total 240
+drwxr-xr-x  20 florian  staff    640 23 fév 17:30 .
+drwxr-xr-x  17 florian  staff    544 23 fév 07:55 ..
+-rw-r--r--   1 florian  staff   1991 23 fév 14:38 BeginnerCoachPanel.tsx
+-rw-r--r--   1 florian  staff   6937 23 fév 14:40 BeginnerGuideModal.tsx
+-rw-r--r--   1 florian  staff   1282 22 fév 14:09 BeginnerHint.tsx
+-rw-r--r--   1 florian  staff   2517 23 fév 14:38 BeginnerModeToggle.tsx
+-rw-r--r--   1 florian  staff   4011 23 fév 14:38 BeginnerNextStepFloating.tsx
+-rw-r--r--   1 florian  staff   6337 23 fév 14:37 BeginnerProgress.tsx
+-rw-r--r--   1 florian  staff   4153 22 fév 14:53 JupiterPlugin.tsx
+-rw-r--r--   1 florian  staff   1991 23 fév 15:02 LanguageSwitch.tsx
+-rw-r--r--   1 florian  staff    927 18 fév 15:38 Loader.tsx
+-rw-r--r--@  1 florian  staff   9441 23 fév 18:50 QuestPanel.tsx
+-rw-r--r--   1 florian  staff  19702 22 fév 14:39 RaydiumPoolPanel.tsx
+-rw-r--r--   1 florian  staff   1418 21 fév 08:15 RequireWallet.tsx
+-rw-r--r--   1 florian  staff   8689 21 fév 17:08 RewardsPanel.tsx
+-rw-r--r--@  1 florian  staff   5454 23 fév 11:03 SecureLogin.tsx
+-rw-r--r--   1 florian  staff   1136 18 fév 15:38 SelectAndConnectWalletButton.tsx
+-rw-r--r--   1 florian  staff   1644 18 fév 15:38 SolanaLogo.tsx
+-rw-r--r--   1 florian  staff   1078 22 fév 15:06 WalletSessionBridge.tsx
+-rw-r--r--   1 florian  staff    157 18 fév 15:38 index.tsx
+
+=== GREP: LanguageSwitch ===
+src/components/LanguageSwitch.tsx:20:export default function LanguageSwitch() {
+src/views/HomeView/index.tsx:8:import LanguageSwitch from "../../components/LanguageSwitch";
+src/views/HomeView/index.tsx:36:            <LanguageSwitch />
+
+=== GREP: router.push(.*locale ===
+src/components/LanguageSwitch.tsx:27:    await router.push(router.pathname, router.asPath, { locale });
+
+=== GREP: useTranslation( ===
+
+=== GREP: serverSideTranslations ===
+src/pages/index.tsx:3:import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+src/pages/index.tsx:20:      ...(await serverSideTranslations(locale ?? "fr", ["common"])),
+src/pages/dashboard.tsx:10:import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+src/pages/dashboard.tsx:35:  const i18nProps = await serverSideTranslations(locale, ["common"]);
+src/pages/community.tsx:3:import { serverSideTranslations } from "next-i18next/serverSideTranslations";
+src/pages/community.tsx:22:      ...(await serverSideTranslations(locale ?? "fr", ["common"]))

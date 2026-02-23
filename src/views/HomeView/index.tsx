@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
-import { PublicKey } from "@solana/web3.js";
-import { getShuiBalance } from "../../utils/solana";
 import type { FC } from "react";
 import Link from "next/link";
-
+import Image from "next/image";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useTranslation } from "next-i18next";
+
+import LanguageSwitch from "../../components/LanguageSwitch";
 
 const BUBBLEMAPS_URL =
   "https://v2.bubblemaps.io/map?address=CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C&chain=solana&limit=80";
@@ -18,6 +18,7 @@ const SOCIALS = {
 
 export const HomeView: FC = () => {
   const { publicKey } = useWallet();
+  const { t } = useTranslation("common");
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
@@ -28,37 +29,37 @@ export const HomeView: FC = () => {
       </div>
 
       {/* Top bar */}
-      <div className="relative mx-auto max-w-6xl px-6 pt-8">
-        <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <img
-                src="/shui-token.png"
-                alt="SHUI Token"
-                className="h-full w-full object-cover"
-              />
+      <div className="relative mx-auto max-w-6xl px-6 pt-10">
+        {/* ✅ Floating language pill (Home only) */}
+        <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2">
+          <div className="pointer-events-auto">
+            <LanguageSwitch />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+          {/* LEFT: logo */}
+          <div className="flex items-center gap-3 min-w-[220px]">
+            <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
+              <Image src="/shui-token.png" alt="SHUI Token" layout="fill" objectFit="cover" priority />
             </div>
 
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
-              <div className="text-xs text-white/60">
-                Solana Community Token • Transparency-first
-              </div>
+              <div className="text-xs text-white/60">{t("home.tagline")}</div>
             </div>
           </div>
 
-          {/* RIGHT SIDE (SOCIALS + STATUS + WALLET) */}
-          <div className="flex items-center gap-3">
-            {/* Wallet status */}
+          {/* RIGHT: status + socials + wallet */}
+          <div className="flex items-center gap-3 justify-end min-w-[260px]">
             <div className="hidden sm:block text-xs text-white/50">
               {publicKey ? (
-                <span className="text-emerald-300">Connected</span>
+                <span className="text-emerald-300">{t("nav.connected")}</span>
               ) : (
-                <span className="text-white/60">Not connected</span>
+                <span className="text-white/60">{t("nav.notConnected")}</span>
               )}
             </div>
 
-            {/* Socials: ALWAYS next to wallet */}
             <a
               href={SOCIALS.x}
               target="_blank"
@@ -103,65 +104,47 @@ export const HomeView: FC = () => {
           {/* Left */}
           <div className="pt-2">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
-              Community token • Treasury • Governance
+              {t("home.pill")}
             </div>
 
             <h1 className="mt-5 text-5xl font-semibold leading-[1.05] tracking-tight md:text-6xl">
-              Build together.
-              <span className="block text-white/60">
-                Reward participation, fund initiatives, and govern transparently.
-              </span>
+              {t("home.title")}
+              <span className="block text-white/60">{t("home.subtitle")}</span>
             </h1>
 
-            <p className="mt-6 max-w-xl text-base text-white/70 md:text-lg">
-              SHUI is a Solana-native community token designed to reward contributors,
-              finance projects via a shared treasury, and operate with clear rules and
-              public accountability.
-            </p>
+            <p className="mt-6 max-w-xl text-base text-white/70 md:text-lg">{t("home.intro")}</p>
 
             <div className="mt-8 flex flex-wrap gap-3">
-              <a
-                href="#token"
-                className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90"
-              >
-                Token Overview
+              <a href="#token" className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90">
+                {t("home.ctaToken")}
               </a>
 
-              {/* ✅ FIX: Community doit aller sur /community */}
               <Link href="/community" passHref>
                 <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
-                  Community
+                  {t("nav.community")}
                 </a>
               </Link>
 
               <Link href="/mint" passHref>
                 <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
-                  Open dApp
+                  {t("home.ctaDapp")}
                 </a>
               </Link>
             </div>
 
-            <div className="mt-5 text-xs text-white/50">
-              Live holder map powered by Bubblemaps (Top 80).
-            </div>
+            <div className="mt-5 text-xs text-white/50">{t("home.liveHolderMapPowered")}</div>
           </div>
 
           {/* Right: Bubblemaps Embed */}
           <div className="relative">
             <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-[0_30px_100px_rgba(0,0,0,0.45)]">
               <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
-                <div className="text-sm font-semibold">Live Holder Map</div>
-                <a
-                  href={BUBBLEMAPS_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-white/70 hover:text-white"
-                >
-                  Open full view →
+                <div className="text-sm font-semibold">{t("home.liveHolderMapTitle")}</div>
+                <a href={BUBBLEMAPS_URL} target="_blank" rel="noreferrer" className="text-xs text-white/70 hover:text-white">
+                  {t("home.openFullView")}
                 </a>
               </div>
 
-              {/* Responsive 16:10 */}
               <div className="relative w-full" style={{ paddingTop: "62.5%" }}>
                 <iframe
                   src={BUBBLEMAPS_URL}
@@ -174,61 +157,41 @@ export const HomeView: FC = () => {
               </div>
             </div>
 
-            <div className="mt-4 text-center text-xs text-white/40">
-              Data updates depend on Bubblemaps refresh cadence.
-            </div>
+            <div className="mt-4 text-center text-xs text-white/40">{t("home.dataRefreshNote")}</div>
           </div>
         </div>
 
         {/* Sections */}
-        <section
-          id="token"
-          className="mt-14 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
-          <h2 className="text-xl font-semibold">Token Overview</h2>
-          <p className="mt-3 text-white/70">
-            SHUI rewards meaningful participation, supports initiatives via a community
-            treasury, and aims for professional-grade transparency.
-          </p>
+        <section id="token" className="mt-14 rounded-3xl border border-white/10 bg-white/5 p-8">
+          <h2 className="text-xl font-semibold">{t("home.tokenSectionTitle")}</h2>
+          <p className="mt-3 text-white/70">{t("home.tokenSectionIntro")}</p>
 
           <div className="mt-5 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-              <div className="text-sm font-semibold">Participation Rewards</div>
-              <div className="mt-2 text-sm text-white/65">
-                Incentives for builders, contributors, and community actions.
-              </div>
+              <div className="text-sm font-semibold">{t("home.tokenCard1Title")}</div>
+              <div className="mt-2 text-sm text-white/65">{t("home.tokenCard1Text")}</div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-              <div className="text-sm font-semibold">Community Treasury</div>
-              <div className="mt-2 text-sm text-white/65">
-                Funding proposals with traceable decisions and spending.
-              </div>
+              <div className="text-sm font-semibold">{t("home.tokenCard2Title")}</div>
+              <div className="mt-2 text-sm text-white/65">{t("home.tokenCard2Text")}</div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
-              <div className="text-sm font-semibold">Serious Structure</div>
-              <div className="mt-2 text-sm text-white/65">
-                Clear rules, processes, and public documentation.
-              </div>
+              <div className="text-sm font-semibold">{t("home.tokenCard3Title")}</div>
+              <div className="mt-2 text-sm text-white/65">{t("home.tokenCard3Text")}</div>
             </div>
           </div>
         </section>
 
-        <section
-          id="community"
-          className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8"
-        >
-          <h2 className="text-xl font-semibold">Community</h2>
-          <p className="mt-3 text-white/70">
-            Section community (info). Pour l’espace membres, utilise la page{" "}
-            <span className="text-white font-semibold">/community</span>.
-          </p>
+        <section id="community" className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-8">
+          <h2 className="text-xl font-semibold">{t("home.ctaCommunity")}</h2>
+          <p className="mt-3 text-white/70">{t("home.communitySectionIntro")}</p>
 
           <div className="mt-6 flex flex-wrap gap-3">
             <Link href="/community" passHref>
               <a className="rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white hover:bg-purple-500">
-                Accéder à la communauté
+                {t("home.communityCtaAccess")}
               </a>
             </Link>
 
@@ -238,17 +201,15 @@ export const HomeView: FC = () => {
               rel="noreferrer"
               className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
             >
-              Rejoindre Telegram
+              {t("home.communityCtaJoinTelegram")}
             </a>
           </div>
 
-          <p className="mt-4 text-xs text-white/50">
-            Aucune transaction n’est demandée pour accéder aux membres (V1).
-          </p>
+          <p className="mt-4 text-xs text-white/50">{t("home.noTxNoticeV1")}</p>
         </section>
 
         <div className="mt-12 text-center text-xs text-white/40">
-          © {new Date().getFullYear()} SHUI — Community-driven, transparency-first.
+          {t("home.footer", { year: new Date().getFullYear() })}
         </div>
       </main>
     </div>

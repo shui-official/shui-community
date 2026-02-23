@@ -27,15 +27,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     const all = getAllWalletPoints();
     const eligibleTotal = all
-      .filter((x) => x.points >= REWARDS.minPoints)
-      .reduce((sum, x) => sum + x.points, 0);
+      .filter((x) => (x.points?.total ?? 0) >= REWARDS.minPoints)
+      .reduce((sum, x) => sum + (x.points?.total ?? 0), 0);
 
-    const eligible = me.points >= REWARDS.minPoints && eligibleTotal > 0;
-    const estimate = eligible ? (me.points / eligibleTotal) * REWARDS.poolShui : 0;
+    const myPoints = me.points?.total ?? 0;
+    const eligible = myPoints >= REWARDS.minPoints && eligibleTotal > 0;
+    const estimate = eligible ? (myPoints / eligibleTotal) * REWARDS.poolShui : 0;
 
     const rewardSnap = getRewardSnapshot(session.wallet);
 
-    // ✅ Admin flag
     const admins = getAdminWallets();
     const isAdmin = admins.has(session.wallet);
 
@@ -46,7 +46,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       epochEnd: end,
       poolShui: REWARDS.poolShui,
       minPoints: REWARDS.minPoints,
-      myPoints: me.points,
+      myPoints,
       eligibleTotalPoints: eligibleTotal,
       eligible,
       estimatedShui: Math.floor(estimate),

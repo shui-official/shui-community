@@ -3,28 +3,33 @@ import { getAllWalletPoints } from "../quests/store";
 
 export type Allocation = {
   wallet: string;
-  points: number;
+  points: number; // total points (activity + onchain)
   amountShui: number;
 };
 
 export function computeMonthlyAllocations(nowMs = Date.now()) {
   const { epochId, start, end } = getEpochWindow(nowMs);
 
+  // getAllWalletPoints() renvoie maintenant: { wallet, points: { activity, onchain, total } }
   const all = getAllWalletPoints();
+
   const eligible = all
-    .filter((x) => x.points >= REWARDS.minPoints)
+    .filter((x) => (x.points?.total ?? 0) >= REWARDS.minPoints)
     .filter((x) => x.wallet && x.wallet.length > 10);
 
-  const totalPoints = eligible.reduce((sum, x) => sum + x.points, 0);
+  const totalPoints = eligible.reduce((sum, x) => sum + (x.points?.total ?? 0), 0);
 
   const allocations: Allocation[] =
     totalPoints > 0
       ? eligible
-          .map((x) => ({
-            wallet: x.wallet,
-            points: x.points,
-            amountShui: Math.floor((x.points / totalPoints) * REWARDS.poolShui),
-          }))
+          .map((x) => {
+            const pts = x.points?.total ?? 0;
+            return {
+              wallet: x.wallet,
+              points: pts,
+              amountShui: Math.floor((pts / totalPoints) * REWARDS.poolShui),
+            };
+          })
           .sort((a, b) => b.amountShui - a.amountShui)
       : [];
 
