@@ -51,3 +51,13 @@ node_modules/
 
 # local backups
 _backup_*/
+
+# local backups / audits
+.backup_*/
+.backup_*.tsx
+.i18n_audit/
+audit_report_*.txt
+
+# misc local artifacts
+create-dapp-solana-nextjs@1.0.0
+next
