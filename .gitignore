@@ -61,3 +61,23 @@ audit_report_*.txt
 # misc local artifacts
 create-dapp-solana-nextjs@1.0.0
 next
+
+# --- local backups / audits ---
+.backup_*/
+.backup_*.tsx
+.i18n_audit/
+audit_report_*.txt
+
+# --- misc local artifacts ---
+create-dapp-solana-nextjs@1.0.0
+next
+
+# --- local backups / audits ---
+.backup_*/
+.backup_*.tsx
+.i18n_audit/
+audit_report_*.txt
+
+# --- misc local artifacts ---
+create-dapp-solana-nextjs@1.0.0
+next

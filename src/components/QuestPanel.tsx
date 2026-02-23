@@ -49,7 +49,7 @@ function safeText(v: any, fallback: string) {
   return fallback;
 }
 
-function pointsLabel(t: (k: string, d?: string) => any, p: QuestPoints): string {
+function pointsLabel(t: any, p: QuestPoints): string {
   if (typeof p === "number") return `+${p}`;
   if (!p || typeof p !== "object") return "+0";
 
