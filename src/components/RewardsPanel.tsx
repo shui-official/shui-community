@@ -75,7 +75,7 @@ export default function RewardsPanel() {
     setExportMsg("");
 
     if (!isAdmin) {
-      setExportMsg("Admin only — ton wallet n’est pas dans REWARDS_ADMIN_WALLETS.");
+      setExportMsg("Admin only — access denied.");
       return;
     }
 
@@ -215,7 +215,7 @@ export default function RewardsPanel() {
               ? "cursor-not-allowed border border-white/10 bg-white/5 text-white/40"
               : "border border-white/15 bg-white/10 hover:bg-white/15",
           ].join(" ")}
-          title={!isAdmin ? "Admin only (REWARDS_ADMIN_WALLETS)" : "Exporter la liste"}
+          title={!isAdmin ? "Admin only" : "Export list"}
         >
           {exportLoading ? "Export..." : "Export CSV (Admin)"}
         </button>

@@ -8,20 +8,26 @@ type MeRes =
   | { ok: true; wallet: string; exp: number }
   | { ok: false; error?: string };
 
+type CsrfRes =
+  | { ok: true; csrfToken: string }
+  | { ok: false; error?: string };
+
 type NonceRes =
   | { ok: true; wallet: string; nonce: string; issuedAt: number; expiresAt: number; message: string; nonceToken: string }
   | { ok: false; error: string };
 
 export default function SecureLogin() {
-  
   const { t } = useTranslation("common");
-const { publicKey, signMessage, connected } = useWallet();
+  const { publicKey, signMessage, connected } = useWallet();
 
   const wallet = useMemo(() => publicKey?.toBase58() || "", [publicKey]);
 
   const [me, setMe] = useState<MeRes>({ ok: false });
   const [busy, setBusy] = useState(false);
   const [lastError, setLastError] = useState<string>("");
+
+  // CSRF token (on le prend via JSON, pas via document.cookie)
+  const [csrf, setCsrf] = useState<string>("");
 
   const isAuthed = !!wallet && me.ok && me.wallet === wallet;
 
@@ -32,9 +38,26 @@ const { publicKey, signMessage, connected } = useWallet();
     return j;
   }, []);
 
+  const refreshCsrf = useCallback(async (): Promise<string> => {
+    const r = await fetch("/api/auth/csrf", {
+      method: "GET",
+      credentials: "include",
+    });
+
+    const j = (await r.json()) as CsrfRes;
+    if (!r.ok || !j.ok || !(j as any).csrfToken) {
+      throw new Error((j as any)?.error || `csrf_failed_${r.status}`);
+    }
+
+    const token = (j as any).csrfToken as string;
+    setCsrf(token);
+    return token;
+  }, []);
+
   useEffect(() => {
     refreshMe().catch(() => {});
-  }, [refreshMe]);
+    refreshCsrf().catch(() => {});
+  }, [refreshMe, refreshCsrf]);
 
   const doLogin = useCallback(async () => {
     setLastError("");
@@ -50,17 +73,23 @@ const { publicKey, signMessage, connected } = useWallet();
 
     setBusy(true);
     try {
-      // 1) Nonce + message canonique serveur + nonceToken HMAC (anti-tamper)
+      // 0) CSRF (cookie + token JSON) — obligatoire pour appeler /nonce + /verify
+      const csrfToken = csrf || (await refreshCsrf());
+
+      // 1) Nonce + message canonique serveur
       const nonceRes = await fetch("/api/auth/nonce", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
         credentials: "include",
         body: JSON.stringify({ wallet }),
       });
 
       const nonceJson = (await nonceRes.json()) as NonceRes;
-      if (!nonceJson.ok) {
-        throw new Error(((nonceJson as any).error) || "nonce_failed");
+      if (!nonceRes.ok || !nonceJson.ok) {
+        throw new Error((nonceJson as any).error || `nonce_failed_${nonceRes.status}`);
       }
 
       // 2) Signature du message EXACT serveur (connexion ≠ transaction)
@@ -68,17 +97,20 @@ const { publicKey, signMessage, connected } = useWallet();
       const sigBytes = await signMessage(encoded);
       const signature = bs58.encode(sigBytes);
 
-      // 3) Verify serveur (wallet + nonceToken + signature base58)
+      // 3) Verify serveur
       const verifyRes = await fetch("/api/auth/verify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
         credentials: "include",
         body: JSON.stringify({ wallet, nonceToken: nonceJson.nonceToken, signature }),
       });
 
       const verifyJson = await verifyRes.json();
-      if (!verifyJson?.ok) {
-        throw new Error(verifyJson?.error || "verify_failed");
+      if (!verifyRes.ok || !verifyJson?.ok) {
+        throw new Error(verifyJson?.error || `verify_failed_${verifyRes.status}`);
       }
 
       // 4) Re-check session
@@ -88,11 +120,12 @@ const { publicKey, signMessage, connected } = useWallet();
         return;
       }
     } catch (e: any) {
+      // "Failed to fetch" = erreur réseau (adblock, offline, CSP, etc.)
       setLastError(e?.message || "Erreur login");
     } finally {
       setBusy(false);
     }
-  }, [connected, wallet, signMessage, refreshMe]);
+  }, [connected, wallet, signMessage, refreshMe, refreshCsrf, csrf, t]);
 
   const doLogout = useCallback(async () => {
     setLastError("");
@@ -140,7 +173,8 @@ const { publicKey, signMessage, connected } = useWallet();
           )}
 
           <div className="text-xs text-white/60">
-            {t("dashboard.statusLabel")}:  {isAuthed ? <span className="text-emerald-300">Session OK</span> : <span>Non activée</span>}
+            {t("dashboard.statusLabel")}:{" "}
+            {isAuthed ? <span className="text-emerald-300">Session OK</span> : <span>Non activée</span>}
           </div>
         </div>
 
@@ -149,8 +183,14 @@ const { publicKey, signMessage, connected } = useWallet();
             <b>{t("secureLogin.walletConnected")} :</b> {connected ? t("secureLogin.yes") : t("secureLogin.no")}
           </div>
           <div>
-            <b>{t("secureLogin.signMessageAvailable")}:  </b> {signMessage ? t("secureLogin.yes") : t("secureLogin.no")}
+            <b>{t("secureLogin.signMessageAvailable")} :</b> {signMessage ? t("secureLogin.yes") : t("secureLogin.no")}
           </div>
+
+          {/* indicateur CSRF (utile en debug) */}
+          <div>
+            <b>CSRF :</b> {csrf ? "OK" : "…"}
+          </div>
+
           {lastError ? <div className="text-red-300">{lastError}</div> : null}
         </div>
       </div>

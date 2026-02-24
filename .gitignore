@@ -81,3 +81,12 @@ audit_report_*.txt
 # --- misc local artifacts ---
 create-dapp-solana-nextjs@1.0.0
 next
+
+# security hardening: avoid backup artifacts
+_i18n_lock_backup_*
+_i18n_lock2_backup_*
+_security_hardening_backup_*
+_backup_*
+backups/
+.i18n_audit/
+*.bak.*

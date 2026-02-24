@@ -54,14 +54,15 @@ export function setSessionCookie(res: NextApiResponse, wallet: string, maxAgeSec
   const isProd = process.env.NODE_ENV === "production";
 
   res.setHeader("Set-Cookie", [
-    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}; ${
-      isProd ? "Secure;" : ""
-    }`,
+    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}; ${isProd ? "Secure;" : ""}`,
   ]);
 }
 
 export function clearSessionCookie(res: NextApiResponse) {
-  res.setHeader("Set-Cookie", [`${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0;`]);
+  const isProd = process.env.NODE_ENV === "production";
+  res.setHeader("Set-Cookie", [
+    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; ${isProd ? "Secure;" : ""}`,
+  ]);
 }
 
 export function getSession(req: NextApiRequest): SessionPayload | null {
