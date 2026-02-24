@@ -340,5 +340,19 @@
       "verify": "Проверить",
       "verifying": "Проверка…"
     }
+  },
+  "secureLogin": {
+    "statusOff": "Не активировано",
+    "signMessageAvailable": "signMessage доступен",
+    "yes": "да",
+    "no": "нет",
+    "enableCta": "Включить безопасный вход (V2)",
+    "enabling": "Включение…",
+    "noSignMessage": "Ваш кошелёк не поддерживает signMessage здесь. Попробуйте Phantom (расширение) и переподключитесь.",
+    "title": "Безопасный вход (V2)",
+    "desc": "Подпись читаемого сообщения → серверная сессия (httpOnly cookie).",
+    "noTx": "Транзакция не требуется.",
+    "logout": "Выйти (сессия)",
+    "walletConnected": "Кошелёк подключён"
   }
 }

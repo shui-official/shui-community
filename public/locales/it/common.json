@@ -340,5 +340,19 @@
       "verify": "Verifica",
       "verifying": "Verifica…"
     }
+  },
+  "secureLogin": {
+    "statusOff": "Non attivato",
+    "signMessageAvailable": "signMessage disponibile",
+    "yes": "sì",
+    "no": "no",
+    "enableCta": "Attiva login sicuro (V2)",
+    "enabling": "Attivazione…",
+    "noSignMessage": "Il tuo wallet non supporta signMessage qui. Prova Phantom (estensione) e riconnetti.",
+    "title": "Login sicuro (V2)",
+    "desc": "Firma di un messaggio leggibile → sessione server (cookie httpOnly).",
+    "noTx": "Nessuna transazione richiesta.",
+    "logout": "Disconnetti (sessione)",
+    "walletConnected": "Wallet connesso"
   }
 }

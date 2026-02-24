@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "next-i18next";
 import { useWallet } from "@solana/wallet-adapter-react";
 import bs58 from "bs58";
 import BeginnerHint from "./BeginnerHint";
@@ -12,7 +13,9 @@ type NonceRes =
   | { ok: false; error: string };
 
 export default function SecureLogin() {
-  const { publicKey, signMessage, connected } = useWallet();
+  
+  const { t } = useTranslation("common");
+const { publicKey, signMessage, connected } = useWallet();
 
   const wallet = useMemo(() => publicKey?.toBase58() || "", [publicKey]);
 
@@ -41,7 +44,7 @@ export default function SecureLogin() {
       return;
     }
     if (!signMessage) {
-      setLastError("signMessage indisponible (wallet adapter).");
+      setLastError(t("secureLogin.noSignMessage"));
       return;
     }
 
@@ -110,12 +113,12 @@ export default function SecureLogin() {
       }
     >
       <div id="secure-login" className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-        <div className="text-sm font-semibold text-white/90">Connexion sécurisée (V2)</div>
+        <div className="text-sm font-semibold text-white/90">{t("secureLogin.title")}</div>
 
         <p className="mt-2 text-sm text-white/70">
-          Signature d’un message lisible → session serveur (cookie httpOnly).
+          {t("secureLogin.desc")}
           <br />
-          <span className="text-white font-semibold">Aucune transaction n’est demandée.</span>
+          <span className="text-white font-semibold">{t("secureLogin.noTx")}</span>
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -132,21 +135,21 @@ export default function SecureLogin() {
               onClick={doLogout}
               className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
             >
-              Se déconnecter (session)
+              {t("secureLogin.logout")}
             </button>
           )}
 
           <div className="text-xs text-white/60">
-            Statut : {isAuthed ? <span className="text-emerald-300">Session OK</span> : <span>Non activée</span>}
+            {t("dashboard.statusLabel")}:  {isAuthed ? <span className="text-emerald-300">Session OK</span> : <span>Non activée</span>}
           </div>
         </div>
 
         <div className="mt-3 text-xs text-white/50 space-y-1">
           <div>
-            <b>Wallet connecté :</b> {connected ? "oui" : "non"}
+            <b>{t("secureLogin.walletConnected")} :</b> {connected ? t("secureLogin.yes") : t("secureLogin.no")}
           </div>
           <div>
-            <b>signMessage dispo :</b> {signMessage ? "oui" : "non"}
+            <b>{t("secureLogin.signMessageAvailable")}:  </b> {signMessage ? t("secureLogin.yes") : t("secureLogin.no")}
           </div>
           {lastError ? <div className="text-red-300">{lastError}</div> : null}
         </div>

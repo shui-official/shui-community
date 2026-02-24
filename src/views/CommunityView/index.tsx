@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import { useTranslation } from "next-i18next";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
@@ -27,6 +28,7 @@ function jupiterSwapUrl() {
 
 export default function CommunityView() {
   const router = useRouter();
+  const { t } = useTranslation("common");
   const { publicKey, connected } = useWallet();
   const { isBeginner, openCoach, setGuideOpen } = useBeginnerMode();
 
@@ -35,13 +37,13 @@ export default function CommunityView() {
   // ✅ GUARD: /community réservé aux wallets connectés
   // (petit délai pour laisser l'auto-connect se faire)
   useEffect(() => {
-    const t = setTimeout(() => {
+    const timeout = setTimeout(() => {
       if (!connected && !publicKey) {
-        router.replace("/");
+        router.replace("/", undefined, { locale: router.locale });
       }
     }, 350);
 
-    return () => clearTimeout(t);
+    return () => clearTimeout(timeout);
   }, [connected, publicKey, router]);
 
   async function onDashboardClick(e: any) {
@@ -49,13 +51,7 @@ export default function CommunityView() {
     e.preventDefault();
 
     if (!connected) {
-      openCoach(
-        "Accès Dashboard",
-        `Pour accéder au dashboard :
-1) Connecte d’abord ton wallet (bouton en haut).
-2) Active la connexion sécurisée (V2) : tu signes un message (pas une transaction).
-3) Ensuite : clique sur Dashboard.`
-      );
+      openCoach(t("community.coach.dashboardAccessTitle"), t("community.coach.dashboardNeedWalletText"));
       setGuideOpen(true);
       return;
     }
@@ -64,22 +60,19 @@ export default function CommunityView() {
       const r = await fetch("/api/auth/me", { credentials: "include" });
       const j = await r.json();
       if (r.ok && j?.ok) {
-        router.push("/dashboard");
+        router.push("/dashboard", undefined, { locale: router.locale });
         return;
       }
     } catch {
       // ignore
     }
 
-    openCoach(
-      "Accès Dashboard",
-      `Le dashboard est réservé aux membres avec Session OK.
-Active d’abord la connexion sécurisée (V2) :
-→ tu signes un message lisible (gratuit), PAS une transaction.`
-    );
+    openCoach(t("community.coach.dashboardAccessTitle"), t("community.coach.dashboardNeedSessionText"));
     setGuideOpen(true);
-    router.push("/community#secure-login");
+    router.push("/community#secure-login", undefined, { locale: router.locale });
   }
+
+  const connectedLabel = publicKey ? t("community.connected") : t("community.notConnected");
 
   return (
     <div className="min-h-screen bg-[#0b1220] text-white">
@@ -96,13 +89,13 @@ Active d’abord la connexion sécurisée (V2) :
             </div>
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
-              <div className="text-xs text-white/60">Espace membres • Connexion sans transaction</div>
+              <div className="text-xs text-white/60">{t("community.topTagline")}</div>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="hidden sm:block text-xs text-white/60">
-              {publicKey ? <span className="text-emerald-300">Connected</span> : "Not connected"}
+              {publicKey ? <span className="text-emerald-300">{connectedLabel}</span> : connectedLabel}
             </div>
 
             <Link href="/dashboard" passHref>
@@ -110,7 +103,7 @@ Active d’abord la connexion sécurisée (V2) :
                 onClick={onDashboardClick}
                 className="hidden md:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:text-white"
               >
-                Dashboard
+                {t("nav.dashboard")}
               </a>
             </Link>
 
@@ -139,14 +132,14 @@ Active d’abord la connexion sécurisée (V2) :
         <div className="mt-4 flex items-center justify-between gap-3">
           <Link href="/" passHref>
             <a className="inline-flex rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-              ← Retour accueil
+              {t("nav.backHome")}
             </a>
           </Link>
 
           <div className="text-xs text-white/50 break-all">
             {wallet ? (
               <>
-                Wallet :{" "}
+                {t("community.walletLabel")}:{" "}
                 <span className="text-white/80">
                   {wallet.slice(0, 4)}…{wallet.slice(-4)}
                 </span>
@@ -159,12 +152,13 @@ Active d’abord la connexion sécurisée (V2) :
       <div className="relative mx-auto max-w-6xl px-6 py-10">
         <div className="grid gap-6 lg:grid-cols-2">
           <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-            <div className="text-sm text-white/60">Community</div>
-            <h1 className="mt-2 text-5xl font-extrabold text-white leading-tight">Espace membres</h1>
+            <div className="text-sm text-white/60">{t("nav.community")}</div>
+            <h1 className="mt-2 text-5xl font-extrabold text-white leading-tight">{t("community.dashboardMembers")}</h1>
+
             <p className="mt-3 text-white/70">
-              Ici tu trouveras les outils de la communauté SHUI.
+              {t("community.toolsIntro")}
               <br />
-              <strong className="text-white">Connexion = accès (sans transaction).</strong>
+              <strong className="text-white">{t("community.accessNoTxStrong")}</strong>
             </p>
 
             <div className="mt-6 flex flex-wrap gap-3">
@@ -174,7 +168,7 @@ Active d’abord la connexion sécurisée (V2) :
                 target="_blank"
                 rel="noreferrer"
               >
-                Buy / Sell sur Jupiter
+                {t("community.buySellJupiter")}
               </a>
 
               <a
@@ -183,7 +177,7 @@ Active d’abord la connexion sécurisée (V2) :
                 target="_blank"
                 rel="noreferrer"
               >
-                Swap SOL → SHUI
+                {t("community.swapSolToShui")}
               </a>
 
               <a
@@ -192,16 +186,18 @@ Active d’abord la connexion sécurisée (V2) :
                 target="_blank"
                 rel="noreferrer"
               >
-                Voir sur Solscan
+                {t("community.viewOnSolscan")}
               </a>
             </div>
 
-            <div className="mt-4 text-xs text-white/50 break-all">Mint SHUI : {SHUI_MINT}</div>
+            <div className="mt-4 text-xs text-white/50 break-all">
+              {t("community.mintLabel")}: {SHUI_MINT}
+            </div>
 
             <div className="mt-4 text-xs text-white/50">
-              ✅ Connexion : aucune transaction.
+              {t("community.loginNoTx")}
               <br />
-              ⚠️ Swap : si tu swaps, Jupiter te fera signer une transaction (normal).
+              {t("community.swapTxNormal")}
             </div>
           </section>
 
@@ -213,10 +209,8 @@ Active d’abord la connexion sécurisée (V2) :
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-              <div className="text-sm font-semibold text-white/90">Swap intégré (Jupiter)</div>
-              <p className="mt-2 text-sm text-white/70">
-                Swap directement ici (pré-config SOL → SHUI). Aucun swap n’est lancé sans ton action.
-              </p>
+              <div className="text-sm font-semibold text-white/90">{t("community.integratedSwapTitle")}</div>
+              <p className="mt-2 text-sm text-white/70">{t("community.integratedSwapText")}</p>
 
               <div className="mt-4">
                 <JupiterPlugin targetId="jupiter-plugin" initialInputMint={SOL_MINT} initialOutputMint={SHUI_MINT} />
@@ -226,15 +220,13 @@ Active d’abord la connexion sécurisée (V2) :
             <RaydiumPoolPanel />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-              <div className="text-sm font-semibold text-white/90">Prochaines étapes</div>
+              <div className="text-sm font-semibold text-white/90">{t("community.nextStepsTitle")}</div>
               <ul className="mt-3 space-y-2 text-white/70">
-                <li>• Quêtes / rewards (allowlist serveur)</li>
-                <li>• Votes / propositions</li>
-                <li>• Tableau de bord trésorerie</li>
+                <li>{t("community.nextSteps1")}</li>
+                <li>{t("community.nextSteps2")}</li>
+                <li>{t("community.nextSteps3")}</li>
               </ul>
-              <p className="mt-4 text-xs text-white/50">
-                Sécurité ULTRA : signMessage + nonce + session serveur anti-replay.
-              </p>
+              <p className="mt-4 text-xs text-white/50">{t("community.securityUltra")}</p>
             </div>
           </aside>
         </div>

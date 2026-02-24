@@ -340,5 +340,19 @@
       "verify": "验证",
       "verifying": "验证中…"
     }
+  },
+  "secureLogin": {
+    "statusOff": "未启用",
+    "signMessageAvailable": "signMessage 可用",
+    "yes": "是",
+    "no": "否",
+    "enableCta": "启用安全登录（V2）",
+    "enabling": "启用中…",
+    "noSignMessage": "你的钱包在这里不支持 signMessage。请使用 Phantom（浏览器扩展）并重新连接。",
+    "title": "安全登录（V2）",
+    "desc": "签名可读消息 → 服务器会话（httpOnly cookie）。",
+    "noTx": "不需要任何交易。",
+    "logout": "退出（会话）",
+    "walletConnected": "钱包已连接"
   }
 }

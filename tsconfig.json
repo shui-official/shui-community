@@ -27,6 +27,13 @@
     "**/*.tsx"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next",
+    "_i18n_lock_backup_*",
+    "_backup_*",
+    "backups",
+    ".i18n_audit",
+    "audit_report_*.txt",
+    "_i18n_lock2_backup_*"
   ]
 }
