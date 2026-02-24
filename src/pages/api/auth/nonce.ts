@@ -1,11 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import { PublicKey } from "@solana/web3.js";
+import { requireCsrf } from "../../../lib/security/csrf";
 
-// 5 minutes TTL
 const NONCE_TTL_MS = 5 * 60 * 1000;
 
-// rate-limit: 20 req / 60s per IP
 const RL_LIMIT = 20;
 const RL_WINDOW_SEC = 60;
 
@@ -18,16 +17,47 @@ function getClientIp(req: NextApiRequest): string {
   return req.socket.remoteAddress || "unknown";
 }
 
-function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return false;
+function getRequestOrigin(req: NextApiRequest): string | undefined {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && origin.trim()) return origin.trim();
+
+  const referer = req.headers.referer;
+  if (typeof referer === "string" && referer.trim()) {
+    try {
+      const u = new URL(referer);
+      return u.origin;
+    } catch {
+      // ignore
+    }
+  }
+
+  const host = req.headers.host;
+  if (typeof host === "string" && host.trim()) {
+    const xfProto = (req.headers["x-forwarded-proto"] as string | undefined) || "";
+    const proto = xfProto.toLowerCase() === "https" ? "https" : "http";
+    return `${proto}://${host.trim()}`;
+  }
+
+  return undefined;
+}
+
+function isAllowedOrigin(req: NextApiRequest): { ok: true; origin: string } | { ok: false } {
+  const o = getRequestOrigin(req);
+  if (!o) return { ok: false };
+
   const env = process.env.AUTH_ALLOWED_ORIGINS || "";
-  const list = env
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const defaults = ["http://localhost:3000", "http://localhost:3005"];
+  const list = env.split(",").map((s) => s.trim()).filter(Boolean);
+
+  const defaults = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3005",
+    "http://127.0.0.1:3005",
+  ];
+
   const allowed = (list.length ? list : defaults).map((s) => s.toLowerCase());
-  return allowed.includes(origin.toLowerCase());
+  if (!allowed.includes(o.toLowerCase())) return { ok: false };
+  return { ok: true, origin: o };
 }
 
 function parseWallet(input: unknown): { ok: true; wallet: string } | { ok: false; error: string } {
@@ -119,11 +149,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return;
   }
 
-  const origin = req.headers.origin;
-  if (!isAllowedOrigin(origin)) {
+  const o = isAllowedOrigin(req);
+  if (!o.ok) {
     res.status(403).json({ ok: false, error: "Bad Origin" });
     return;
   }
+
+  // ✅ CSRF obligatoire
+  if (!requireCsrf(req, res)) return;
 
   if (!rateLimit(req, res)) return;
 
@@ -141,11 +174,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   const nonce = makeHex(16);
-  const jti = makeHex(16); // unique id to enforce one-time usage
+  const jti = makeHex(16);
   const issuedAt = Date.now();
   const expiresAt = issuedAt + NONCE_TTL_MS;
 
-  const message = buildLoginMessage({ origin: origin!, wallet: parsed.wallet, nonce, issuedAt, expiresAt });
+  const message = buildLoginMessage({ origin: o.origin, wallet: parsed.wallet, nonce, issuedAt, expiresAt });
 
   const nonceToken = signToken(
     {
@@ -154,7 +187,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       jti,
       iat: issuedAt,
       exp: expiresAt,
-      origin,
+      origin: o.origin,
     },
     secret
   );

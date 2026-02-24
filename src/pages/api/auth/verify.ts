@@ -4,17 +4,49 @@ import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
 import { setUsedOnce } from "../../../lib/security/kvRest";
+import { requireCsrf } from "../../../lib/security/csrf";
 
-function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return false;
+function getRequestOrigin(req: NextApiRequest): string | undefined {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && origin.trim()) return origin.trim();
+
+  const referer = req.headers.referer;
+  if (typeof referer === "string" && referer.trim()) {
+    try {
+      const u = new URL(referer);
+      return u.origin;
+    } catch {
+      // ignore
+    }
+  }
+
+  const host = req.headers.host;
+  if (typeof host === "string" && host.trim()) {
+    const xfProto = (req.headers["x-forwarded-proto"] as string | undefined) || "";
+    const proto = xfProto.toLowerCase() === "https" ? "https" : "http";
+    return `${proto}://${host.trim()}`;
+  }
+
+  return undefined;
+}
+
+function isAllowedOrigin(req: NextApiRequest): { ok: true; origin: string } | { ok: false } {
+  const o = getRequestOrigin(req);
+  if (!o) return { ok: false };
+
   const env = process.env.AUTH_ALLOWED_ORIGINS || "";
-  const list = env
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const defaults = ["http://localhost:3000", "http://localhost:3005"];
+  const list = env.split(",").map((s) => s.trim()).filter(Boolean);
+
+  const defaults = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3005",
+    "http://127.0.0.1:3005",
+  ];
+
   const allowed = (list.length ? list : defaults).map((s) => s.toLowerCase());
-  return allowed.includes(origin.toLowerCase());
+  if (!allowed.includes(o.toLowerCase())) return { ok: false };
+  return { ok: true, origin: o };
 }
 
 function parseWallet(input: unknown): { ok: true; wallet: string } | { ok: false; error: string } {
@@ -112,11 +144,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  const origin = req.headers.origin;
-  if (!isAllowedOrigin(origin)) {
+  const o = isAllowedOrigin(req);
+  if (!o.ok) {
     res.status(403).json({ ok: false, error: "Bad Origin" });
     return;
   }
+
+  // ✅ CSRF obligatoire
+  if (!requireCsrf(req, res)) return;
 
   const walletRaw = (req.body && (req.body as any).wallet) ?? undefined;
   const sigRaw = (req.body && (req.body as any).signature) ?? undefined;
@@ -154,12 +189,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.status(401).json({ ok: false, error: "wallet_mismatch" });
     return;
   }
-  if (tokenPayload.origin !== origin) {
+
+  if (tokenPayload.origin !== o.origin) {
     res.status(401).json({ ok: false, error: "origin_mismatch" });
     return;
   }
 
-  // Strict anti-replay: mark jti as used once for 5 minutes.
   const usedKey = `shui:nonce_used:${tokenPayload.jti}`;
   const okSet = await setUsedOnce(usedKey, 5 * 60);
   if (!okSet) {
@@ -168,7 +203,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const message = buildLoginMessage({
-    origin: origin!,
+    origin: o.origin,
     wallet: parsedWallet.wallet,
     nonce: tokenPayload.nonce,
     issuedAt: tokenPayload.iat,
