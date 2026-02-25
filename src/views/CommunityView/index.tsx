@@ -6,24 +6,21 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
 import { useBeginnerMode } from "../../contexts/BeginnerMode";
-import JupiterPlugin from "../../components/JupiterPlugin";
 import SecureLogin from "../../components/SecureLogin";
 import RaydiumPoolPanel from "../../components/RaydiumPoolPanel";
 import BeginnerProgress from "../../components/BeginnerProgress";
+import BuyShuiPanel from "../../components/BuyShuiPanel";
+import WalletCompatibilityNotice from "../../components/WalletCompatibilityNotice";
 
 const SHUI_MINT = "CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C";
-const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 const SOCIALS = {
   tg: "http://t.me/Shui_Community",
   ig: "http://instagram.com/shui.officialtoken",
 };
 
-function jupiterTokenUrl() {
-  return `https://jup.ag/tokens/${SHUI_MINT}`;
-}
-function jupiterSwapUrl() {
-  return `https://jup.ag/swap/SOL-${SHUI_MINT}`;
+function solscanTokenUrl() {
+  return `https://solscan.io/token/${SHUI_MINT}`;
 }
 
 export default function CommunityView() {
@@ -34,8 +31,7 @@ export default function CommunityView() {
 
   const wallet = useMemo(() => publicKey?.toBase58() || "", [publicKey]);
 
-  // ✅ GUARD: /community réservé aux wallets connectés
-  // (petit délai pour laisser l'auto-connect se faire)
+  // ✅ GUARD: /community réservé aux wallets connectés (petit délai pour auto-connect)
   useEffect(() => {
     const timeout = setTimeout(() => {
       if (!connected && !publicKey) {
@@ -161,35 +157,6 @@ export default function CommunityView() {
               <strong className="text-white">{t("community.accessNoTxStrong")}</strong>
             </p>
 
-            <div className="mt-6 flex flex-wrap gap-3">
-              <a
-                className="rounded-xl bg-purple-600 px-5 py-3 font-semibold text-white hover:bg-purple-500"
-                href={jupiterTokenUrl()}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t("community.buySellJupiter")}
-              </a>
-
-              <a
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 font-semibold text-white hover:bg-white/10"
-                href={jupiterSwapUrl()}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t("community.swapSolToShui")}
-              </a>
-
-              <a
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 font-semibold text-white hover:bg-white/10"
-                href={`https://solscan.io/token/${SHUI_MINT}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t("community.viewOnSolscan")}
-              </a>
-            </div>
-
             <div className="mt-4 text-xs text-white/50 break-all">
               {t("community.mintLabel")}: {SHUI_MINT}
             </div>
@@ -199,23 +166,29 @@ export default function CommunityView() {
               <br />
               {t("community.swapTxNormal")}
             </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <a
+                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 font-semibold text-white hover:bg-white/10"
+                href={solscanTokenUrl()}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t("community.viewOnSolscan")}
+              </a>
+            </div>
           </section>
 
           <aside className="space-y-6">
             {isBeginner ? <BeginnerProgress /> : null}
 
+            <WalletCompatibilityNotice />
+
             <div id="secure-login">
               <SecureLogin />
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-              <div className="text-sm font-semibold text-white/90">{t("community.integratedSwapTitle")}</div>
-              <p className="mt-2 text-sm text-white/70">{t("community.integratedSwapText")}</p>
-
-              <div className="mt-4">
-                <JupiterPlugin targetId="jupiter-plugin" initialInputMint={SOL_MINT} initialOutputMint={SHUI_MINT} />
-              </div>
-            </div>
+            <BuyShuiPanel />
 
             <RaydiumPoolPanel />
 
