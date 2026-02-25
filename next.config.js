@@ -3,16 +3,17 @@
 function buildCsp() {
   const isDev = process.env.NODE_ENV !== "production";
 
-  // Dev: Next HMR utilise souvent eval/WS -> on autorise en dev uniquement
   const scriptSrc = [
     "'self'",
     "'unsafe-inline'",
     ...(isDev ? ["'unsafe-eval'"] : []),
 
-    // Jupiter plugin
+    // Jupiter plugin + assets
     "https://plugin.jup.ag",
+    "https://jup.ag",
+    "https://static.jup.ag",
 
-    // Vercel Live / Feedback (sinon erreur console en prod)
+    // Vercel Live / Feedback (évite erreurs console)
     "https://vercel.live",
   ];
 
@@ -27,8 +28,6 @@ function buildCsp() {
     "default-src 'self'",
     "base-uri 'self'",
     "object-src 'none'",
-
-    // Anti-iframe phishing (ultra important)
     "frame-ancestors 'none'",
 
     `script-src ${scriptSrc.join(" ")}`,
@@ -57,8 +56,6 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-
-  // En prod HTTPS: utile. En local HTTP: ignoré.
   { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
 ];
 
@@ -71,14 +68,8 @@ const nextConfig = {
 
   async headers() {
     return [
-      {
-        source: "/",
-        headers: securityHeaders,
-      },
-      {
-        source: "/:path*",
-        headers: securityHeaders,
-      },
+      { source: "/", headers: securityHeaders },
+      { source: "/:path*", headers: securityHeaders },
     ];
   },
 };

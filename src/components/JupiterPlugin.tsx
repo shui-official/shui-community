@@ -60,9 +60,7 @@ function ensureJupiterScriptLoaded(): Promise<void> {
 
     s.addEventListener(
       "error",
-      () => {
-        reject(new Error("Failed to load Jupiter script"));
-      },
+      () => reject(new Error("Failed to load Jupiter script")),
       { once: true }
     );
 
@@ -77,7 +75,11 @@ export default function JupiterPlugin({
 }: Props) {
   const wallet = useWallet();
 
-  // ✅ Passthrough minimal (évite les objets complexes/générés par hooks)
+  /**
+   * IMPORTANT:
+   * - Pas de .bind() : certains adapters utilisent leur propre contexte
+   * - On inclut `wallet` (adapter) car Jupiter peut s'appuyer dessus pour signer/envoyer
+   */
   const passthrough = useMemo(() => {
     const w = wallet as WalletContextState & any;
     return {
@@ -86,13 +88,17 @@ export default function JupiterPlugin({
       connected: Boolean(w.connected),
       connecting: Boolean(w.connecting),
       disconnecting: Boolean(w.disconnecting),
-      // methods (les plus importantes pour Jupiter)
-      connect: typeof w.connect === "function" ? w.connect.bind(w) : undefined,
-      disconnect: typeof w.disconnect === "function" ? w.disconnect.bind(w) : undefined,
-      sendTransaction: typeof w.sendTransaction === "function" ? w.sendTransaction.bind(w) : undefined,
-      signTransaction: typeof w.signTransaction === "function" ? w.signTransaction.bind(w) : undefined,
-      signAllTransactions: typeof w.signAllTransactions === "function" ? w.signAllTransactions.bind(w) : undefined,
-      signMessage: typeof w.signMessage === "function" ? w.signMessage.bind(w) : undefined,
+
+      // wallet (adapter) — crucial pour Jupiter
+      wallet: w.wallet || null,
+
+      // methods (sans bind)
+      connect: typeof w.connect === "function" ? w.connect : undefined,
+      disconnect: typeof w.disconnect === "function" ? w.disconnect : undefined,
+      sendTransaction: typeof w.sendTransaction === "function" ? w.sendTransaction : undefined,
+      signTransaction: typeof w.signTransaction === "function" ? w.signTransaction : undefined,
+      signAllTransactions: typeof w.signAllTransactions === "function" ? w.signAllTransactions : undefined,
+      signMessage: typeof w.signMessage === "function" ? w.signMessage : undefined,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -100,6 +106,9 @@ export default function JupiterPlugin({
     wallet.connected,
     wallet.connecting,
     wallet.disconnecting,
+    // functions:
+    wallet.connect,
+    wallet.disconnect,
     wallet.sendTransaction,
     // @ts-ignore
     wallet.signTransaction,
@@ -107,27 +116,26 @@ export default function JupiterPlugin({
     wallet.signAllTransactions,
     // @ts-ignore
     wallet.signMessage,
-    wallet.connect,
-    wallet.disconnect,
+    // @ts-ignore
+    wallet.wallet,
   ]);
 
-  const canSignTx = Boolean(passthrough.connected && passthrough.publicKey && passthrough.signTransaction);
+  const canSwap = Boolean(passthrough.connected && passthrough.publicKey && (passthrough.signTransaction || passthrough.sendTransaction));
 
   const initializedRef = useRef(false);
   const lastKeyRef = useRef<string>("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
     let cancelled = false;
 
     const walletKey = `${passthrough.connected ? "1" : "0"}:${passthrough.publicKey?.toBase58?.() || ""}:${
-      canSignTx ? "signTx" : "noSignTx"
-    }`;
+      passthrough.signTransaction ? "signTx" : "noSignTx"
+    }:${passthrough.sendTransaction ? "sendTx" : "noSendTx"}`;
 
     async function boot() {
       // Wallet pas prêt => on n'init pas Jupiter
-      if (!canSignTx) {
+      if (!canSwap) {
         if (initializedRef.current) {
           try {
             window.Jupiter?.close?.();
@@ -146,7 +154,7 @@ export default function JupiterPlugin({
       if (cancelled) return;
       if (!window.Jupiter || typeof window.Jupiter.init !== "function") return;
 
-      // Si wallet change => re-init (plus fiable que juste syncProps)
+      // wallet change => re-init (plus fiable que syncProps seul)
       if (initializedRef.current && walletKey !== lastKeyRef.current) {
         try {
           window.Jupiter?.close?.();
@@ -166,7 +174,6 @@ export default function JupiterPlugin({
           displayMode: "integrated",
           integratedTargetId: targetId,
 
-          // Wallet passthrough minimal + stable
           enableWalletPassthrough: true,
           passthroughWalletContextState: passthrough,
 
@@ -199,7 +206,7 @@ export default function JupiterPlugin({
     return () => {
       cancelled = true;
     };
-  }, [targetId, initialInputMint, initialOutputMint, passthrough, canSignTx]);
+  }, [targetId, initialInputMint, initialOutputMint, passthrough, canSwap]);
 
   return (
     <BeginnerHint
@@ -210,12 +217,10 @@ export default function JupiterPlugin({
         "Astuce : connecte Phantom/Solflare avant de swap."
       }
     >
-      {!canSignTx ? (
+      {!canSwap ? (
         <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
           Connecte un wallet <strong className="text-white">Solana</strong> (Phantom / Solflare) pour activer le swap intégré.
-          <div className="mt-2 text-xs text-white/50">
-            Login = message signé (gratuit). Swap = transaction (normal).
-          </div>
+          <div className="mt-2 text-xs text-white/50">Login = message signé (gratuit). Swap = transaction (normal).</div>
         </div>
       ) : (
         <div id={targetId} />
