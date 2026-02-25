@@ -9,7 +9,7 @@ import { useBeginnerMode } from "../../contexts/BeginnerMode";
 import SecureLogin from "../../components/SecureLogin";
 import RaydiumPoolPanel from "../../components/RaydiumPoolPanel";
 import BeginnerProgress from "../../components/BeginnerProgress";
-import BuyShuiPanel from "../../components/BuyShuiPanel";
+import SimpleShuiSwap from "../../components/SimpleShuiSwap";
 import WalletCompatibilityNotice from "../../components/WalletCompatibilityNotice";
 
 const SHUI_MINT = "CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C";
@@ -188,7 +188,7 @@ export default function CommunityView() {
               <SecureLogin />
             </div>
 
-            <BuyShuiPanel />
+            <SimpleShuiSwap />
 
             <RaydiumPoolPanel />
 
