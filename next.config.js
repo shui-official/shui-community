@@ -8,7 +8,12 @@ function buildCsp() {
     "'self'",
     "'unsafe-inline'",
     ...(isDev ? ["'unsafe-eval'"] : []),
+
+    // Jupiter plugin
     "https://plugin.jup.ag",
+
+    // Vercel Live / Feedback (sinon erreur console en prod)
+    "https://vercel.live",
   ];
 
   const connectSrc = [
@@ -66,12 +71,10 @@ const nextConfig = {
 
   async headers() {
     return [
-      // ✅ Match explicite de la home
       {
         source: "/",
         headers: securityHeaders,
       },
-      // ✅ Match universel Next.js (pages + api + assets)
       {
         source: "/:path*",
         headers: securityHeaders,

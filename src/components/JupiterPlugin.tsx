@@ -12,6 +12,7 @@ declare global {
     };
   }
 }
+
 type Props = {
   targetId?: string;
   initialInputMint?: string;
@@ -79,71 +80,73 @@ export default function JupiterPlugin({
   const wallet = useWallet();
 
   const initializedRef = useRef(false);
-  const initAttemptedRef = useRef(false);
+  const lastWalletKeyRef = useRef<string>("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     let cancelled = false;
 
-    async function init() {
-      if (initAttemptedRef.current) return;
-      initAttemptedRef.current = true;
+    async function bootOrSync() {
+      await ensureJupiterScriptLoaded();
+      if (cancelled) return;
 
-      try {
-        await ensureJupiterScriptLoaded();
-        if (cancelled) return;
+      if (!window.Jupiter || typeof window.Jupiter.init !== "function") return;
 
-        if (!window.Jupiter || typeof window.Jupiter.init !== "function") {
-          return;
-        }
+      // On construit une clé stable pour détecter un vrai changement wallet
+      const walletKey = `${wallet.connected ? "1" : "0"}:${wallet.publicKey?.toBase58?.() || ""}`;
 
-        if (initializedRef.current) {
+      // Déjà initialisé -> on sync à chaque changement important
+      if (initializedRef.current) {
+        if (walletKey !== lastWalletKeyRef.current) {
+          lastWalletKeyRef.current = walletKey;
           try {
-            window.Jupiter?.syncProps?.({ passthroughWalletContextState: wallet });
+            window.Jupiter?.syncProps?.({
+              passthroughWalletContextState: wallet,
+            });
           } catch {
             // noop
           }
-          return;
         }
-
-        initializedRef.current = true;
-
-        window.Jupiter.init({
-          displayMode: "integrated",
-          integratedTargetId: targetId,
-
-          enableWalletPassthrough: true,
-          passthroughWalletContextState: wallet,
-
-          formProps: {
-            ...(initialInputMint ? { initialInputMint } : {}),
-            ...(initialOutputMint ? { initialOutputMint } : {}),
-          },
-
-          containerClassName:
-            "w-full overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4",
-        });
-      } finally {
-        // Autorise une nouvelle tentative si init n'a pas réellement eu lieu
-        setTimeout(() => {
-          if (!cancelled && !initializedRef.current) initAttemptedRef.current = false;
-        }, 3000);
+        return;
       }
+
+      // Pas encore initialisé -> init une fois, mais avec le wallet courant
+      initializedRef.current = true;
+      lastWalletKeyRef.current = walletKey;
+
+      window.Jupiter.init({
+        displayMode: "integrated",
+        integratedTargetId: targetId,
+
+        // Wallet passthrough
+        enableWalletPassthrough: true,
+        passthroughWalletContextState: wallet,
+
+        formProps: {
+          ...(initialInputMint ? { initialInputMint } : {}),
+          ...(initialOutputMint ? { initialOutputMint } : {}),
+        },
+
+        containerClassName: "w-full overflow-hidden rounded-2xl border border-white/10 bg-white/5 backdrop-blur p-4",
+      });
     }
 
-    init();
+    bootOrSync().catch(() => {
+      // Si jamais le chargement échoue, on permet une future tentative
+      initializedRef.current = false;
+    });
 
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wallet, targetId, initialInputMint, initialOutputMint]);
+    // Important: on veut réagir aux changements wallet
+  }, [wallet.connected, wallet.publicKey, targetId, initialInputMint, initialOutputMint, wallet]);
 
   return (
     <BeginnerHint
       title="Swap (simple)"
-hintText={
+      hintText={
         "Ici tu échanges SOL → SHUI.\n" +
         "Swap = transaction (normal) : Phantom te demandera de confirmer.\n" +
         "1) Vérifie From = SOL.\n" +
