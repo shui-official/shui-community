@@ -125,7 +125,7 @@ export const HomeView: FC = () => {
                 </a>
               </Link>
 
-              <Link href="/mint" passHref>
+              <Link href="/download" passHref>
                 <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
                   {t("home.ctaDapp")}
                 </a>
