@@ -10,7 +10,7 @@
 # supported CodeQL languages.
 #
 name: "CodeQL"
-
+# trigger: 1772440306
 on:
   push:
     branches: [ main ]
