@@ -1,118 +1,106 @@
 import Head from "next/head";
 
 export default function PrivacyPage() {
-  const site = "https://shui-community.vercel.app";
-  const email = "shui.officialtoken@gmail.com";
+  const updated = "2026-03-02";
 
   return (
     <>
       <Head>
-        <title>SHUI — Privacy Policy</title>
-        <meta
-          name="description"
-          content="Privacy policy for the SHUI app and website."
-        />
+        <title>Privacy Policy — SHUI</title>
+        <meta name="description" content="SHUI privacy policy." />
+        <meta name="robots" content="index,follow" />
       </Head>
 
-      <main style={{ maxWidth: 920, margin: "0 auto", padding: "28px 16px", color: "white" }}>
-        <h1 style={{ fontSize: 28, fontWeight: 900, marginBottom: 8 }}>Privacy Policy</h1>
-        <p style={{ opacity: 0.85, marginBottom: 18 }}>
-          Last updated: {new Date().toISOString().slice(0, 10)}
-        </p>
+      <main className="min-h-screen bg-white text-gray-900">
+        <div className="mx-auto max-w-3xl px-4 py-10">
+          <h1 className="text-3xl font-bold tracking-tight">SHUI — Privacy Policy</h1>
+          <p className="mt-2 text-sm text-gray-600">Last updated: {updated}</p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>1) Overview</h2>
-          <p style={pStyle}>
-            SHUI (水) is a community project on Solana. This page explains what the SHUI app/website
-            does with data and how to stay safe.
-          </p>
-        </section>
+          <section className="mt-8 space-y-4">
+            <h2 className="text-xl font-semibold">FR — Politique de confidentialité</h2>
+            <p>
+              SHUI (« nous ») respecte votre vie privée. Cette application permet d’accéder à des informations et
+              fonctionnalités liées à l’écosystème SHUI et peut ouvrir des services tiers (ex : swap, explorateurs)
+              via des liens externes.
+            </p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>2) What we collect</h2>
-          <ul style={ulStyle}>
-            <li style={liStyle}>
-              <b>Local preferences</b> (example: selected language) stored on your device.
-            </li>
-            <li style={liStyle}>
-              If you enable member features later: a <b>session token</b> may be stored locally to keep you signed in.
-            </li>
-          </ul>
-          <p style={pStyle}>
-            We do <b>not</b> collect seed phrases or private keys. We will never ask for them.
-          </p>
-        </section>
+            <h3 className="text-lg font-semibold">Données collectées</h3>
+            <p>
+              Nous ne collectons pas d’informations personnelles directement dans l’application (nom, adresse, numéro
+              de téléphone) et nous ne demandons jamais de seed phrase ou de clé privée.
+            </p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>3) Wallet & external links (Phantom / Jupiter)</h2>
-          <p style={pStyle}>
-            The SHUI app can open external applications/websites (example: Phantom and Jupiter) for wallet
-            connection and swaps. These actions happen outside the SHUI app and are confirmed by you inside your wallet.
-          </p>
-          <p style={pStyle}>
-            <b>Connection ≠ transaction</b>: connecting a wallet should not require a transaction. If your wallet requests an unexpected
-            transaction, cancel and verify official links.
-          </p>
-        </section>
+            <h3 className="text-lg font-semibold">Portefeuille (wallet)</h3>
+            <p>
+              Si vous connectez un portefeuille Solana via une application de wallet (ex : Phantom), l’adresse publique
+              du wallet peut être affichée dans l’application pour fournir la fonctionnalité. Cette adresse n’est pas
+              utilisée pour vous identifier personnellement.
+            </p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>4) Data sharing</h2>
-          <p style={pStyle}>
-            We do not sell personal data. We do not share seed phrases or private keys (we never receive them).
-          </p>
-        </section>
+            <h3 className="text-lg font-semibold">Services tiers</h3>
+            <p>
+              Certaines fonctionnalités peuvent ouvrir des services externes (navigateur, swap, explorateurs). Ces
+              services appliquent leurs propres règles de confidentialité.
+            </p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>5) Security tips</h2>
-          <ul style={ulStyle}>
-            <li style={liStyle}>Never share your seed phrase / private key.</li>
-            <li style={liStyle}>Always verify the token mint address and official links.</li>
-            <li style={liStyle}>If something looks suspicious, stop and ask the community/support.</li>
-          </ul>
-        </section>
+            <h3 className="text-lg font-semibold">Sécurité</h3>
+            <p>
+              Aucune transaction n’est requise pour la connexion. La connexion repose sur la signature de messages
+              dans le wallet (preuve de possession) quand applicable.
+            </p>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>6) Contact</h2>
-          <p style={pStyle}>
-            Support email: <a href={`mailto:${email}`} style={aStyle}>{email}</a>
-          </p>
-          <p style={pStyle}>
-            Official website: <a href={site} target="_blank" rel="noreferrer" style={aStyle}>{site}</a>
-          </p>
-        </section>
+            <h3 className="text-lg font-semibold">Contact</h3>
+            <p>
+              Email :{" "}
+              <a className="underline" href="mailto:shui.officialtoken@gmail.com">
+                shui.officialtoken@gmail.com
+              </a>
+            </p>
+          </section>
 
-        <section style={sectionStyle}>
-          <h2 style={h2Style}>7) Disclaimer</h2>
-          <p style={pStyle}>
-            This document is informational and does not constitute financial advice. Crypto assets are volatile and
-            may result in total loss. You act under your own responsibility.
-          </p>
-        </section>
+          <hr className="my-10" />
+
+          <section className="space-y-4">
+            <h2 className="text-xl font-semibold">EN — Privacy Policy</h2>
+            <p>
+              SHUI (“we”) respects your privacy. This app provides access to information and features related to the
+              SHUI ecosystem and may open third-party services via external links.
+            </p>
+
+            <h3 className="text-lg font-semibold">Data Collection</h3>
+            <p>
+              We do not collect personal information directly in the app (name, address, phone number) and we never ask
+              for seed phrases or private keys.
+            </p>
+
+            <h3 className="text-lg font-semibold">Wallet</h3>
+            <p>
+              If you connect a Solana wallet through a wallet app (e.g., Phantom), the public wallet address may be
+              displayed to provide functionality. This address is not used to personally identify you.
+            </p>
+
+            <h3 className="text-lg font-semibold">Third-party Services</h3>
+            <p>
+              Some features may open external services (browser, swap, explorers). These services have their own
+              privacy policies.
+            </p>
+
+            <h3 className="text-lg font-semibold">Security</h3>
+            <p>
+              No transaction is required to log in. When applicable, login relies on message signing in the wallet
+              (proof of ownership).
+            </p>
+
+            <h3 className="text-lg font-semibold">Contact</h3>
+            <p>
+              Email:{" "}
+              <a className="underline" href="mailto:shui.officialtoken@gmail.com">
+                shui.officialtoken@gmail.com
+              </a>
+            </p>
+          </section>
+        </div>
       </main>
     </>
   );
 }
-
-const sectionStyle: React.CSSProperties = {
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  borderRadius: 16,
-  padding: 16,
-  marginBottom: 12,
-};
-
-const h2Style: React.CSSProperties = {
-  fontSize: 18,
-  fontWeight: 900,
-  marginBottom: 8,
-};
-
-const pStyle: React.CSSProperties = {
-  opacity: 0.9,
-  lineHeight: 1.6,
-  marginBottom: 10,
-};
-
-const ulStyle: React.CSSProperties = { paddingLeft: 18, marginTop: 8, marginBottom: 10 };
-const liStyle: React.CSSProperties = { marginBottom: 8, opacity: 0.9, lineHeight: 1.5 };
-const aStyle: React.CSSProperties = { color: "#7FE8FF", fontWeight: 800 };
