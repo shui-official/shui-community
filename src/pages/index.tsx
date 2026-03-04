@@ -1,7 +1,7 @@
 import type { GetStaticProps } from "next";
 import Head from "next/head";
 import { serverSideTranslations } from "next-i18next/serverSideTranslations";
-import { HomeView } from "../views/HomeView";
+import { HomeView } from "../views";
 
 export default function HomePage() {
   return (
