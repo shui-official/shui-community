@@ -339,6 +339,12 @@
       "open": "连接 X",
       "verify": "验证",
       "verifying": "验证中…"
+    },
+    "instagram": {
+      "open": "在 Instagram 上关注",
+      "verify": "验证",
+      "verifying": "验证中…",
+      "help": "步骤：打开 Instagram → 关注 @shui.officialtoken → 回到这里并点击“验证”。"
     }
   },
   "secureLogin": {
@@ -354,5 +360,486 @@
     "noTx": "不需要任何交易。",
     "logout": "退出（会话）",
     "walletConnected": "钱包已连接"
+  },
+  "explorer": {
+    "meta": {
+      "title": "探索 SHUI — Solana 上的社区基础设施",
+      "description": "了解 SHUI：一个建立在 Solana 上、由社区驱动的 Web3 基础设施。代币经济、钱包结构、贡献等级、任务与经济循环。",
+      "ogTitle": "探索 SHUI — Solana 上的 Web3 基础设施",
+      "ogDescription": "我们是水滴。汇聚起来，便成海洋。"
+    },
+    "nav": {
+      "brand": "SHUI",
+      "join": "加入 →",
+      "vision": "愿景",
+      "tokenomics": "代币经济",
+      "levels": "等级",
+      "missions": "任务"
+    },
+    "hero": {
+      "badge": "SHUI 水 — Solana",
+      "titleLine1": "社区",
+      "titleLine2": "基础设施",
+      "subtitle": "构建于 Solana 的 Web3。参与、透明、共同成长。",
+      "quote": "我们是水滴。汇聚起来，便成海洋。",
+      "ctaExplore": "🌊 探索生态",
+      "ctaSolscan": "🔍 在 Solscan 查看",
+      "ctaJoin": "💬 加入",
+      "pillSupplyLabel": "Supply",
+      "pillSupplyValue": "1,000,000,000 SHUI",
+      "pillNetworkLabel": "网络",
+      "pillNetworkValue": "Solana",
+      "pillDecimalsLabel": "Decimals",
+      "pillDecimalsValue": "9",
+      "clickHint": "点击任意位置即可生成涟漪 ✨"
+    },
+    "why": {
+      "tag": "为什么是 SHUI？",
+      "titleA": "一个不同的",
+      "titleB": "Web3",
+      "subtitle": "SHUI 源于一个简单的观察：加密市场值得拥有比纯投机更好的东西。",
+      "cards": [
+        {
+          "icon": "📉",
+          "title": "纯粹投机",
+          "desc": "大多数加密项目没有真正的实际用途，只有波动性。"
+        },
+        {
+          "icon": "🌫️",
+          "title": "资金不透明",
+          "desc": "资金去了哪里？谁在决策？持有人几乎没有可见性。"
+        },
+        {
+          "icon": "🤷",
+          "title": "被动社区",
+          "desc": "仅仅持有代币并不够，真实的贡献几乎从不被奖励。"
+        },
+        {
+          "icon": "🔄",
+          "title": "SHUI 的答案",
+          "desc": "一个循环经济体系，让每位参与者都能创造并获得真实价值。",
+          "highlight": "✓ SHUI 解决方案"
+        }
+      ]
+    },
+    "foundations": {
+      "tag": "基础",
+      "titleA": "4 大支柱，",
+      "titleB": "一个海洋",
+      "subtitle": "SHUI 的理念建立在四个核心价值之上，指导每一个决策。",
+      "items": [
+        {
+          "icon": "🤝",
+          "label": "参与",
+          "desc": "每位成员都可以主动贡献，不受技能水平限制。"
+        },
+        {
+          "icon": "🔍",
+          "label": "透明",
+          "desc": "所有钱包公开可见，每一笔变动都可在 Solscan 审核。"
+        },
+        {
+          "icon": "⚡",
+          "label": "贡献",
+          "desc": "真实行动会得到奖励。是具体任务，而不是空洞承诺。"
+        },
+        {
+          "icon": "🏛️",
+          "label": "金库",
+          "desc": "社区金库为 SHUI 持有人投票通过的项目提供资金支持。"
+        }
+      ]
+    },
+    "tokenomics": {
+      "tag": "代币经济",
+      "titleA": "10 亿 SHUI，",
+      "titleB": "有目的地分配",
+      "subtitle": "固定且非通胀供应。每个钱包都有明确角色与可公开验证的地址。",
+      "centerDefaultLabel": "SHUI",
+      "centerDefaultSub": "1,000,000,000",
+      "items": [
+        {
+          "label": "Community Rewards",
+          "pct": 30,
+          "amount": "300,000,000",
+          "role": "通过任务和 quests 奖励活跃贡献。6–12 个月渐进式解锁。",
+          "wallet": "6GA59g4RZyiZ3b4uxB7PnwgmENP1AhoXWP9iq147bDXw"
+        },
+        {
+          "label": "Liquidity Pool",
+          "pct": 25,
+          "amount": "250,000,000",
+          "role": "在 Raydium 和 Jupiter 上提供流动性，确保顺畅交易。",
+          "wallet": "HzE9puz2RbCazSoipebJXsV5Sb6vAyy7bQDZApVfNsVb"
+        },
+        {
+          "label": "Treasury / DAO",
+          "pct": 20,
+          "amount": "200,000,000",
+          "role": "为社区批准的项目和倡议提供资金支持。",
+          "wallet": "5JW3kXLWjG3z8JrDs8JQmYWrcDTZqNV6qnqrwJXXEqu7"
+        },
+        {
+          "label": "团队 / 运营",
+          "pct": 15,
+          "amount": "150,000,000",
+          "role": "覆盖运营成本与 SHUI Labs 的持续开发。",
+          "wallet": "BWZqpCNdoKaZ6To67XvFLUeZ7v2MaNghQJSNH3tBtnb"
+        },
+        {
+          "label": "合作伙伴",
+          "pct": 10,
+          "amount": "100,000,000",
+          "role": "支持战略合作与生态扩张。",
+          "wallet": "6ppGTdGGJYRTSiDN1RTCPYKoS4ZB1RuxHizgJCfcqZya"
+        }
+      ]
+    },
+    "wallets": {
+      "tag": "钱包架构",
+      "titleA": "1 个钱包 =",
+      "titleB": "1 个角色",
+      "subtitle": "每个钱包彼此独立、公开，并可在 Solscan 验证。透明是系统设计的一部分。",
+      "copy": "📋",
+      "copied": "✓",
+      "view": "🔍",
+      "items": [
+        {
+          "icon": "💧",
+          "label": "Liquidity Pool",
+          "pct": 25,
+          "amount": "250M",
+          "desc": "Raydium 与 Jupiter 上的流动性，确保交易顺畅。",
+          "addr": "HzE9puz2RbCazSoipebJXsV5Sb6vAyy7bQDZApVfNsVb"
+        },
+        {
+          "icon": "🏆",
+          "label": "Community Rewards",
+          "pct": 30,
+          "amount": "300M",
+          "desc": "为活跃贡献者渐进式分发奖励。",
+          "addr": "6GA59g4RZyiZ3b4uxB7PnwgmENP1AhoXWP9iq147bDXw"
+        },
+        {
+          "icon": "🏛️",
+          "label": "Treasury / DAO",
+          "pct": 20,
+          "amount": "200M",
+          "desc": "社区金库——资金使用由持有人决定。",
+          "addr": "5JW3kXLWjG3z8JrDs8JQmYWrcDTZqNV6qnqrwJXXEqu7"
+        },
+        {
+          "icon": "⚙️",
+          "label": "团队 / 运营",
+          "pct": 15,
+          "amount": "150M",
+          "desc": "开发、维护与日常运营。",
+          "addr": "BWZqpCNdoKaZ6To67XvFLUeZ7v2MaNghQJSNH3tBtnb"
+        },
+        {
+          "icon": "🤝",
+          "label": "合作伙伴",
+          "pct": 10,
+          "amount": "100M",
+          "desc": "战略扩张与 Solana 合作。",
+          "addr": "6ppGTdGGJYRTSiDN1RTCPYKoS4ZB1RuxHizgJCfcqZya"
+        }
+      ]
+    },
+    "levels": {
+      "tag": "从水滴到海洋",
+      "titleA": "你在",
+      "titleB": "生态中的成长",
+      "subtitle": "每一次贡献都会让你更进一步。你为社区带来的越多，你的影响力就越大。",
+      "multiplier": "倍率",
+      "rewards": "奖励",
+      "actionsTitle": "贡献与行动",
+      "items": [
+        {
+          "name": "水滴",
+          "emoji": "💧",
+          "role": "新成员——探索生态",
+          "actions": [
+            "加入 Telegram",
+            "阅读 litepaper",
+            "对提案投票"
+          ],
+          "multiplier": "×1",
+          "tokens": "500 – 2,000 SHUI"
+        },
+        {
+          "name": "水流",
+          "emoji": "🌊",
+          "role": "活跃参与者——持续分享与贡献",
+          "actions": [
+            "创作内容",
+            "邀请成员",
+            "回答问题"
+          ],
+          "multiplier": "×1.2",
+          "tokens": "5,000 – 10,000 SHUI"
+        },
+        {
+          "name": "河流",
+          "emoji": "🏔️",
+          "role": "高级贡献者——导师与建设者",
+          "actions": [
+            "开发工具",
+            "指导新人",
+            "组织活动"
+          ],
+          "multiplier": "×1.5",
+          "tokens": "20,000 – 50,000 SHUI"
+        },
+        {
+          "name": "海洋",
+          "emoji": "🌍",
+          "role": "领导者——生态大使与架构者",
+          "actions": [
+            "官方大使",
+            "战略治理",
+            "关键合作"
+          ],
+          "multiplier": "×2",
+          "tokens": "50,000+ SHUI"
+        }
+      ]
+    },
+    "missions": {
+      "tag": "任务与 quests",
+      "titleA": "每一个行动",
+      "titleB": "都创造价值",
+      "subtitle": "通过具体任务为 SHUI 生态做出贡献，并获得 SHUI 奖励。",
+      "all": "全部",
+      "rewardLabel": "奖励：",
+      "cats": [
+        "发现",
+        "传播",
+        "贡献",
+        "领导力"
+      ],
+      "items": [
+        {
+          "cat": "发现",
+          "icon": "🎯",
+          "title": "加入社区",
+          "desc": "加入官方 Telegram",
+          "reward": "500 SHUI"
+        },
+        {
+          "cat": "发现",
+          "icon": "📖",
+          "title": "阅读 Litepaper",
+          "desc": "完成指南阅读",
+          "reward": "1,000 SHUI"
+        },
+        {
+          "cat": "传播",
+          "icon": "✍️",
+          "title": "X Thread",
+          "desc": "撰写解释性 thread",
+          "reward": "5,000 SHUI"
+        },
+        {
+          "cat": "传播",
+          "icon": "🎬",
+          "title": "介绍视频",
+          "desc": "发布 SHUI 相关视频",
+          "reward": "8,000 SHUI"
+        },
+        {
+          "cat": "贡献",
+          "icon": "📝",
+          "title": "技术指南",
+          "desc": "撰写完整指南",
+          "reward": "10,000 SHUI"
+        },
+        {
+          "cat": "贡献",
+          "icon": "🌐",
+          "title": "翻译",
+          "desc": "翻译官方文档",
+          "reward": "7,000 SHUI"
+        },
+        {
+          "cat": "领导力",
+          "icon": "⚙️",
+          "title": "开发工具",
+          "desc": "为生态创建工具",
+          "reward": "50,000+ SHUI"
+        },
+        {
+          "cat": "领导力",
+          "icon": "🎪",
+          "title": "组织活动",
+          "desc": "AMA 或社区活动",
+          "reward": "20,000+ SHUI"
+        }
+      ]
+    },
+    "loop": {
+      "tag": "经济循环",
+      "titleA": "一个",
+      "titleB": "良性循环",
+      "subtitle": "不同于线性投机，SHUI 以循环方式运转。每个行动都会推动下一个阶段。",
+      "centerTitle": "SHUI",
+      "centerSub": "Ecosystem",
+      "items": [
+        {
+          "label": "参与",
+          "icon": "🌱",
+          "desc": "你加入生态"
+        },
+        {
+          "label": "贡献",
+          "icon": "⚡",
+          "desc": "你创造价值"
+        },
+        {
+          "label": "奖励",
+          "icon": "🏆",
+          "desc": "你获得 SHUI"
+        },
+        {
+          "label": "使用",
+          "icon": "🗳️",
+          "desc": "你投票并获得访问权"
+        },
+        {
+          "label": "增长",
+          "icon": "🚀",
+          "desc": "项目不断成长"
+        }
+      ]
+    },
+    "roadmap": {
+      "tag": "2026 路线图",
+      "titleA": "海水的",
+      "titleB": "上涨",
+      "subtitle": "以稳健方式迈向一个成熟且去中心化的生态系统。",
+      "goalLabel": "目标：",
+      "inProgress": "进行中",
+      "items": [
+        {
+          "q": "Q1 2026",
+          "title": "基础与治理",
+          "target": "3,000 €",
+          "done": true,
+          "list": [
+            "Token 已上线 ✓",
+            "网站已上线 ✓",
+            "社区活跃 ✓",
+            "初始治理"
+          ]
+        },
+        {
+          "q": "Q2 2026",
+          "title": "社区与大使",
+          "target": "7,000 €",
+          "done": false,
+          "list": [
+            "大使计划",
+            "上线任务",
+            "初始合作",
+            "移动应用（开发中）"
+          ]
+        },
+        {
+          "q": "Q3 2026",
+          "title": "金库与项目",
+          "target": "11,000 €",
+          "done": false,
+          "list": [
+            "Treasury 启动",
+            "首次 DAO 投票",
+            "社区工具",
+            "集成钱包"
+          ]
+        },
+        {
+          "q": "Q4 2026",
+          "title": "合作与扩张",
+          "target": "15–20k €",
+          "done": false,
+          "list": [
+            "Solana 合作",
+            "NFT 系列",
+            "国际扩张",
+            "成熟生态"
+          ]
+        }
+      ]
+    },
+    "transparency": {
+      "tag": "透明",
+      "titleA": "没有什么",
+      "titleB": "需要隐藏",
+      "subtitle": "信任建立在透明之上。一切都可验证、公开，并实时可见。",
+      "mintTitle": "官方 Mint 地址",
+      "verify": "在 Solscan 验证 →",
+      "items": [
+        {
+          "icon": "🔓",
+          "label": "公开代币",
+          "desc": "Mint Authority 已禁用，可在 Solscan 审核。"
+        },
+        {
+          "icon": "💼",
+          "label": "5 个独立钱包",
+          "desc": "每个钱包 = 1 个独立角色。资金绝不混用。"
+        },
+        {
+          "icon": "📢",
+          "label": "固定供应",
+          "desc": "10 亿 SHUI，永不增发，非通胀。"
+        },
+        {
+          "icon": "🗳️",
+          "label": "DAO 治理",
+          "desc": "持有人通过 Treasury 对关键决策进行投票。"
+        },
+        {
+          "icon": "📊",
+          "label": "BubbleMaps",
+          "desc": "持有人分布可实时可视化。"
+        },
+        {
+          "icon": "🌐",
+          "label": "去中心化",
+          "desc": "代码与决策向社区公开共享。"
+        }
+      ]
+    },
+    "cta": {
+      "tag": "加入 SHUI",
+      "titleA": "你是一滴",
+      "titleB": "水",
+      "titleC": "让我们一起汇聚成海洋。",
+      "subtitle": "SHUI 是一个社区项目。它的力量来自成员。每一次参与、每一份贡献、每一次传播，都会强化整个生态。",
+      "tokenLabel": "SHUI Token — Solana",
+      "disclaimer": "本页面仅供信息参考。请自行研究（DYOR）。加密资产存在本金损失风险。",
+      "actions": [
+        {
+          "icon": "💬",
+          "label": "加入 Telegram",
+          "desc": "社区正在等你"
+        },
+        {
+          "icon": "🐦",
+          "label": "关注 X",
+          "desc": "新闻与公告"
+        },
+        {
+          "icon": "📸",
+          "label": "Instagram",
+          "desc": "SHUI 文化"
+        },
+        {
+          "icon": "🔍",
+          "label": "Solscan",
+          "desc": "验证代币"
+        }
+      ]
+    }
   }
 }

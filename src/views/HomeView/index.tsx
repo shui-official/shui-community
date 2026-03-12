@@ -12,8 +12,8 @@ const BUBBLEMAPS_URL =
 
 const SOCIALS = {
   x: "https://x.com/Shui_Labs",
-  tg: "http://t.me/Shui_Community",
-  ig: "http://instagram.com/shui.officialtoken",
+  tg: "https://t.me/Shui_Community",
+  ig: "https://www.instagram.com/shui.officialtoken/",
 };
 
 export const HomeView: FC = () => {
@@ -115,9 +115,15 @@ export const HomeView: FC = () => {
             <p className="mt-6 max-w-xl text-base text-white/70 md:text-lg">{t("home.intro")}</p>
 
             <div className="mt-8 flex flex-wrap gap-3">
-              <a href="#token" className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90">
-                {t("home.ctaToken")}
-              </a>
+              <Link href="/explorer" passHref>
+                <a
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90"
+                >
+                  {t("home.ctaToken")}
+                </a>
+              </Link>
 
               <Link href="/community" passHref>
                 <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
@@ -203,6 +209,12 @@ export const HomeView: FC = () => {
             >
               {t("home.communityCtaJoinTelegram")}
             </a>
+
+            <Link href="/early-partner-program" passHref>
+              <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+                {t("home.communityCtaEarlyPartner", "Early Partner Program")}
+              </a>
+            </Link>
           </div>
 
           <p className="mt-4 text-xs text-white/50">{t("home.noTxNoticeV1")}</p>

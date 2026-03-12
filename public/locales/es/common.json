@@ -339,6 +339,12 @@
       "open": "Conectar X",
       "verify": "Verificar",
       "verifying": "Verificando…"
+    },
+    "instagram": {
+      "open": "Seguir en Instagram",
+      "verify": "Verificar",
+      "verifying": "Verificación…",
+      "help": "Pasos: abrir Instagram → seguir a @shui.officialtoken → volver aquí y hacer clic en Verificar."
     }
   },
   "secureLogin": {
@@ -354,5 +360,486 @@
     "noTx": "No se solicita ninguna transacción.",
     "logout": "Cerrar sesión (sesión)",
     "walletConnected": "Wallet conectada"
+  },
+  "explorer": {
+    "meta": {
+      "title": "Explorar SHUI — Infraestructura comunitaria en Solana",
+      "description": "Descubre SHUI, una infraestructura Web3 impulsada por la comunidad en Solana. Tokenomics, wallets, niveles de contribución, misiones y bucle económico.",
+      "ogTitle": "Explorar SHUI — Infraestructura Web3 en Solana",
+      "ogDescription": "Somos gotas. Juntas formamos un océano."
+    },
+    "nav": {
+      "brand": "SHUI",
+      "join": "Unirse →",
+      "vision": "Visión",
+      "tokenomics": "Tokenomics",
+      "levels": "Niveles",
+      "missions": "Misiones"
+    },
+    "hero": {
+      "badge": "SHUI 水 — Solana",
+      "titleLine1": "Infraestructura",
+      "titleLine2": "Comunitaria",
+      "subtitle": "Web3 en Solana. Participación. Transparencia. Crecimiento colectivo.",
+      "quote": "Somos gotas. Juntas formamos un océano.",
+      "ctaExplore": "🌊 Explorar el ecosistema",
+      "ctaSolscan": "🔍 Ver en Solscan",
+      "ctaJoin": "💬 Unirse",
+      "pillSupplyLabel": "Supply",
+      "pillSupplyValue": "1.000.000.000 SHUI",
+      "pillNetworkLabel": "Red",
+      "pillNetworkValue": "Solana",
+      "pillDecimalsLabel": "Decimals",
+      "pillDecimalsValue": "9",
+      "clickHint": "Haz clic en cualquier lugar para crear ondas ✨"
+    },
+    "why": {
+      "tag": "¿Por qué SHUI?",
+      "titleA": "Un Web3",
+      "titleB": "diferente",
+      "subtitle": "SHUI nació de una observación simple: el mercado cripto merece algo mejor que la pura especulación.",
+      "cards": [
+        {
+          "icon": "📉",
+          "title": "Pura especulación",
+          "desc": "La mayoría de los proyectos cripto no tienen utilidad real. Solo volatilidad."
+        },
+        {
+          "icon": "🌫️",
+          "title": "Fondos opacos",
+          "desc": "¿A dónde van los fondos? ¿Quién decide? Los holders no tienen visibilidad."
+        },
+        {
+          "icon": "🤷",
+          "title": "Comunidad pasiva",
+          "desc": "Tener un token no es suficiente. La contribución real casi nunca es recompensada."
+        },
+        {
+          "icon": "🔄",
+          "title": "La respuesta SHUI",
+          "desc": "Una economía circular donde cada participante crea y recibe valor real.",
+          "highlight": "✓ Solución SHUI"
+        }
+      ]
+    },
+    "foundations": {
+      "tag": "Fundamentos",
+      "titleA": "4 pilares,",
+      "titleB": "un solo océano",
+      "subtitle": "La filosofía de SHUI se basa en cuatro valores fundamentales que guían cada decisión.",
+      "items": [
+        {
+          "icon": "🤝",
+          "label": "Participación",
+          "desc": "Cada miembro contribuye activamente, sin importar su nivel."
+        },
+        {
+          "icon": "🔍",
+          "label": "Transparencia",
+          "desc": "Todos los wallets son públicos. Cada movimiento es auditable en Solscan."
+        },
+        {
+          "icon": "⚡",
+          "label": "Contribución",
+          "desc": "Las acciones reales se recompensan. Misiones concretas, no promesas vacías."
+        },
+        {
+          "icon": "🏛️",
+          "label": "Tesorería",
+          "desc": "Una tesorería comunitaria financia proyectos votados por los holders de SHUI."
+        }
+      ]
+    },
+    "tokenomics": {
+      "tag": "Tokenomics",
+      "titleA": "1.000 millones de SHUI,",
+      "titleB": "asignados con intención",
+      "subtitle": "Supply fija y no inflacionaria. Cada wallet tiene un rol preciso y una dirección pública verificable.",
+      "centerDefaultLabel": "SHUI",
+      "centerDefaultSub": "1.000.000.000",
+      "items": [
+        {
+          "label": "Community Rewards",
+          "pct": 30,
+          "amount": "300.000.000",
+          "role": "Recompensar contribuciones activas mediante misiones y quests. Vesting progresivo durante 6–12 meses.",
+          "wallet": "6GA59g4RZyiZ3b4uxB7PnwgmENP1AhoXWP9iq147bDXw"
+        },
+        {
+          "label": "Liquidity Pool",
+          "pct": 25,
+          "amount": "250.000.000",
+          "role": "Asegurar liquidez en Raydium y Jupiter para intercambios fluidos.",
+          "wallet": "HzE9puz2RbCazSoipebJXsV5Sb6vAyy7bQDZApVfNsVb"
+        },
+        {
+          "label": "Treasury / DAO",
+          "pct": 20,
+          "amount": "200.000.000",
+          "role": "Financiar proyectos e iniciativas aprobadas por la comunidad.",
+          "wallet": "5JW3kXLWjG3z8JrDs8JQmYWrcDTZqNV6qnqrwJXXEqu7"
+        },
+        {
+          "label": "Equipo / Ops",
+          "pct": 15,
+          "amount": "150.000.000",
+          "role": "Cubrir costes operativos y el desarrollo continuo de SHUI Labs.",
+          "wallet": "BWZqpCNdoKaZ6To67XvFLUeZ7v2MaNghQJSNH3tBtnb"
+        },
+        {
+          "label": "Partnerships",
+          "pct": 10,
+          "amount": "100.000.000",
+          "role": "Apoyar asociaciones estratégicas y la expansión del ecosistema.",
+          "wallet": "6ppGTdGGJYRTSiDN1RTCPYKoS4ZB1RuxHizgJCfcqZya"
+        }
+      ]
+    },
+    "wallets": {
+      "tag": "Arquitectura de Wallets",
+      "titleA": "1 wallet =",
+      "titleB": "1 rol",
+      "subtitle": "Cada wallet está separado, es público y auditable en Solscan. Transparencia total por diseño.",
+      "copy": "📋",
+      "copied": "✓",
+      "view": "🔍",
+      "items": [
+        {
+          "icon": "💧",
+          "label": "Liquidity Pool",
+          "pct": 25,
+          "amount": "250M",
+          "desc": "Liquidez en Raydium y Jupiter. Intercambios fluidos garantizados.",
+          "addr": "HzE9puz2RbCazSoipebJXsV5Sb6vAyy7bQDZApVfNsVb"
+        },
+        {
+          "icon": "🏆",
+          "label": "Community Rewards",
+          "pct": 30,
+          "amount": "300M",
+          "desc": "Distribución progresiva de recompensas para contribuidores activos.",
+          "addr": "6GA59g4RZyiZ3b4uxB7PnwgmENP1AhoXWP9iq147bDXw"
+        },
+        {
+          "icon": "🏛️",
+          "label": "Treasury / DAO",
+          "pct": 20,
+          "amount": "200M",
+          "desc": "Tesorería comunitaria — financiación decidida por holders.",
+          "addr": "5JW3kXLWjG3z8JrDs8JQmYWrcDTZqNV6qnqrwJXXEqu7"
+        },
+        {
+          "icon": "⚙️",
+          "label": "Equipo / Operaciones",
+          "pct": 15,
+          "amount": "150M",
+          "desc": "Desarrollo, mantenimiento y operaciones diarias.",
+          "addr": "BWZqpCNdoKaZ6To67XvFLUeZ7v2MaNghQJSNH3tBtnb"
+        },
+        {
+          "icon": "🤝",
+          "label": "Partnerships",
+          "pct": 10,
+          "amount": "100M",
+          "desc": "Expansión estratégica y alianzas en Solana.",
+          "addr": "6ppGTdGGJYRTSiDN1RTCPYKoS4ZB1RuxHizgJCfcqZya"
+        }
+      ]
+    },
+    "levels": {
+      "tag": "De gota a océano",
+      "titleA": "Tu progresión en",
+      "titleB": "el ecosistema",
+      "subtitle": "Cada contribución te eleva. Cuanto más das a la comunidad, mayor se vuelve tu impacto.",
+      "multiplier": "Multiplicador",
+      "rewards": "Recompensas",
+      "actionsTitle": "Contribuciones y acciones",
+      "items": [
+        {
+          "name": "Gota",
+          "emoji": "💧",
+          "role": "Nuevo miembro — descubriendo el ecosistema",
+          "actions": [
+            "Unirse a Telegram",
+            "Leer el litepaper",
+            "Votar una propuesta"
+          ],
+          "multiplier": "×1",
+          "tokens": "500 – 2.000 SHUI"
+        },
+        {
+          "name": "Flujo",
+          "emoji": "🌊",
+          "role": "Participante activo — compartir y contribuir regularmente",
+          "actions": [
+            "Crear contenido",
+            "Invitar miembros",
+            "Responder preguntas"
+          ],
+          "multiplier": "×1.2",
+          "tokens": "5.000 – 10.000 SHUI"
+        },
+        {
+          "name": "Río",
+          "emoji": "🏔️",
+          "role": "Contribuidor avanzado — mentor y constructor",
+          "actions": [
+            "Desarrollar herramientas",
+            "Guiar a nuevos miembros",
+            "Organizar eventos"
+          ],
+          "multiplier": "×1.5",
+          "tokens": "20.000 – 50.000 SHUI"
+        },
+        {
+          "name": "Océano",
+          "emoji": "🌍",
+          "role": "Líder — embajador y arquitecto del ecosistema",
+          "actions": [
+            "Embajador oficial",
+            "Gobernanza estratégica",
+            "Alianzas clave"
+          ],
+          "multiplier": "×2",
+          "tokens": "50.000+ SHUI"
+        }
+      ]
+    },
+    "missions": {
+      "tag": "Misiones y quests",
+      "titleA": "Cada acción",
+      "titleB": "crea valor",
+      "subtitle": "Misiones concretas para contribuir al ecosistema SHUI y ganar recompensas en SHUI.",
+      "all": "Todos",
+      "rewardLabel": "Recompensa:",
+      "cats": [
+        "Descubrimiento",
+        "Compartir",
+        "Contribución",
+        "Liderazgo"
+      ],
+      "items": [
+        {
+          "cat": "Descubrimiento",
+          "icon": "🎯",
+          "title": "Unirse a la comunidad",
+          "desc": "Únete al Telegram oficial",
+          "reward": "500 SHUI"
+        },
+        {
+          "cat": "Descubrimiento",
+          "icon": "📖",
+          "title": "Leer el Litepaper",
+          "desc": "Completa la lectura de la guía",
+          "reward": "1.000 SHUI"
+        },
+        {
+          "cat": "Compartir",
+          "icon": "✍️",
+          "title": "Hilo en X",
+          "desc": "Crea un hilo explicativo",
+          "reward": "5.000 SHUI"
+        },
+        {
+          "cat": "Compartir",
+          "icon": "🎬",
+          "title": "Vídeo de presentación",
+          "desc": "Publica un vídeo sobre SHUI",
+          "reward": "8.000 SHUI"
+        },
+        {
+          "cat": "Contribución",
+          "icon": "📝",
+          "title": "Guía técnica",
+          "desc": "Redacta una guía completa",
+          "reward": "10.000 SHUI"
+        },
+        {
+          "cat": "Contribución",
+          "icon": "🌐",
+          "title": "Traducción",
+          "desc": "Traduce documentos oficiales",
+          "reward": "7.000 SHUI"
+        },
+        {
+          "cat": "Liderazgo",
+          "icon": "⚙️",
+          "title": "Desarrollar una herramienta",
+          "desc": "Crea una herramienta para el ecosistema",
+          "reward": "50.000+ SHUI"
+        },
+        {
+          "cat": "Liderazgo",
+          "icon": "🎪",
+          "title": "Organizar un evento",
+          "desc": "AMA o evento comunitario",
+          "reward": "20.000+ SHUI"
+        }
+      ]
+    },
+    "loop": {
+      "tag": "Bucle económico",
+      "titleA": "Un ciclo",
+      "titleB": "virtuoso",
+      "subtitle": "A diferencia de la especulación lineal, SHUI se mueve en ciclos. Cada acción alimenta la siguiente.",
+      "centerTitle": "SHUI",
+      "centerSub": "Ecosystem",
+      "items": [
+        {
+          "label": "Participación",
+          "icon": "🌱",
+          "desc": "Te unes al ecosistema"
+        },
+        {
+          "label": "Contribución",
+          "icon": "⚡",
+          "desc": "Creas valor"
+        },
+        {
+          "label": "Recompensas",
+          "icon": "🏆",
+          "desc": "Recibes SHUI"
+        },
+        {
+          "label": "Uso",
+          "icon": "🗳️",
+          "desc": "Votas y accedes"
+        },
+        {
+          "label": "Crecimiento",
+          "icon": "🚀",
+          "desc": "El proyecto crece"
+        }
+      ]
+    },
+    "roadmap": {
+      "tag": "Hoja de ruta 2026",
+      "titleA": "El ascenso de las",
+      "titleB": "aguas",
+      "subtitle": "Una progresión metódica hacia un ecosistema maduro y descentralizado.",
+      "goalLabel": "Objetivo:",
+      "inProgress": "En curso",
+      "items": [
+        {
+          "q": "Q1 2026",
+          "title": "Fundaciones y gobernanza",
+          "target": "3.000 €",
+          "done": true,
+          "list": [
+            "Token live ✓",
+            "Sitio lanzado ✓",
+            "Comunidad activa ✓",
+            "Gobernanza inicial"
+          ]
+        },
+        {
+          "q": "Q2 2026",
+          "title": "Comunidad y embajadores",
+          "target": "7.000 €",
+          "done": false,
+          "list": [
+            "Programa de embajadores",
+            "Misiones live",
+            "Primeras alianzas",
+            "App móvil (dev)"
+          ]
+        },
+        {
+          "q": "Q3 2026",
+          "title": "Tesorería y proyectos",
+          "target": "11.000 €",
+          "done": false,
+          "list": [
+            "Treasury activada",
+            "Primer voto DAO",
+            "Herramientas comunitarias",
+            "Wallet integrado"
+          ]
+        },
+        {
+          "q": "Q4 2026",
+          "title": "Alianzas y expansión",
+          "target": "15–20k €",
+          "done": false,
+          "list": [
+            "Alianzas Solana",
+            "Colecciones NFT",
+            "Expansión internacional",
+            "Ecosistema maduro"
+          ]
+        }
+      ]
+    },
+    "transparency": {
+      "tag": "Transparencia",
+      "titleA": "Nada que",
+      "titleB": "ocultar",
+      "subtitle": "La confianza se construye con transparencia. Todo es verificable, público y accesible en tiempo real.",
+      "mintTitle": "Dirección oficial del Mint",
+      "verify": "Verificar en Solscan →",
+      "items": [
+        {
+          "icon": "🔓",
+          "label": "Token público",
+          "desc": "Mint Authority desactivada. Auditable en Solscan."
+        },
+        {
+          "icon": "💼",
+          "label": "5 wallets separados",
+          "desc": "Cada wallet = 1 rol único. Sin fondos mezclados."
+        },
+        {
+          "icon": "📢",
+          "label": "Supply fija",
+          "desc": "1.000 millones de SHUI. Nunca más. No inflacionaria."
+        },
+        {
+          "icon": "🗳️",
+          "label": "Gobernanza DAO",
+          "desc": "Los holders votan decisiones clave vía la Treasury."
+        },
+        {
+          "icon": "📊",
+          "label": "BubbleMaps",
+          "desc": "Distribución de holders visualizada en tiempo real."
+        },
+        {
+          "icon": "🌐",
+          "label": "Descentralizado",
+          "desc": "Código y decisiones compartidos abiertamente con la comunidad."
+        }
+      ]
+    },
+    "cta": {
+      "tag": "Únete a SHUI",
+      "titleA": "Eres una",
+      "titleB": "gota",
+      "titleC": "Juntas formemos el océano.",
+      "subtitle": "SHUI es un proyecto comunitario. Su fuerza viene de sus miembros. Cada participación, cada contribución y cada difusión fortalece el ecosistema.",
+      "tokenLabel": "Token SHUI — Solana",
+      "disclaimer": "Documento solo informativo. Haz tu propia investigación (DYOR). Los criptoactivos implican riesgo de pérdida de capital.",
+      "actions": [
+        {
+          "icon": "💬",
+          "label": "Unirse a Telegram",
+          "desc": "La comunidad te espera"
+        },
+        {
+          "icon": "🐦",
+          "label": "Seguir en X",
+          "desc": "Noticias y anuncios"
+        },
+        {
+          "icon": "📸",
+          "label": "Instagram",
+          "desc": "Cultura SHUI"
+        },
+        {
+          "icon": "🔍",
+          "label": "Solscan",
+          "desc": "Verificar el token"
+        }
+      ]
+    }
   }
 }
