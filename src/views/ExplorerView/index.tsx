@@ -746,13 +746,9 @@ const LevelsSection: FC = () => {
                 <p className="mx-auto mt-1 max-w-[200px] text-sm text-slate-400">{levels[active].role}</p>
                 <div className="mt-5 flex flex-col items-center gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500">{t("explorer.levels.multiplier")}</span>
-                    <span className="rounded-full px-3 py-1 text-sm font-extrabold" style={{ background: `${levels[active].color}20`, color: levels[active].color }}>
-                      {levels[active].multiplier}
-                    </span>
-                  </div>
+                                      </div>
                   <div className="text-xs text-slate-500">
-                    {t("explorer.levels.rewards")} : <span className="font-semibold text-white">{levels[active].tokens}</span>
+                    {t("explorer.levels.rewards")} : <span className="font-semibold text-white">à définir</span>
                   </div>
                 </div>
               </div>
@@ -901,7 +897,7 @@ const MissionsSection: FC = () => {
                   <div className="flex items-center gap-1 text-xs">
                     <span className="text-slate-500">{t("explorer.missions.rewardLabel")}</span>
                     <span className="font-extrabold" style={{ color: m.color }}>
-                      {m.reward}
+                      à définir
                     </span>
                   </div>
                 </div>
