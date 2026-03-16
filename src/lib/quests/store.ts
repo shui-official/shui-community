@@ -78,7 +78,12 @@ export function claimQuest(wallet: string, quest: Quest, pointsToAward: number, 
     return { ok: true as const, alreadyClaimed: true as const, points: wc.points };
   }
 
-  const bucket: "activity" | "onchain" = quest.kind === "onchain" ? "onchain" : "activity";
+  const verif = String(quest.verification ?? "");
+  const bucket: "activity" | "onchain" =
+    (verif === "onchain-hold" || verif === "onchain-lp" ||
+     verif === "auto-onchain-hold" || verif === "auto-onchain-lp")
+      ? "onchain"
+      : "activity";
 
   const rec: ClaimRecord = {
     questId: quest.id,

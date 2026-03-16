@@ -87,29 +87,34 @@ async function verifyXQuest(wallet: string) {
 }
 
 async function verifyQuest(connection: Connection, wallet: string, quest: Quest) {
-  // ✅ Telegram join: social mais vérif auto (anti fraude)
+  const verif = String(quest.verification ?? "");
+
+  // Telegram join: social mais verif auto (anti fraude)
   if (quest.id === "join-telegram") {
     return await verifyTelegramQuest(wallet);
   }
 
-  // ✅ X follow auto (preuve serveur)
+  // X follow auto (preuve serveur)
   if (quest.id === "follow-x") {
     return await verifyXQuest(wallet);
   }
 
-  // autres social/manual restent “click” pour l’instant
-  if (quest.verification === "manual" || quest.verification === "social") return { ok: true as const };
+  // auto-wallet, auto-quiz, semi-proof, semi-social, manual accepted via click/proof
+  if (verif === "manual" || verif === "social" || verif === "semi-social" ||
+      verif === "semi-proof" || verif === "auto-wallet" || verif === "auto-quiz") {
+    return { ok: true as const };
+  }
 
   const owner = new PublicKey(wallet);
 
-  if (quest.verification === "onchain-hold") {
+  if (verif === "onchain-hold" || verif === "auto-onchain-hold") {
     const mint = new PublicKey(SHUI_MINT);
     const shuiAmount = await getSplTokenUiAmount(connection, owner, mint);
     if (shuiAmount <= 0) return { ok: false as const, error: "not_holder" };
     return { ok: true as const };
   }
 
-  if (quest.verification === "onchain-lp") {
+  if (verif === "onchain-lp" || verif === "auto-onchain-lp") {
     if (!LP_MINT) return { ok: false as const, error: "lp_mint_missing" };
     const mint = new PublicKey(LP_MINT);
     const lpAmount = await getSplTokenUiAmount(connection, owner, mint);
