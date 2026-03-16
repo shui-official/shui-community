@@ -19,6 +19,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { getSession } from "../lib/security/session";
 import { getLevelProgress } from "../lib/quests/catalog";
+import { getMaintenanceMessage, getMaintenanceTitle, getMaintenanceUntilLabel, isDashboardMaintenanceEnabled } from "../lib/maintenance";
 import { getForcedQuestLevel } from "../lib/quests/admin";
 
 // Dynamic components (SSR disabled — wallet/data dependent)
@@ -586,6 +587,10 @@ type TabId = typeof TABS[number]["id"];
 // ────────────────────────────────────────────────────────────
 
 export default function DashboardPage({ wallet, exp, iat }: Props) {
+  const maintenanceActive = isDashboardMaintenanceEnabled();
+  const maintenanceTitle = getMaintenanceTitle();
+  const maintenanceMessage = getMaintenanceMessage();
+  const maintenanceUntilLabel = getMaintenanceUntilLabel();
   const maintenanceActive = new Date() < DASHBOARD_MAINTENANCE_UNTIL;
   const { t } = useTranslation("common");
   const router = useRouter();

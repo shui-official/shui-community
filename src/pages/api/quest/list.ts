@@ -4,6 +4,7 @@ import { getSession } from "../../../lib/security/session";
 import { QUESTS } from "../../../lib/quests/catalog";
 import { getForcedQuestLevel, isQuestAdminWallet } from "../../../lib/quests/admin";
 import { getClaimsSnapshot, hasClaimed, getCurrentMonthKey } from "../../../lib/quests/store";
+import { getMaintenanceApiPayload, isDashboardApiMaintenanceEnabled } from "../../../lib/maintenance";
 
 const DASHBOARD_MAINTENANCE_UNTIL = new Date("2026-03-19T15:11:00.000Z");
 import { getSubmissionsByWallet } from "../../../lib/quests/reviewStore";
@@ -11,6 +12,10 @@ import { getSubmissionsByWallet } from "../../../lib/quests/reviewStore";
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     assertMethod(req.method, ["GET"]);
+
+    if (isDashboardApiMaintenanceEnabled()) {
+      return res.status(503).json(getMaintenanceApiPayload(req));
+    }
 
     if (new Date() < DASHBOARD_MAINTENANCE_UNTIL) {
       return res.status(503).json({

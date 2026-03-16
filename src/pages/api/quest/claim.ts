@@ -6,6 +6,7 @@ import { getQuestById, Quest } from "../../../lib/quests/catalog";
 import { isQuestAdminWallet } from "../../../lib/quests/admin";
 import { claimQuest, getClaimsSnapshot, hasClaimed, getCurrentMonthKey } from "../../../lib/quests/store";
 import { createSubmission } from "../../../lib/quests/reviewStore";
+import { getMaintenanceApiPayload, isDashboardApiMaintenanceEnabled } from "../../../lib/maintenance";
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getTelegramLink, isTelegramMember } from "../../../lib/social/telegram";
@@ -141,13 +142,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     assertMethod(req.method, ["POST"]);
     requireSameOrigin(req);
 
-    if (new Date() < DASHBOARD_MAINTENANCE_UNTIL) {
-      return res.status(503).json({
-        ok: false,
-        error: "dashboard_maintenance",
-        maintenance: true,
-        until: DASHBOARD_MAINTENANCE_UNTIL.toISOString(),
-      });
+    if (isDashboardApiMaintenanceEnabled()) {
+      return res.status(503).json(getMaintenanceApiPayload(req));
     }
 
     rateLimitOrThrow({ req, res, key: "quest:claim", limit: 10, windowMs: 60_000 });
