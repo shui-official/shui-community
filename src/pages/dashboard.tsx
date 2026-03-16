@@ -591,7 +591,6 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
   const maintenanceTitle = getMaintenanceTitle();
   const maintenanceMessage = getMaintenanceMessage();
   const maintenanceUntilLabel = getMaintenanceUntilLabel();
-  const maintenanceActive = new Date() < DASHBOARD_MAINTENANCE_UNTIL;
   const { t } = useTranslation("common");
   const router = useRouter();
   const { connected, publicKey } = useWallet();
