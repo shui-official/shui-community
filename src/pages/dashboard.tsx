@@ -37,7 +37,6 @@ type Props = {
   iat: number;
 };
 
-const DASHBOARD_MAINTENANCE_UNTIL = new Date("2026-03-19T15:11:00.000Z");
 
 
 // ────────────────────────────────────────────────────────────
@@ -668,7 +667,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
 
             <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-300">
               <div>
-                Fin estimée : <span className="font-semibold text-white">{DASHBOARD_MAINTENANCE_UNTIL.toLocaleString("fr-FR")}</span>
+                Fin estimée : <span className="font-semibold text-white">{maintenanceUntilLabel || "À définir"}</span>
               </div>
               <div className="mt-2 text-xs text-slate-400">
                 Les pages publiques SHUI restent accessibles pendant cette période.

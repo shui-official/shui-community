@@ -6,7 +6,6 @@ import { getForcedQuestLevel, isQuestAdminWallet } from "../../../lib/quests/adm
 import { getClaimsSnapshot, hasClaimed, getCurrentMonthKey } from "../../../lib/quests/store";
 import { getMaintenanceApiPayload, isDashboardApiMaintenanceEnabled } from "../../../lib/maintenance";
 
-const DASHBOARD_MAINTENANCE_UNTIL = new Date("2026-03-19T15:11:00.000Z");
 import { getSubmissionsByWallet } from "../../../lib/quests/reviewStore";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -15,15 +14,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     if (isDashboardApiMaintenanceEnabled()) {
       return res.status(503).json(getMaintenanceApiPayload(req));
-    }
-
-    if (new Date() < DASHBOARD_MAINTENANCE_UNTIL) {
-      return res.status(503).json({
-        ok: false,
-        error: "dashboard_maintenance",
-        maintenance: true,
-        until: DASHBOARD_MAINTENANCE_UNTIL.toISOString(),
-      });
     }
 
     const session = getSession(req);
