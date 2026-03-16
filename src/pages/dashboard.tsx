@@ -19,6 +19,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { getSession } from "../lib/security/session";
 import { getLevelProgress } from "../lib/quests/catalog";
+import { getForcedQuestLevel } from "../lib/quests/admin";
 
 // Dynamic components (SSR disabled — wallet/data dependent)
 const QuestPanel = dynamic(() => import("../components/QuestPanel"), { ssr: false });
@@ -34,6 +35,9 @@ type Props = {
   exp: number;
   iat: number;
 };
+
+const DASHBOARD_MAINTENANCE_UNTIL = new Date("2026-03-19T15:11:00.000Z");
+
 
 // ────────────────────────────────────────────────────────────
 // Server-side: session guard
@@ -207,18 +211,24 @@ function DashboardNav({ wallet, t }: { wallet: string; t: (k: string) => string 
 /** Level progression card */
 function LevelHeroCard({
   totalPoints,
+  forcedLevel,
   wallet,
   questsData,
 }: {
   totalPoints: number;
+  forcedLevel?: string | null;
   wallet: string;
   questsData: { total: number; claimed: number } | null;
 }) {
   const info = getLevelProgress(totalPoints);
-  const meta = LEVEL_META[info.level];
+  const effectiveLevel =
+    (forcedLevel && forcedLevel in LEVEL_META
+      ? forcedLevel
+      : info.level) as keyof typeof LEVEL_META;
+  const meta = LEVEL_META[effectiveLevel];
   const nextMeta = (() => {
     const keys = Object.keys(LEVEL_META);
-    const idx = keys.indexOf(info.level);
+    const idx = keys.indexOf(effectiveLevel);
     return idx < keys.length - 1 ? LEVEL_META[keys[idx + 1] as keyof typeof LEVEL_META] : null;
   })();
 
@@ -576,11 +586,12 @@ type TabId = typeof TABS[number]["id"];
 // ────────────────────────────────────────────────────────────
 
 export default function DashboardPage({ wallet, exp, iat }: Props) {
+  const maintenanceActive = new Date() < DASHBOARD_MAINTENANCE_UNTIL;
   const { t } = useTranslation("common");
   const router = useRouter();
   const { connected, publicKey } = useWallet();
   const [activeTab, setActiveTab] = useState<TabId>("quests");
-  const [questsData, setQuestsData] = useState<{ total: number; claimed: number; totalPoints: number } | null>(null);
+  const [questsData, setQuestsData] = useState<{ total: number; claimed: number; totalPoints: number; forcedLevel?: string | null } | null>(null);
 
   // ── Security: wallet guard (unchanged from original) ──
   useEffect(() => {
@@ -609,7 +620,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
             : typeof pts?.total === "number"
             ? pts.total
             : 0;
-          setQuestsData({ total, claimed, totalPoints });
+          setQuestsData({ total, claimed, totalPoints, forcedLevel: j.forcedLevel ?? null });
         }
       } catch {
         // noop
@@ -619,6 +630,65 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
   }, []);
 
   const totalPoints = questsData?.totalPoints ?? 0;
+  const forcedLevelFromWallet = getForcedQuestLevel(wallet);
+
+  if (maintenanceActive) {
+    return (
+      <div className="relative min-h-screen overflow-hidden bg-[#030712] text-white">
+        <Head>
+          <title>SHUI — Dashboard en maintenance</title>
+          <meta name="description" content="Dashboard SHUI temporairement en maintenance." />
+        </Head>
+
+        <DashboardBackground />
+        <DashboardNav wallet={wallet} t={t} />
+
+        <div className="relative z-10 mx-auto flex min-h-screen max-w-3xl items-center justify-center px-6 pt-24 pb-16">
+          <div className="w-full rounded-3xl border border-amber-500/20 bg-white/5 p-8 text-center backdrop-blur-xl">
+            <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-3xl border border-amber-400/20 bg-amber-500/10 text-4xl">
+              🛠️
+            </div>
+
+            <div className="text-xs font-bold uppercase tracking-[0.28em] text-amber-300/90">
+              Maintenance temporaire
+            </div>
+
+            <h1 className="mt-4 text-3xl font-extrabold sm:text-4xl">
+              Dashboard SHUI en maintenance
+            </h1>
+
+            <p className="mx-auto mt-4 max-w-2xl text-sm text-slate-300 sm:text-base">
+              Nous effectuons une mise à jour du système de quêtes, de validation et de review.
+              Le dashboard communautaire est temporairement indisponible pendant environ 72 heures.
+            </p>
+
+            <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-300">
+              <div>
+                Fin estimée : <span className="font-semibold text-white">{DASHBOARD_MAINTENANCE_UNTIL.toLocaleString("fr-FR")}</span>
+              </div>
+              <div className="mt-2 text-xs text-slate-400">
+                Les pages publiques SHUI restent accessibles pendant cette période.
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <Link href="/explorer" passHref>
+                <a className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 px-5 py-3 text-sm font-bold text-cyan-300 transition hover:bg-cyan-500/15">
+                  Explorer SHUI
+                </a>
+              </Link>
+
+              <Link href="/community" passHref>
+                <a className="rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/10">
+                  Communauté
+                </a>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen text-white" style={{ fontFamily: "-apple-system, 'Segoe UI', sans-serif" }}>
@@ -636,6 +706,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
         <section className="mt-6">
           <LevelHeroCard
             totalPoints={totalPoints}
+            forcedLevel={forcedLevelFromWallet ?? questsData?.forcedLevel ?? null}
             wallet={wallet}
             questsData={questsData}
           />

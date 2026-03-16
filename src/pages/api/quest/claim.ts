@@ -3,7 +3,9 @@ import { assertMethod, isString, requireSameOrigin, safeJson } from "../../../li
 import { rateLimitOrThrow } from "../../../lib/security/rateLimit";
 import { getSession } from "../../../lib/security/session";
 import { getQuestById, Quest } from "../../../lib/quests/catalog";
+import { isQuestAdminWallet } from "../../../lib/quests/admin";
 import { claimQuest, getClaimsSnapshot, hasClaimed, getCurrentMonthKey } from "../../../lib/quests/store";
+import { createSubmission } from "../../../lib/quests/reviewStore";
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getTelegramLink, isTelegramMember } from "../../../lib/social/telegram";
@@ -12,13 +14,17 @@ import { getXLink, fetchXUserIdByUsername, checkFollowing } from "../../../lib/s
 type Body = {
   action: "quest-claim";
   questId: string;
+  proof?: string;
 };
 
 const ALLOWED_ACTIONS = new Set(["quest-claim"]);
 
 const SHUI_MINT = process.env.SHUI_MINT || "CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C";
-const LP_MINT = process.env.RAYDIUM_LP_MINT || ""; // à fournir pour LP auto
-const RPC = process.env.SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://ssc-dao.genesysgo.net";
+const LP_MINT = process.env.RAYDIUM_LP_MINT || "";
+const RPC =
+  process.env.SOLANA_RPC_URL ||
+  process.env.NEXT_PUBLIC_SOLANA_RPC_URL ||
+  "https://ssc-dao.genesysgo.net";
 
 function floorAmount(x: number) {
   if (!Number.isFinite(x) || x <= 0) return 0;
@@ -38,6 +44,8 @@ async function getSplTokenUiAmount(connection: Connection, owner: PublicKey, min
 
 async function computePointsForQuest(connection: Connection, wallet: string, quest: Quest) {
   if (quest.points.mode === "fixed") return quest.points.points;
+
+  if (quest.points.mode === "range") return quest.points.min;
 
   const owner = new PublicKey(wallet);
 
@@ -89,19 +97,22 @@ async function verifyXQuest(wallet: string) {
 async function verifyQuest(connection: Connection, wallet: string, quest: Quest) {
   const verif = String(quest.verification ?? "");
 
-  // Telegram join: social mais verif auto (anti fraude)
   if (quest.id === "join-telegram") {
     return await verifyTelegramQuest(wallet);
   }
 
-  // X follow auto (preuve serveur)
   if (quest.id === "follow-x") {
     return await verifyXQuest(wallet);
   }
 
-  // auto-wallet, auto-quiz, semi-proof, semi-social, manual accepted via click/proof
-  if (verif === "manual" || verif === "social" || verif === "semi-social" ||
-      verif === "semi-proof" || verif === "auto-wallet" || verif === "auto-quiz") {
+  if (
+    verif === "manual" ||
+    verif === "social" ||
+    verif === "semi-social" ||
+    verif === "semi-proof" ||
+    verif === "auto-wallet" ||
+    verif === "auto-quiz"
+  ) {
     return { ok: true as const };
   }
 
@@ -130,19 +141,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     assertMethod(req.method, ["POST"]);
     requireSameOrigin(req);
 
+    if (new Date() < DASHBOARD_MAINTENANCE_UNTIL) {
+      return res.status(503).json({
+        ok: false,
+        error: "dashboard_maintenance",
+        maintenance: true,
+        until: DASHBOARD_MAINTENANCE_UNTIL.toISOString(),
+      });
+    }
+
     rateLimitOrThrow({ req, res, key: "quest:claim", limit: 10, windowMs: 60_000 });
 
     const session = getSession(req);
     if (!session) return res.status(401).json({ ok: false, error: "unauthorized" });
 
+    const isQuestAdmin = isQuestAdminWallet(session.wallet);
+
     const body = safeJson<Body>(req.body);
     const action = body.action;
     const questId = body.questId;
+    const proof = typeof body.proof === "string" ? body.proof.trim() : "";
 
     if (!isString(action) || !ALLOWED_ACTIONS.has(action)) {
       return res.status(400).json({ ok: false, error: "action_not_allowed" });
     }
-    if (!isString(questId)) return res.status(400).json({ ok: false, error: "quest_id_required" });
+    if (!isString(questId)) {
+      return res.status(400).json({ ok: false, error: "quest_id_required" });
+    }
 
     const quest = getQuestById(questId);
     if (!quest) return res.status(404).json({ ok: false, error: "quest_not_found" });
@@ -151,16 +176,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (hasClaimed(session.wallet, quest, mk)) {
       const snap = getClaimsSnapshot(session.wallet, mk);
-      return res.status(200).json({ ok: true, alreadyClaimed: true, month: mk, points: snap.points, claimedIds: snap.claimedIds });
+      return res.status(200).json({
+        ok: true,
+        alreadyClaimed: true,
+        month: mk,
+        points: snap.points,
+        claimedIds: snap.claimedIds,
+      });
     }
 
     const connection = new Connection(RPC, "confirmed");
 
-    const v = await verifyQuest(connection, session.wallet, quest);
-    if (!v.ok) return res.status(403).json({ ok: false, error: v.error });
+    if (!isQuestAdmin) {
+      const v = await verifyQuest(connection, session.wallet, quest);
+      if (!v.ok) return res.status(403).json({ ok: false, error: v.error });
+    }
+
+    const isReviewQuest = !isQuestAdmin && quest.reviewPolicy.reviewMode !== "none";
+
+    if (isReviewQuest) {
+      if (!proof) {
+        return res.status(400).json({ ok: false, error: "proof_required" });
+      }
+
+      const submission = createSubmission(session.wallet, quest, proof, mk);
+
+      return res.status(200).json({
+        ok: true,
+        month: mk,
+        pendingReview: true,
+        submissionId: submission.id,
+        status: submission.status,
+        approvalsRequired: submission.approvalsRequired,
+        requiresAdminFinal: submission.adminFinalRequired,
+      });
+    }
 
     const pointsToAward = await computePointsForQuest(connection, session.wallet, quest);
-    if (pointsToAward <= 0) return res.status(403).json({ ok: false, error: "no_eligible_points" });
+    if (pointsToAward <= 0) {
+      return res.status(403).json({ ok: false, error: "no_eligible_points" });
+    }
 
     const result = claimQuest(session.wallet, quest, pointsToAward, mk);
     const snapshot = getClaimsSnapshot(session.wallet, mk);
