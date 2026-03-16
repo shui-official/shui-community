@@ -299,15 +299,228 @@
     "items": {
       "join-telegram": {
         "title": "Rejoindre le Telegram SHUI",
-        "description": "Rejoins le groupe officiel Telegram SHUI (preuve manuelle)."
+        "description": "Rejoins le groupe officiel Telegram SHUI.",
+        "proofHint": "Ouvrir le bot Telegram, appuyer Start, revenir ici et cliquer Vérifier."
       },
       "follow-x": {
         "title": "Suivre SHUI sur X",
-        "description": "Suis le compte officiel SHUI sur X (preuve sociale)."
+        "description": "Suis le compte officiel @Shui_Labs sur X.",
+        "proofHint": "Connecte ton compte X puis clique Vérifier."
       },
       "follow-instagram": {
         "title": "Suivre SHUI sur Instagram",
-        "description": "Suis le compte officiel SHUI sur Instagram (preuve sociale)."
+        "description": "Suis @shui.officialtoken sur Instagram.",
+        "proofHint": "Dépose l'URL de ton profil Instagram en preuve."
+      },
+      "connect-wallet": {
+        "title": "Connecter son wallet",
+        "description": "Connecte ton wallet Solana au site SHUI. Validation automatique.",
+        "proofHint": "Aucune preuve nécessaire — validation automatique à la connexion."
+      },
+      "read-guide": {
+        "title": "Lire le guide de démarrage",
+        "description": "Lis le guide complet pour démarrer avec SHUI.",
+        "proofHint": "La progression est suivie automatiquement dans le guide."
+      },
+      "complete-beginner-quiz": {
+        "title": "Compléter le quiz débutant",
+        "description": "Réponds aux 5 questions du quiz pour valider tes bases.",
+        "proofHint": "Quiz intégré — résultat automatiquement enregistré."
+      },
+      "complete-profile": {
+        "title": "Compléter son profil membre",
+        "description": "Remplis les informations de base de ton profil.",
+        "proofHint": "Validation automatique dès que ton profil est complet."
+      },
+      "learn-mint-vs-wallet": {
+        "title": "Comprendre : Mint ≠ Wallet",
+        "description": "Apprends la différence entre l'adresse mint et l'adresse wallet.",
+        "proofHint": "Quiz intégré — 3 questions."
+      },
+      "learn-wallet-allocation": {
+        "title": "Comprendre la répartition des wallets",
+        "description": "Maîtrise l'architecture des 5 wallets SHUI et leur rôle.",
+        "proofHint": "Quiz intégré — 3 questions sur la répartition."
+      },
+      "learn-liquidity-slippage": {
+        "title": "Comprendre la liquidité et le slippage",
+        "description": "Comprends comment fonctionne un AMM et ce qu'est le slippage.",
+        "proofHint": "Module éducatif + quiz intégré."
+      },
+      "learn-treasury-role": {
+        "title": "Comprendre le rôle de la trésorerie",
+        "description": "Appréhende la logique du wallet Trésorerie / DAO.",
+        "proofHint": "Module éducatif + quiz intégré."
+      },
+      "read-litepaper-quiz": {
+        "title": "Lire le litepaper + quiz 10 questions",
+        "description": "Lis le litepaper SHUI complet et réponds aux 10 questions de validation.",
+        "proofHint": "Quiz de 10 questions basées sur le litepaper officiel."
+      },
+      "report-scam": {
+        "title": "Signaler un faux lien / scam SHUI",
+        "description": "Identifie et signale un lien frauduleux lié à SHUI.",
+        "proofHint": "Soumets l'URL du scam + screenshot ou capture."
+      },
+      "invite-1-member": {
+        "title": "Inviter 1 membre qualifié",
+        "description": "Invite un ami qui rejoint un canal officiel et complète au moins 1 quête.",
+        "proofHint": "Le membre doit rejoindre Telegram, compléter une quête et rester actif 7 jours."
+      },
+      "invite-5-members": {
+        "title": "Inviter 5 membres qualifiés",
+        "description": "Invite 5 personnes qui s'impliquent dans la communauté.",
+        "proofHint": "Chaque membre invité doit compléter au moins 1 quête et rester actif 7 jours."
+      },
+      "welcome-3-members": {
+        "title": "Accueillir et aider 3 nouveaux membres",
+        "description": "Aide 3 nouveaux membres à prendre en main l'écosystème SHUI.",
+        "proofHint": "Soumets screenshots des échanges prouvant l'aide apportée."
+      },
+      "help-10-members": {
+        "title": "Aider 10 nouveaux membres attestés",
+        "description": "Guide activement 10 nouveaux membres avec attestation par modérateurs.",
+        "proofHint": "Attestation validée par un modérateur de la communauté."
+      },
+      "open-local-group": {
+        "title": "Ouvrir un mini salon local / groupe test",
+        "description": "Crée un groupe local ou canal test pour la communauté SHUI.",
+        "proofHint": "Lien du groupe + capture d'activité (min. 5 membres actifs)."
+      },
+      "instagram-story": {
+        "title": "Story Instagram SHUI",
+        "description": "Publie une story Instagram mentionnant SHUI avec preuve de visibilité.",
+        "proofHint": "Capture de la story publiée avec @shui.officialtoken visible."
+      },
+      "instagram-post": {
+        "title": "Post Instagram utile sur SHUI",
+        "description": "Publie un post Instagram éducatif ou d'actualité sur SHUI.",
+        "proofHint": "Lien du post Instagram public + capture. Évalué sur la qualité."
+      },
+      "x-thread": {
+        "title": "Thread X explicatif sur SHUI",
+        "description": "Rédige un thread X complet et éducatif sur SHUI.",
+        "proofHint": "Lien du thread X + captures. Évalué sur la qualité et la pertinence."
+      },
+      "mini-video": {
+        "title": "Mini vidéo 30-60 secondes",
+        "description": "Crée une courte vidéo de présentation de SHUI.",
+        "proofHint": "Lien de la vidéo publiée (YouTube, TikTok, Instagram Reels, etc.)."
+      },
+      "educational-carousel": {
+        "title": "Carrousel éducatif complet",
+        "description": "Crée un carrousel éducatif sur SHUI (5+ slides de qualité).",
+        "proofHint": "Lien du post avec carrousel ou fichier PDF. Min. 5 slides."
+      },
+      "translate-post": {
+        "title": "Traduction d'un post FR/EN validé",
+        "description": "Traduis un post officiel SHUI du français vers l'anglais ou l'inverse.",
+        "proofHint": "Soumets le document traduit + lien vers le post original."
+      },
+      "translate-document": {
+        "title": "Traduction d'un document officiel",
+        "description": "Traduis un document SHUI (litepaper, FAQ, guide) dans une autre langue.",
+        "proofHint": "Soumets le document traduit complet. Sera relu par l'équipe."
+      },
+      "report-minor-bug": {
+        "title": "Remonter un bug mineur reproductible",
+        "description": "Identifie et documente un bug mineur sur le site ou l'app SHUI.",
+        "proofHint": "Etapes de reproduction + screenshot ou screencast."
+      },
+      "report-critical-bug": {
+        "title": "Remonter un bug critique",
+        "description": "Identifie et documente un bug critique affectant la sécurité.",
+        "proofHint": "Rapport détaillé : impact, étapes de reproduction, preuves."
+      },
+      "ux-test-capture": {
+        "title": "Test UX complet avec capture",
+        "description": "Effectue un test UX documenté avec captures annotées.",
+        "proofHint": "Document de test avec captures annotées + observations structurées."
+      },
+      "release-test-report": {
+        "title": "Tester une release et rendre un rapport",
+        "description": "Teste une nouvelle version et rends un rapport de qualité.",
+        "proofHint": "Rapport structuré : fonctionnalités testées, bugs, observations."
+      },
+      "ux-proposal": {
+        "title": "Proposition UX priorisée",
+        "description": "Propose des améliorations UX priorisées et argumentées.",
+        "proofHint": "Document de proposition : problème, solution, priorité, wireframes optionnels."
+      },
+      "test-campaign-15d": {
+        "title": "Participer à une campagne test 15 jours",
+        "description": "Participe activement à une campagne de test communautaire sur 15 jours.",
+        "proofHint": "Rapport de participation à soumettre à la fin de la campagne."
+      },
+      "fix-front-bug": {
+        "title": "Corriger un bug front simple",
+        "description": "Soumets un correctif front-end validé via PR.",
+        "proofHint": "Lien de la Pull Request + description du bug corrigé."
+      },
+      "add-minor-feature": {
+        "title": "Ajouter une fonctionnalité mineure",
+        "description": "Développe et soumet une petite amélioration fonctionnelle via PR.",
+        "proofHint": "Lien PR + démo ou captures."
+      },
+      "develop-full-module": {
+        "title": "Développer un module complet",
+        "description": "Conçois et développe un module significatif pour SHUI.",
+        "proofHint": "Lien repository / PR + documentation + démo."
+      },
+      "community-tool": {
+        "title": "Développer un outil communautaire",
+        "description": "Crée un outil utile pour la communauté SHUI (bot, dashboard, extension).",
+        "proofHint": "Lien vers l'outil fonctionnel + documentation."
+      },
+      "onchain-dashboard": {
+        "title": "Dashboard on-chain / reporting",
+        "description": "Développe un dashboard de reporting on-chain pour la transparence SHUI.",
+        "proofHint": "Lien vers le dashboard fonctionnel + documentation technique."
+      },
+      "document-tech-process": {
+        "title": "Documenter un process technique critique",
+        "description": "Rédige une documentation complète d'un processus technique important.",
+        "proofHint": "Document structuré : contexte, processus détaillé, diagrammes si pertinent."
+      },
+      "jupiter-verification": {
+        "title": "Dossier Jupiter Verification",
+        "description": "Rassemble tous les éléments pour la vérification Jupiter.",
+        "proofHint": "Dossier complet avec métadonnées, preuves et documents requis par Jupiter."
+      },
+      "metadata-official": {
+        "title": "Métadonnées officielles du token",
+        "description": "Compile et vérifie toutes les métadonnées officielles du token SHUI.",
+        "proofHint": "Fichier de métadonnées complet et vérifié, conforme aux standards Solana."
+      },
+      "audit-links-consistency": {
+        "title": "Audit des liens officiels",
+        "description": "Vérifie la cohérence de tous les liens et documents officiels SHUI.",
+        "proofHint": "Rapport d'audit : liens vérifiés, incohérences identifiées, corrections proposées."
+      },
+      "monthly-reporting": {
+        "title": "Reporting mensuel SHUI",
+        "description": "Rédige le rapport mensuel public de l'activité SHUI.",
+        "proofHint": "Rapport mensuel complet : activité, métriques, événements."
+      },
+      "public-decisions-journal": {
+        "title": "Journal public des décisions",
+        "description": "Crée et maintiens un journal public des décisions importantes SHUI.",
+        "proofHint": "Document ou page publiée avec les décisions documentées chronologiquement."
+      },
+      "cmc-coingecko-dossier": {
+        "title": "Dossier CoinMarketCap / CoinGecko",
+        "description": "Prépare tous les éléments pour le listing sur CMC et/ou CoinGecko.",
+        "proofHint": "Dossier complet avec formulaires remplis, preuves et documentation."
+      },
+      "document-wallets-onchain": {
+        "title": "Documenter les wallets on-chain",
+        "description": "Documente chaque wallet officiel SHUI avec preuves on-chain vérifiables.",
+        "proofHint": "Document avec adresses, descriptions, transactions de preuve et liens Solscan."
+      },
+      "security-audit-checklist": {
+        "title": "Revue sécurité / checklist audit",
+        "description": "Effectue une revue sécurité complète et prépare une checklist d'audit.",
+        "proofHint": "Checklist d'audit complète + rapport de revue sécurité."
       },
       "read-safety": {
         "title": "Lire les règles de sécurité",
@@ -315,19 +528,19 @@
       },
       "daily-checkin": {
         "title": "Check-in quotidien",
-        "description": "Valide ta présence aujourd’hui (1 fois par jour)."
+        "description": "Valide ta présence aujourd'hui (1 fois par jour)."
       },
       "daily-share": {
         "title": "Partager SHUI sur X (quotidien)",
         "description": "Partage le post SHUI du jour sur X (1 fois par jour)."
       },
-      "hold-shui": {
+      "holder-shui": {
         "title": "Bonus Holder SHUI",
-        "description": "Bonus on-chain : points selon ton montant de SHUI détenu."
+        "description": "Bonus on-chain automatique : points selon ton montant de SHUI détenu."
       },
       "lp-raydium": {
         "title": "Bonus LP Raydium",
-        "description": "Bonus on-chain : points selon tes LP SHUI/SOL (Raydium)."
+        "description": "Bonus on-chain automatique : points selon tes LP SHUI/SOL (Raydium)."
       }
     },
     "telegram": {
