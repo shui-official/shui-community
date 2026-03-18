@@ -26,6 +26,21 @@ export type QuestCooldown = "once" | "daily" | "weekly" | "monthly";
 
 export type ValidationLevel = "auto" | "semi" | "manual";
 
+export type ReviewRole = "none" | "flux" | "riviere" | "ocean" | "admin";
+
+export type QuestReviewPolicy = {
+  reviewMode: "none" | "community" | "community+admin" | "admin";
+  minReviewerLevel: ReviewRole;
+  minApprovals: number;
+  requiresAdminFinal: boolean;
+  reviewerPoints: {
+    flux?: number;
+    riviere?: number;
+    ocean?: number;
+  };
+};
+
+
 export type PointsMode =
   | { mode: "fixed"; points: number }
   | { mode: "range"; min: number; max: number }
@@ -55,6 +70,7 @@ export type Quest = {
   abuseRisk: "low" | "medium" | "high"; // informs auto vs manual
   mobileSyncable: boolean; // can be triggered from mobile app
   tags?: string[];
+  reviewPolicy: QuestReviewPolicy;
 };
 
 // ============================================================
@@ -81,6 +97,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["social", "first-steps"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "follow-x",
@@ -96,6 +113,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["social", "first-steps"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "follow-instagram",
@@ -111,6 +129,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["social", "first-steps"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "connect-wallet",
@@ -125,6 +144,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "first-steps"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "read-guide",
@@ -139,6 +159,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "complete-beginner-quiz",
@@ -153,6 +174,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "complete-profile",
@@ -167,6 +189,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -186,6 +209,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "learn-wallet-allocation",
@@ -200,6 +224,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "learn-liquidity-slippage",
@@ -214,6 +239,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education", "defi"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "learn-treasury-role",
@@ -228,6 +254,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education", "governance"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "read-litepaper-quiz",
@@ -243,6 +270,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "education", "litepaper"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "report-scam",
@@ -258,6 +286,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["security", "community"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -279,6 +308,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["referral", "growth"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "invite-5-members",
@@ -295,6 +325,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "high",
     mobileSyncable: true,
     tags: ["referral", "growth"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "welcome-3-members",
@@ -311,6 +342,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: false,
     tags: ["support", "onboarding"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "help-10-members",
@@ -327,6 +359,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: false,
     tags: ["support", "mentoring"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "open-local-group",
@@ -343,6 +376,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: false,
     tags: ["ambassador", "local"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -363,6 +397,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["instagram", "social"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "instagram-post",
@@ -379,6 +414,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["instagram", "content"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "x-thread",
@@ -395,6 +431,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["x", "thread", "content"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "mini-video",
@@ -411,6 +448,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["video", "content"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "educational-carousel",
@@ -427,6 +465,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["carousel", "education", "content"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "translate-post",
@@ -443,6 +482,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["translation"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "translate-document",
@@ -459,6 +499,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["translation", "docs"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -480,6 +521,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["bug", "qa"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "report-critical-bug",
@@ -496,6 +538,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["bug", "security", "qa"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "ux-test-capture",
@@ -512,6 +555,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["ux", "test"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "release-test-report",
@@ -528,6 +572,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["test", "qa"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
   {
     id: "ux-proposal",
@@ -544,6 +589,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["ux", "proposal"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "test-campaign-15d",
@@ -559,6 +605,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "medium",
     mobileSyncable: true,
     tags: ["test", "campaign"],
+    reviewPolicy: { reviewMode: "community", minReviewerLevel: "flux", minApprovals: 3, requiresAdminFinal: false, reviewerPoints: { flux: 1, riviere: 2, ocean: 3 } },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -580,6 +627,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["dev", "frontend"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "add-minor-feature",
@@ -596,6 +644,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["dev"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "develop-full-module",
@@ -612,6 +661,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["dev", "module"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "ocean", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { ocean: 3 } },
   },
   {
     id: "community-tool",
@@ -628,6 +678,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["dev", "tool", "community"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "ocean", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { ocean: 3 } },
   },
   {
     id: "onchain-dashboard",
@@ -644,6 +695,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["dev", "onchain", "reporting"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "ocean", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { ocean: 3 } },
   },
   {
     id: "document-tech-process",
@@ -660,6 +712,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["docs", "technical"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "ocean", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { ocean: 3 } },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -681,6 +734,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["jupiter", "credibility", "listing"],
+    reviewPolicy: { reviewMode: "admin", minReviewerLevel: "admin", minApprovals: 1, requiresAdminFinal: true, reviewerPoints: {} },
   },
   {
     id: "metadata-official",
@@ -697,6 +751,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["metadata", "listing"],
+    reviewPolicy: { reviewMode: "admin", minReviewerLevel: "admin", minApprovals: 1, requiresAdminFinal: true, reviewerPoints: {} },
   },
   {
     id: "audit-links-consistency",
@@ -713,6 +768,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["audit", "credibility"],
+    reviewPolicy: { reviewMode: "admin", minReviewerLevel: "admin", minApprovals: 1, requiresAdminFinal: true, reviewerPoints: {} },
   },
   {
     id: "monthly-reporting",
@@ -729,6 +785,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["reporting", "transparency"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "public-decisions-journal",
@@ -745,6 +802,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["governance", "transparency"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "cmc-coingecko-dossier",
@@ -761,6 +819,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["listing", "cmc", "coingecko"],
+    reviewPolicy: { reviewMode: "admin", minReviewerLevel: "admin", minApprovals: 1, requiresAdminFinal: true, reviewerPoints: {} },
   },
   {
     id: "document-wallets-onchain",
@@ -777,6 +836,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["wallets", "onchain", "transparency"],
+    reviewPolicy: { reviewMode: "community+admin", minReviewerLevel: "riviere", minApprovals: 3, requiresAdminFinal: true, reviewerPoints: { riviere: 2, ocean: 3 } },
   },
   {
     id: "security-audit-checklist",
@@ -793,6 +853,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: false,
     tags: ["security", "audit"],
+    reviewPolicy: { reviewMode: "admin", minReviewerLevel: "admin", minApprovals: 1, requiresAdminFinal: true, reviewerPoints: {} },
   },
 
   // ──────────────────────────────────────────────────────────
@@ -812,6 +873,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "onchain", "holder"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
   {
     id: "lp-raydium",
@@ -826,6 +888,7 @@ export const QUESTS: Quest[] = [
     abuseRisk: "low",
     mobileSyncable: true,
     tags: ["auto", "onchain", "lp", "raydium"],
+    reviewPolicy: { reviewMode: "none", minReviewerLevel: "none", minApprovals: 0, requiresAdminFinal: false, reviewerPoints: {} },
   },
 ];
 
@@ -904,6 +967,35 @@ export function getLevel(points: number): keyof typeof LEVEL_THRESHOLDS {
 export function getLevelMultiplier(level: keyof typeof LEVEL_THRESHOLDS): number {
   const map = { goutte: 1.0, flux: 1.05, riviere: 1.1, ocean: 1.2 };
   return map[level];
+}
+
+export function canReviewQuest(
+  quest: Quest,
+  reviewerLevel: "goutte" | "flux" | "riviere" | "ocean"
+): boolean {
+  const rp = quest.reviewPolicy;
+  if (!rp || rp.reviewMode === "none" || rp.reviewMode === "admin") return false;
+
+  const hierarchy = {
+    goutte: 0,
+    flux: 1,
+    riviere: 2,
+    ocean: 3,
+    admin: 99,
+    none: -1,
+  } as const;
+
+  const required = hierarchy[rp.minReviewerLevel];
+  const current = hierarchy[reviewerLevel];
+
+  return current >= required;
+}
+
+export function getReviewerPoints(
+  quest: Quest,
+  reviewerLevel: "flux" | "riviere" | "ocean"
+): number {
+  return quest.reviewPolicy?.reviewerPoints?.[reviewerLevel] ?? 0;
 }
 
 export function getLevelProgress(points: number): {

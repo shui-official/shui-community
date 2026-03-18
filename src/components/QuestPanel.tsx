@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   getLevelProgress,
 } from "../lib/quests/catalog";
+import { getForcedQuestLevel } from "../lib/quests/admin";
 
 // ────────────────────────────────────────────────────────────
 // Types (aligned with server)
@@ -43,16 +44,46 @@ type Quest = {
   abuseRisk?: "low" | "medium" | "high";
   mobileSyncable?: boolean;
   tags?: string[];
+  reviewPolicy?: {
+    reviewMode: "none" | "community" | "community+admin" | "admin";
+    minReviewerLevel: "none" | "flux" | "riviere" | "ocean" | "admin";
+    minApprovals: number;
+    requiresAdminFinal: boolean;
+    reviewerPoints: {
+      flux?: number;
+      riviere?: number;
+      ocean?: number;
+    };
+  };
 };
 
 type PointsBreakdown = { activity: number; onchain: number; total: number };
+
+type ReviewSubmission = {
+  id: string;
+  wallet: string;
+  questId: string;
+  proof: string;
+  submittedAt: number;
+  status: "pending" | "approved" | "rejected";
+  reviewers: string[];
+  rejectedBy: string[];
+  adminApproved: boolean;
+  bootstrapApprovedByAdmin: boolean;
+  adminFinalRequired: boolean;
+  approvalsRequired: number;
+};
 
 type ListOk = {
   ok: true;
   month?: string;
   wallet: string;
   points: PointsBreakdown | number;
+  forcedLevel?: string | null;
+  isQuestAdmin?: boolean;
   quests: Quest[];
+  submissions?: ReviewSubmission[];
+  pendingSubmissions?: ReviewSubmission[];
   updatedAt: number;
 };
 type ListErr = { ok: false; error: string };
@@ -184,11 +215,70 @@ function CooldownBadge({ cooldown }: { cooldown: string }) {
   );
 }
 
+function ReviewPolicyCard({ quest }: { quest: Quest }) {
+  const rp = quest.reviewPolicy;
+  if (!rp || rp.reviewMode === "none") return null;
+
+  const reviewerMap: Record<string, string> = {
+    none: "Aucun",
+    flux: "Flux+",
+    riviere: "Rivière+",
+    ocean: "Océan+",
+    admin: "Admin",
+  };
+
+  const modeMap: Record<string, string> = {
+    community: "Communautaire",
+    "community+admin": "Communauté + Admin",
+    admin: "Admin uniquement",
+    none: "Aucune",
+  };
+
+  const reviewPoints = [
+    rp.reviewerPoints?.flux ? `Flux +${rp.reviewerPoints.flux}` : null,
+    rp.reviewerPoints?.riviere ? `Rivière +${rp.reviewerPoints.riviere}` : null,
+    rp.reviewerPoints?.ocean ? `Océan +${rp.reviewerPoints.ocean}` : null,
+  ].filter(Boolean).join(" • ");
+
+  return (
+    <div className="rounded-xl border border-cyan-500/15 bg-cyan-500/5 p-3 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-bold text-cyan-300">Validation SHUI</span>
+        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+          {modeMap[rp.reviewMode] ?? rp.reviewMode}
+        </span>
+      </div>
+
+      <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+        <div>
+          <span className="text-slate-500">Reviewer minimum :</span>{" "}
+          <span className="font-semibold text-white">{reviewerMap[rp.minReviewerLevel] ?? rp.minReviewerLevel}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Validations requises :</span>{" "}
+          <span className="font-semibold text-white">{rp.minApprovals}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Admin final :</span>{" "}
+          <span className="font-semibold text-white">{rp.requiresAdminFinal ? "Oui" : "Non"}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Points validateurs :</span>{" "}
+          <span className="font-semibold text-white">{reviewPoints || "—"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Progress bar for level
-function LevelProgressBar({ totalPoints }: { totalPoints: number }) {
+function LevelProgressBar({ totalPoints, forcedLevel }: { totalPoints: number; forcedLevel?: string | null }) {
   const info = getLevelProgress(totalPoints);
-  const meta = LEVEL_META[info.level];
-  const nextMeta = info.nextMin ? LEVEL_META[Object.keys(LEVEL_META).find(k => LEVEL_META[k as keyof typeof LEVEL_META].range.startsWith(info.nextMin + ""))  ?? "flux" as keyof typeof LEVEL_META] : null;
+  const effectiveLevel =
+    forcedLevel && forcedLevel in LEVEL_META
+      ? (forcedLevel as keyof typeof LEVEL_META)
+      : info.level;
+  const meta = LEVEL_META[effectiveLevel];
 
   return (
     <div className="space-y-1.5">
@@ -197,7 +287,11 @@ function LevelProgressBar({ totalPoints }: { totalPoints: number }) {
           {meta.emoji} {meta.label}
         </span>
         <span className="text-slate-500">
-          {info.pointsToNext != null ? `${info.pointsToNext} pts → ${Object.entries(LEVEL_META)[Object.keys(LEVEL_META).indexOf(info.level) + 1]?.[1]?.label ?? "max"}` : "Niveau max"}
+          {forcedLevel
+            ? "Accès admin — niveau forcé"
+            : info.pointsToNext != null
+              ? `${info.pointsToNext} pts → ${Object.entries(LEVEL_META)[Object.keys(LEVEL_META).indexOf(info.level) + 1]?.[1]?.label ?? "max"}`
+              : "Niveau max"}
         </span>
       </div>
       <div className="relative h-2 overflow-hidden rounded-full bg-white/8">
@@ -205,11 +299,13 @@ function LevelProgressBar({ totalPoints }: { totalPoints: number }) {
           className="absolute inset-y-0 left-0 rounded-full"
           style={{ background: `linear-gradient(90deg, ${meta.color}, ${meta.color}99)` }}
           initial={{ width: "0%" }}
-          animate={{ width: `${info.progress}%` }}
+          animate={{ width: forcedLevel ? "100%" : `${info.progress}%` }}
           transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
         />
       </div>
-      <div className="text-[10px] text-slate-600">{totalPoints} / {info.nextMin ?? "∞"} points</div>
+      <div className="text-[10px] text-slate-600">
+        {forcedLevel ? `${totalPoints} points • niveau admin` : `${totalPoints} / ${info.nextMin ?? "∞"} points`}
+      </div>
     </div>
   );
 }
@@ -232,6 +328,7 @@ type QuestCardProps = {
   proofUrls: Record<string, string>;
   onProofChange: (id: string, value: string) => void;
   onProofSubmit: (id: string) => void;
+  latestSubmission?: ReviewSubmission | null;
 };
 
 function QuestCard({
@@ -246,6 +343,7 @@ function QuestCard({
   proofUrls,
   onProofChange,
   onProofSubmit,
+  latestSubmission,
 }: QuestCardProps) {
   const [expanded, setExpanded] = useState(false);
   const catMeta = CATEGORY_META[quest.category] ?? CATEGORY_META.onboarding;
@@ -255,6 +353,14 @@ function QuestCard({
   const isSemiOrManual = validLevel === "semi" || validLevel === "manual";
   const proofValue = proofUrls[quest.id] ?? "";
   const isClaiming = claiming === quest.id;
+  const latestStatus = latestSubmission?.status ?? null;
+  const approvalsCount = latestSubmission?.reviewers?.length ?? 0;
+  const approvalsRequired = latestSubmission?.approvalsRequired ?? quest.reviewPolicy?.minApprovals ?? 0;
+  const adminApproved = Boolean(latestSubmission?.adminApproved);
+  const bootstrapApprovedByAdmin = Boolean(latestSubmission?.bootstrapApprovedByAdmin);
+  const isPending = latestStatus === "pending";
+  const isRejected = latestStatus === "rejected";
+  const isApproved = latestStatus === "approved";
 
   return (
     <motion.div
@@ -303,6 +409,16 @@ function QuestCard({
                     ✓ Validé
                   </span>
                 )}
+                {!quest.claimed && isPending && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                    ⏳ En attente
+                  </span>
+                )}
+                {!quest.claimed && isRejected && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/30 bg-rose-400/10 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                    ✕ Refusée
+                  </span>
+                )}
               </div>
 
               {/* Badges row */}
@@ -347,8 +463,22 @@ function QuestCard({
                   </div>
                 )}
 
+                <ReviewPolicyCard quest={quest} />
+
+                {!quest.claimed && isPending && (
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
+                    Cette quête est en attente de validation par les reviewers SHUI.
+                  </div>
+                )}
+
+                {!quest.claimed && isRejected && (
+                  <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 text-xs text-rose-200">
+                    Cette soumission a été refusée. Tu peux corriger la preuve puis soumettre à nouveau.
+                  </div>
+                )}
+
                 {/* Proof input for semi/manual quests */}
-                {isSemiOrManual && !quest.claimed && !isTelegram && !isX && (
+                {isSemiOrManual && !quest.claimed && !isTelegram && !isX && !isPending && (
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -436,6 +566,10 @@ function QuestCard({
               >
                 {isClaiming ? "Validation…" : "⚡ Valider auto"}
               </button>
+            ) : isPending ? (
+              <span className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-3 py-1.5 text-xs font-bold text-amber-300">
+                ⏳ En attente ({approvalsCount}/{approvalsRequired})
+              </span>
             ) : validLevel === "semi" ? (
               !expanded && (
                 <button
@@ -517,6 +651,7 @@ export default function QuestPanel() {
   const [loading, setLoading] = useState(false);
   const [claiming, setClaiming] = useState<string | null>(null);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
   const [activeCategory, setActiveCategory] = useState<string>(ALL_CAT);
   const [proofUrls, setProofUrls] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<"available" | "claimed">("available");
@@ -525,11 +660,39 @@ export default function QuestPanel() {
   const pts = useMemo(() => (okData ? asPoints(okData.points) : null), [okData]);
 
   const totalPoints = pts?.total ?? 0;
+  const forcedLevel = okData?.forcedLevel ?? getForcedQuestLevel(okData?.wallet) ?? null;
   const levelInfo = getLevelProgress(totalPoints);
-  const levelMeta = LEVEL_META[levelInfo.level];
+  const effectiveLevel =
+    forcedLevel && forcedLevel in LEVEL_META
+      ? (forcedLevel as keyof typeof LEVEL_META)
+      : levelInfo.level;
+  const levelMeta = LEVEL_META[effectiveLevel];
 
   // All quests
   const allQuests = useMemo(() => okData?.quests ?? [], [okData]);
+  const submissions = useMemo(() => okData?.submissions ?? [], [okData]);
+  const pendingSubmissions = useMemo(() => okData?.pendingSubmissions ?? [], [okData]);
+
+  const latestSubmissionByQuest = useMemo(() => {
+    const map: Record<string, ReviewSubmission> = {};
+    for (const sub of submissions) {
+      const prev = map[sub.questId];
+      if (!prev || sub.submittedAt > prev.submittedAt) {
+        map[sub.questId] = sub;
+      }
+    }
+    return map;
+  }, [submissions]);
+
+  const questById = useMemo(() => {
+    const map: Record<string, Quest> = {};
+    for (const q of allQuests) {
+      map[q.id] = q;
+    }
+    return map;
+  }, [allQuests]);
+
+  const pendingCount = pendingSubmissions.length;
 
   // Filter by category and tab
   const displayedQuests = useMemo(() => {
@@ -732,7 +895,7 @@ export default function QuestPanel() {
 
         {/* Progress bar */}
         <div className="mt-5">
-          <LevelProgressBar totalPoints={totalPoints} />
+          <LevelProgressBar totalPoints={totalPoints} forcedLevel={forcedLevel} />
         </div>
 
         {/* Quick stats */}
@@ -769,6 +932,120 @@ export default function QuestPanel() {
       {err && (
         <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-300">
           {safeText(err, "Erreur")}
+        </div>
+      )}
+
+      {notice && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm text-emerald-300">
+          {notice}
+        </div>
+      )}
+
+      {/* ── REVIEW INBOX ── */}
+      {pendingCount > 0 && (
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-extrabold text-white">File d’attente de validation</div>
+              <div className="mt-1 text-xs text-slate-400">
+                Soumissions en attente visibles pour l’admin et les reviewers autorisés.
+              </div>
+            </div>
+            <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-3 py-1 text-xs font-bold text-amber-300">
+              {pendingCount} en attente
+            </span>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {pendingSubmissions.map((sub) => (
+              <div key={sub.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-white">
+                      {safeText(
+                        tStr(questById[sub.questId]?.titleKey ?? sub.questId, sub.questId),
+                        sub.questId
+                      )}
+                    </div>
+                    <div className="mt-2 space-y-1 text-xs text-slate-400">
+                      <div><span className="text-slate-500">Wallet :</span> <span className="break-all text-white/90">{sub.wallet}</span></div>
+                      <div><span className="text-slate-500">Date :</span> <span className="text-white/90">{new Date(sub.submittedAt).toLocaleString("fr-FR")}</span></div>
+                      <div><span className="text-slate-500">Validations requises :</span> <span className="text-white/90">{sub.approvalsRequired}</span></div>
+                      <div><span className="text-slate-500">Validations actuelles :</span> <span className="text-white/90">{sub.reviewers.length}/{sub.approvalsRequired}</span></div>
+                      <div><span className="text-slate-500">Admin final :</span> <span className="text-white/90">{sub.adminFinalRequired ? "Oui" : "Non"}</span></div>
+                      <div><span className="text-slate-500">Validation admin :</span> <span className="text-white/90">{sub.adminApproved ? "Oui" : "Non"}</span></div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const r = await fetch("/api/quest/review", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "approve", submissionId: sub.id }),
+                            });
+                            const j = await r.json();
+                            if (!j.ok) {
+        throw new Error(j.error === "self_review_forbidden"
+          ? "Tu ne peux pas valider ta propre soumission."
+          : (j.error || "approve_failed"));
+      }
+                            const pts = Number(j.reviewerPointsAwarded || 0);
+                            setNotice(
+                              pts > 0
+                                ? `Validation enregistrée. +${pts} point${pts > 1 ? "s" : ""} reviewer ajouté${pts > 1 ? "s" : ""}.`
+                                : "Validation enregistrée."
+                            );
+                            await refresh();
+                          } catch (e: any) {
+                            setErr(e?.message || "approve_failed");
+                          }
+                        }}
+                        className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/15"
+                      >
+                        ✅ Valider
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const r = await fetch("/api/quest/review", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "reject", submissionId: sub.id }),
+                            });
+                            const j = await r.json();
+                            if (!j.ok) {
+        throw new Error(j.error === "self_review_forbidden"
+          ? "Tu ne peux pas refuser ta propre soumission."
+          : (j.error || "reject_failed"));
+      }
+                            setNotice("Refus enregistré.");
+                            await refresh();
+                          } catch (e: any) {
+                            setErr(e?.message || "reject_failed");
+                          }
+                        }}
+                        className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-bold text-red-300 hover:bg-red-500/15"
+                      >
+                        ❌ Refuser
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="sm:max-w-[50%]">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Preuve</div>
+                    <div className="mt-1 break-all rounded-xl border border-white/8 bg-black/20 p-3 text-xs text-cyan-300">
+                      {sub.proof}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -896,6 +1173,7 @@ export default function QuestPanel() {
                     quest={q}
                     t={tStr}
                     claiming={claiming}
+                    latestSubmission={latestSubmissionByQuest[q.id] ?? null}
                     onClaim={claim}
                     onTelegramOpen={openTelegramLink}
                     onTelegramVerify={verifyTelegramAndClaim}

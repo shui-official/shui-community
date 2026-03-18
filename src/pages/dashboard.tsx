@@ -21,6 +21,8 @@ import { getSession } from "../lib/security/session";
 import { getLevelProgress } from "../lib/quests/catalog";
 import { getMaintenanceMessage, getMaintenanceTitle, getMaintenanceUntilLabel, isDashboardMaintenanceEnabled } from "../lib/maintenance";
 import { getForcedQuestLevel } from "../lib/quests/admin";
+import RewardsMonthlyOverview from "../components/rewards/admin/RewardsMonthlyOverview";
+import RewardsLedgerTable from "../components/rewards/admin/RewardsLedgerTable";
 
 // Dynamic components (SSR disabled — wallet/data dependent)
 const QuestPanel = dynamic(() => import("../components/QuestPanel"), { ssr: false });
@@ -776,7 +778,11 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
                     subtitle="Chaque quête validée contribue à la communauté et génère des points convertibles en SHUI."
                     icon="✨"
                   />
-                  <QuestPanel />
+                        <RewardsMonthlyOverview />
+
+                        <RewardsLedgerTable />
+
+<QuestPanel />
                 </motion.div>
               )}
 

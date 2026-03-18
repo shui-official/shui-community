@@ -1,12 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { assertMethod } from "../../../lib/security/validate";
 import { getSession } from "../../../lib/security/session";
-import { QUESTS } from "../../../lib/quests/catalog";
+import { QUESTS, canReviewQuest, getLevel } from "../../../lib/quests/catalog";
 import { getForcedQuestLevel, isQuestAdminWallet } from "../../../lib/quests/admin";
 import { getClaimsSnapshot, hasClaimed, getCurrentMonthKey } from "../../../lib/quests/store";
 import { getMaintenanceApiPayload, isDashboardApiMaintenanceEnabled } from "../../../lib/maintenance";
 
-import { getSubmissionsByWallet } from "../../../lib/quests/reviewStore";
+import { getAllSubmissionsByWallet, getPendingSubmissions } from "../../../lib/quests/reviewStore";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
@@ -21,7 +21,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     const mk = getCurrentMonthKey();
     const snapshot = getClaimsSnapshot(session.wallet, mk);
-    const submissions = getSubmissionsByWallet(session.wallet, mk);
+    const forcedLevel = getForcedQuestLevel(session.wallet);
+    const isQuestAdmin = isQuestAdminWallet(session.wallet);
+    const reviewerLevel = (forcedLevel || "goutte") as "goutte" | "flux" | "riviere" | "ocean";
+    const submissions = getAllSubmissionsByWallet(session.wallet, mk);
+
+    const pendingSubmissions = getPendingSubmissions(mk).filter((sub) => {
+      const quest = QUESTS.find((q) => q.id === sub.questId);
+      if (!quest) return false;
+      if (isQuestAdmin) return true;
+      return canReviewQuest(quest, reviewerLevel);
+    });
 
     const quests = QUESTS.map((q) => ({
       id: q.id,
@@ -47,10 +57,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       month: mk,
       wallet: session.wallet,
       points: snapshot.points,
-      forcedLevel: getForcedQuestLevel(session.wallet),
-      isQuestAdmin: isQuestAdminWallet(session.wallet),
+      forcedLevel,
+      isQuestAdmin,
       quests,
       submissions,
+      pendingSubmissions,
       updatedAt: snapshot.updatedAt,
     });
   } catch (e: any) {
