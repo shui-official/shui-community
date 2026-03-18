@@ -1,15 +1,1 @@
-[
-  {
-    "id": "batch:2026-03",
-    "targetPeriod": "2026-03",
-    "executionDate": "2026-03-18",
-    "status": "generated",
-    "snapshotCount": 5,
-    "immediateLedgerCount": 5,
-    "vestingInstallmentCount": 24,
-    "errorsCount": 1,
-    "notes": null,
-    "createdAt": 1773764291249,
-    "updatedAt": 1773821059261
-  }
-]
+[]
