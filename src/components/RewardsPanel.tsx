@@ -1,255 +1,278 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
-type RewardsStatus = {
+type RewardsStatusResponse = {
   ok: boolean;
   error?: string;
-
   epochId?: string;
-  epochStart?: string;
-  epochEnd?: string;
-
+  epochStart?: number;
+  epochEnd?: number;
   poolShui?: number;
   minPoints?: number;
-
   myPoints?: number;
+  eligibleTotalPoints?: number;
   eligible?: boolean;
-  estimatedReward?: number;
-
+  estimatedShui?: number;
+  alreadyClaimed?: boolean;
+  totalClaimedShui?: number;
   isAdmin?: boolean;
 };
 
-function downloadTextFile(filename: string, content: string, mime = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+function formatNumber(value: number | null | undefined): string {
+  return new Intl.NumberFormat("fr-FR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 9,
+  }).format(Number(value || 0));
+}
+
+function formatDateRange(start?: number, end?: number): string {
+  if (!start || !end) return "Période en cours";
+  const formatter = new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+  return `${formatter.format(new Date(start))} → ${formatter.format(new Date(end))}`;
+}
+
+function getEligibilityLabel(data: RewardsStatusResponse | null): string {
+  if (!data) return "—";
+  return data.eligible ? "Oui" : "Non";
+}
+
+function getEstimateLabel(data: RewardsStatusResponse | null): string {
+  if (!data) return "—";
+  if (!data.eligible) return "Non éligible pour le moment";
+  return `${formatNumber(data.estimatedShui)} SHUI`;
+}
+
+function StatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 transition-all duration-200 hover:border-white/12 hover:bg-white/[0.045]">
+      <div className="text-xs uppercase tracking-[0.14em] text-white/45">{label}</div>
+      <div className="mt-2 text-2xl font-semibold text-white">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-white/45">{hint}</div> : null}
+    </div>
+  );
 }
 
 export default function RewardsPanel() {
-  const [status, setStatus] = useState<RewardsStatus | null>(null);
-  const [loadingStatus, setLoadingStatus] = useState<boolean>(true);
+  const [data, setData] = useState<RewardsStatusResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState("");
 
-  const [showRules, setShowRules] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
 
-  const [exportLoading, setExportLoading] = useState(false);
-  const [exportMsg, setExportMsg] = useState<string>("");
+    async function load() {
+      try {
+        setLoading(true);
+        setError("");
 
-  const isAdmin = useMemo(() => Boolean(status?.isAdmin), [status]);
-
-  async function loadStatus() {
-    setLoadingStatus(true);
-    setExportMsg("");
-
-    try {
-      const res = await fetch("/api/rewards/status", {
-        method: "GET",
-        credentials: "include",
-        headers: { Accept: "application/json" },
-      });
-
-      const data = (await res.json()) as RewardsStatus;
-
-      if (!res.ok) {
-        setStatus({
-          ok: false,
-          error: data?.error || (res.status === 401 ? "unauthorized" : "error"),
-          isAdmin: false,
+        const res = await fetch("/api/rewards/status", {
+          method: "GET",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
         });
-        return;
+
+        const json = (await res.json()) as RewardsStatusResponse;
+
+        if (!res.ok || !json?.ok) {
+          throw new Error(json?.error || "rewards_status_unavailable");
+        }
+
+        if (!cancelled) {
+          setData(json);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setError(e?.message || "rewards_status_unavailable");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-
-      setStatus(data);
-    } catch {
-      setStatus({ ok: false, error: "network_error", isAdmin: false });
-    } finally {
-      setLoadingStatus(false);
-    }
-  }
-
-  async function exportCsvAdmin() {
-    setExportMsg("");
-
-    if (!isAdmin) {
-      setExportMsg("Admin only — access denied.");
-      return;
     }
 
-    setExportLoading(true);
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleExportCsv() {
     try {
+      setExporting(true);
+      setExportMsg("");
+
       const res = await fetch("/api/rewards/export", {
         method: "GET",
         credentials: "include",
-        headers: { Accept: "text/csv, application/json" },
       });
 
-      const contentType = res.headers.get("content-type") || "";
-
       if (!res.ok) {
-        if (contentType.includes("application/json")) {
-          const j = await res.json();
-          setExportMsg(
-            j?.error === "forbidden"
-              ? "Forbidden — session OK mais wallet non-admin ou env non chargé."
-              : `Erreur export (${res.status})`
-          );
-        } else {
-          setExportMsg(`Erreur export (${res.status})`);
+        let message = "export_failed";
+        try {
+          const json = await res.json();
+          message = json?.error || message;
+        } catch {
+          // ignore
         }
-        return;
+        throw new Error(message);
       }
 
-      if (contentType.includes("text/csv")) {
-        const csv = await res.text();
-        downloadTextFile(
-          `shui-rewards-export-${new Date().toISOString().slice(0, 10)}.csv`,
-          csv,
-          "text/csv;charset=utf-8"
-        );
-        setExportMsg("CSV téléchargé ✅");
-        return;
-      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `shui-rewards-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
 
-      const j = await res.json();
-      if (j?.ok && typeof j?.csv === "string") {
-        downloadTextFile(
-          `shui-rewards-export-${new Date().toISOString().slice(0, 10)}.csv`,
-          j.csv,
-          "text/csv;charset=utf-8"
-        );
-        setExportMsg("CSV téléchargé ✅");
-      } else {
-        setExportMsg("Export OK mais format inattendu (ni CSV direct, ni {csv:string}).");
-      }
-    } catch {
-      setExportMsg("Network error — impossible de contacter /api/rewards/export.");
+      setExportMsg("Export CSV généré ✅");
+    } catch (e: any) {
+      setExportMsg(`Impossible d’exporter le CSV (${e?.message || "server_error"}).`);
     } finally {
-      setExportLoading(false);
+      setExporting(false);
     }
   }
 
-  useEffect(() => {
-    loadStatus();
-  }, []);
+  const summary = useMemo(() => {
+    return {
+      epochLabel: data?.epochId || "Cycle en cours",
+      rangeLabel: formatDateRange(data?.epochStart, data?.epochEnd),
+      pointsLabel: formatNumber(data?.myPoints),
+      minPointsLabel: formatNumber(data?.minPoints),
+      poolLabel: `${formatNumber(data?.poolShui)} SHUI`,
+      eligibilityLabel: getEligibilityLabel(data),
+      estimateLabel: getEstimateLabel(data),
+      claimedLabel: data?.alreadyClaimed ? "Déjà pris en compte" : "En attente / non distribué",
+    };
+  }, [data]);
 
-  // Anti-ASI : aucun risque "return \\n <div>"
-  const ui = (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-      <div className="flex items-start justify-between gap-4">
+  return (
+    <div className="mt-6 rounded-[28px] border border-white/10 bg-white/[0.04] p-6 shadow-[0_20px_80px_rgba(2,12,27,0.42)] backdrop-blur-xl">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h3 className="text-lg font-semibold">Quêtes & Rewards (mensuel)</h3>
-          <p className="mt-1 text-sm text-white/70">
-            Points off-chain → éligibilité → export CSV (admin) → distribution via Multisender.
+          <div className="text-xs uppercase tracking-[0.18em] text-white/50">
+            Lecture mensuelle
+          </div>
+          <h3 className="mt-2 text-2xl font-semibold text-white">
+            Quêtes & rewards du cycle en cours
+          </h3>
+          <p className="mt-2 max-w-3xl text-sm text-white/60">
+            Ce bloc t’aide à suivre tes points actuels, ton éligibilité et une estimation indicative
+            de ta position dans le cycle mensuel.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={loadStatus}
-          className="shrink-0 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/15"
-          disabled={loadingStatus}
-        >
-          {loadingStatus ? "Refresh..." : "Refresh"}
-        </button>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/70">
+          <div className="font-semibold text-white">{summary.epochLabel}</div>
+          <div className="mt-1 text-xs text-white/55">{summary.rangeLabel}</div>
+        </div>
       </div>
 
-      <div className="mt-5 rounded-xl border border-white/10 bg-black/20 p-4">
-        {loadingStatus ? (
-          <div className="text-sm text-white/70">Chargement…</div>
-        ) : status?.ok ? (
-          <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-            <div className="text-white/70">
-              <span className="font-medium text-white/90">Mes points:</span>{" "}
-              {typeof status.myPoints === "number" ? status.myPoints : "—"}
-            </div>
-            <div className="text-white/70">
-              <span className="font-medium text-white/90">Min points:</span>{" "}
-              {typeof status.minPoints === "number" ? status.minPoints : "—"}
-            </div>
-            <div className="text-white/70">
-              <span className="font-medium text-white/90">Pool mensuel:</span>{" "}
-              {typeof status.poolShui === "number" ? `${status.poolShui.toLocaleString()} SHUI` : "—"}
-            </div>
-            <div className="text-white/70">
-              <span className="font-medium text-white/90">Éligible:</span>{" "}
-              {typeof status.eligible === "boolean" ? (status.eligible ? "Oui" : "Non") : "—"}
+      {loading ? (
+        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={index}
+              className="h-32 animate-pulse rounded-2xl border border-white/8 bg-white/[0.03]"
+            />
+          ))}
+        </div>
+      ) : error ? (
+        <div className="mt-6 rounded-2xl border border-rose-400/20 bg-rose-500/10 p-5 text-sm text-rose-100">
+          Impossible de charger le suivi mensuel rewards ({error}).
+        </div>
+      ) : (
+        <>
+          <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="Mes points"
+              value={summary.pointsLabel}
+              hint="Points validés actuellement"
+            />
+            <StatCard
+              label="Seuil minimum"
+              value={summary.minPointsLabel}
+              hint="Niveau requis pour entrer dans le cycle"
+            />
+            <StatCard
+              label="Éligible"
+              value={summary.eligibilityLabel}
+              hint="État actuel sur ce cycle"
+            />
+            <StatCard
+              label="Estimation actuelle"
+              value={summary.estimateLabel}
+              hint="Lecture indicative, selon les données du moment"
+            />
+          </div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-white/8 bg-black/20 p-5">
+              <div className="text-sm font-semibold text-white">Repères du cycle</div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <div className="text-xs uppercase tracking-[0.14em] text-white/45">Pool mensuel</div>
+                  <div className="mt-2 text-xl font-semibold text-white">{summary.poolLabel}</div>
+                </div>
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <div className="text-xs uppercase tracking-[0.14em] text-white/45">Statut du cycle</div>
+                  <div className="mt-2 text-xl font-semibold text-white">{summary.claimedLabel}</div>
+                </div>
+              </div>
             </div>
 
-            <div className="text-white/70 sm:col-span-2">
-              <span className="font-medium text-white/90">Estimation:</span>{" "}
-              {typeof status.estimatedReward === "number" ? `${status.estimatedReward.toLocaleString()} SHUI` : "—"}
-            </div>
-
-            <div className="text-white/70 sm:col-span-2">
-              <span className="font-medium text-white/90">Admin:</span> {isAdmin ? "Oui (allowlist)" : "Non"}
+            <div className="rounded-2xl border border-white/8 bg-black/20 p-5">
+              <div className="text-sm font-semibold text-white">Comprendre simplement</div>
+              <ul className="mt-4 space-y-2 text-sm leading-6 text-white/65">
+                <li>Les quêtes validées génèrent des points.</li>
+                <li>Si le seuil minimum est atteint, tu entres dans le cycle mensuel.</li>
+                <li>L’estimation évolue selon les points éligibles de l’ensemble des participants.</li>
+              </ul>
             </div>
           </div>
-        ) : (
-          <div className="text-sm text-white/70">
-            <span className="font-medium text-white/90">Status indisponible.</span>{" "}
-            {status?.error ? <span className="text-white/60">({status.error})</span> : null}
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link href="/rewards" className="inline-flex items-center rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
+                Voir les règles
+              </Link>
+
+            {data?.isAdmin ? (
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                disabled={exporting}
+                className="inline-flex items-center rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {exporting ? "Export..." : "Export CSV (Admin)"}
+              </button>
+            ) : null}
           </div>
-        )}
-      </div>
 
-      <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <button
-          type="button"
-          onClick={() => setShowRules((v) => !v)}
-          className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium hover:bg-white/15"
-        >
-          {showRules ? "Masquer les règles" : "Voir les règles"}
-        </button>
-
-        <button
-          type="button"
-          onClick={exportCsvAdmin}
-          disabled={!isAdmin || exportLoading}
-          className={[
-            "rounded-xl px-4 py-2 text-sm font-medium",
-            !isAdmin || exportLoading
-              ? "cursor-not-allowed border border-white/10 bg-white/5 text-white/40"
-              : "border border-white/15 bg-white/10 hover:bg-white/15",
-          ].join(" ")}
-          title={!isAdmin ? "Admin only" : "Export list"}
-        >
-          {exportLoading ? "Export..." : "Export CSV (Admin)"}
-        </button>
-
-        <a
-          href="https://tools.smithii.io/multisender/solana"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium hover:bg-white/15"
-        >
-          Multisender
-        </a>
-      </div>
-
-      {exportMsg ? (
-        <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-sm text-white/70">
-          {exportMsg}
-        </div>
-      ) : null}
-
-      {showRules ? (
-        <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-white/70">
-          <div className="font-medium text-white/90">Règles (résumé)</div>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Les quêtes ajoutent des points (off-chain).</li>
-            <li>Éligibilité: points ≥ minimum.</li>
-            <li>Rewards mensuels: pool SHUI réparti proportionnellement aux points.</li>
-            <li>Distribution: export CSV (admin) puis envoi batch via Multisender.</li>
-            <li>Connexion: signature d’un message uniquement (pas de transaction pour login).</li>
-          </ul>
-        </div>
-      ) : null}
+          {exportMsg ? (
+            <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-white/70">
+              {exportMsg}
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
-
-  return ui;
 }

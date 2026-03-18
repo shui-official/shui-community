@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHUI 早期合作伙伴计划 | 率先加入。共同建设。获得奖励。</title>
+    <meta name="description" content="加入 SHUI 早期合作伙伴计划。参与建立基于 Solana 的社区驱动型 Web3 基础设施。通过内容、教育和真实社区影响获得奖励。">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav" id="nav">
+        <div class="nav__container">
+            <a href="#hero" class="nav__logo">
+                <img src="images/logo.png" alt="SHUI Logo">
+            </a>
+            
+            <div class="nav__menu" id="navMenu">
+                <a href="#overview" class="nav__link">概览</a>
+                <a href="#rewards" class="nav__link">奖励</a>
+                <a href="#levels" class="nav__link">等级</a>
+                <a href="#missions" class="nav__link">任务</a>
+                <a href="#apply" class="nav__link nav__cta">申请</a>
+            </div>
+            
+            <button class="nav__toggle" id="navToggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Particles Background -->
+    <div class="particles" id="particles"></div>
+
+    <!-- Hero Section -->
+    <section class="hero" id="hero">
+        <div class="hero__bg"></div>
+        <div class="hero__overlay"></div>
+        
+        <div class="hero__content">
+            <h1 class="hero__title" data-reveal>SHUI 早期合作伙伴计划</h1>
+            <p class="hero__subtitle" data-reveal>率先加入。共同建设。获得奖励。</p>
+            <p class="hero__quote" data-reveal>我们是水滴，汇聚成海洋。</p>
+            <p class="hero__text" data-reveal>
+                SHUI is building a network of early partners who help grow the ecosystem 
+                through content, education and real community impact.
+            </p>
+            
+            <!-- Official Links Block (Optimization 1) -->
+            <div class="hero__links" data-reveal>
+                <a href="https://shui-community.vercel.app" target="_blank" rel="noopener" class="hero__link">
+                    <svg width="16" height="16" fill="currentColor"><path d="M12 2H4c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 10H4V4h8v8z"/></svg>
+                    网站
+                </a>
+                <a href="https://x.com/Shui_Labs" target="_blank" rel="noopener" class="hero__link">
+                    <svg width="16" height="16" fill="currentColor"><path d="M12.6 3.7L8 8.3 3.4 3.7 2 5.1 6.6 9.7 2 14.3l1.4 1.4L8 11.1l4.6 4.6 1.4-1.4-4.6-4.6 4.6-4.6z"/></svg>
+                    X
+                </a>
+                <a href="https://t.me/Shui_社区" target="_blank" rel="noopener" class="hero__link">
+                    <svg width="16" height="16" fill="currentColor"><path d="M14.9 2.5L1.3 8.1c-.9.4-.9 1 0 1.4l3.5 1.1 1.3 4.3c.2.6.4.8.8.8.5 0 .7-.2 1-.5l1.9-1.8 3.9 2.9c.7.4 1.2.2 1.4-.7l2.5-11.8c.3-1.1-.4-1.6-1.1-1.3z"/></svg>
+                    Telegram
+                </a>
+                <a href="https://solscan.io/token/CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C" target="_blank" rel="noopener" class="hero__link">
+                    <svg width="16" height="16" fill="currentColor"><path d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6-2.7-6-6-6zm0 10c-2.2 0-4-1.8-4-4s1.8-4 4-4 4 1.8 4 4-1.8 4-4 4z"/></svg>
+                    Solscan
+                </a>
+            </div>
+            
+            <div class="hero__buttons" data-reveal>
+                <a href="mailto:shui.officialtoken@gmail.com?subject=SHUI%20Early%20Partner%20Application&body=Hello%20SHUI%20团队%2C%0A%0AI%20would%20like%20to%20apply%20to%20the%20SHUI%20Early%20Partner%20Program.%0A%0AName%3A%0APrimary%20platform%20(X%2FYouTube%2FTikTok%2FInstagram)%3A%0ALinks%3A%0ACountry%2FTimezone%3A%0AWhat%20I%20want%20to%20build%20with%20SHUI%3A%0A%0AThank%20you." class="btn btn--primary">
+                    申请成为 Early Partner
+                </a>
+                <a href="#overview" class="btn btn--ghost">查看计划</a>
+            </div>
+            
+            <!-- Microcopy under 申请 button (Optimization 2) -->
+            <p class="hero__microcopy" data-reveal>
+                将打开您的邮箱，并自动填入申请模板
+            </p>
+        </div>
+    </section>
+
+    <!-- What is SHUI -->
+    <section class="section section--dark" id="overview">
+        <div class="container">
+            <h2 class="section__title" data-reveal>什么是 SHUI？</h2>
+            <p class="section__intro" data-reveal>
+                SHUI 是一个建立在 Solana 上、由社区驱动的 Web3 基础设施，围绕四个核心支柱构建：
+            </p>
+            
+            <div class="pillars">
+                <div class="pillar" data-reveal>
+                    <div class="pillar__icon">💧</div>
+                    <h3 class="pillar__title">参与</h3>
+                    <p class="pillar__text">社区的积极参与与贡献</p>
+                </div>
+                <div class="pillar" data-reveal>
+                    <div class="pillar__icon">💎</div>
+                    <h3 class="pillar__title">流动性</h3>
+                    <p class="pillar__text">可持续的经济结构与流动</p>
+                </div>
+                <div class="pillar" data-reveal>
+                    <div class="pillar__icon">🔍</div>
+                    <h3 class="pillar__title">透明度</h3>
+                    <p class="pillar__text">开放、可验证、可追责的运作方式</p>
+                </div>
+                <div class="pillar" data-reveal>
+                    <div class="pillar__icon">🏦</div>
+                    <h3 class="pillar__title">金库</h3>
+                    <p class="pillar__text">由社区主导的资源分配</p>
+                </div>
+            </div>
+            
+            <p class="section__footer" data-reveal>
+                它被设计为一个负责任增长的生态系统，而不是短期投机工具。
+            </p>
+        </div>
+    </section>
+
+    <!-- Why SHUI Exists -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section__title" data-reveal>基础设施，而非投机</h2>
+            
+            <div class="flow" data-reveal>
+                <div class="flow__item">
+                    <div class="flow__icon">👥</div>
+                    <div class="flow__label">社区</div>
+                </div>
+                <div class="flow__arrow">→</div>
+                <div class="flow__item">
+                    <div class="flow__icon">🤝</div>
+                    <div class="flow__label">参与</div>
+                </div>
+                <div class="flow__arrow">→</div>
+                <div class="flow__item">
+                    <div class="flow__icon">🏦</div>
+                    <div class="flow__label">金库</div>
+                </div>
+                <div class="flow__arrow">→</div>
+                <div class="flow__item">
+                    <div class="flow__icon">🚀</div>
+                    <div class="flow__label">计划</div>
+                </div>
+            </div>
+            
+            <div class="text-block" data-reveal>
+                <p>许多社区在协调价值、奖励贡献者和资助有用项目方面都面临困难。</p>
+                <p><strong>SHUI proposes a more structured model</strong> where participation leads to treasury growth, which funds real initiatives.</p>
+                <p class="highlight">目标不是炒作，而是建设一个可见、有用并持续发展的生态系统。</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- 项目状态 -->
+    <section class="section section--dark">
+        <div class="container">
+            <h2 class="section__title" data-reveal>项目状态</h2>
+            
+            <div class="status-grid">
+                <div class="status-item" data-reveal>
+                    <div class="status-indicator status-indicator--live"></div>
+                    <div class="status-label">代币已上线</div>
+                </div>
+                <div class="status-item" data-reveal>
+                    <div class="status-indicator status-indicator--live"></div>
+                    <div class="status-label">网站已上线</div>
+                </div>
+                <div class="status-item" data-reveal>
+                    <div class="status-indicator status-indicator--live"></div>
+                    <div class="status-label">社区活跃</div>
+                </div>
+                <div class="status-item" data-reveal>
+                    <div class="status-indicator status-indicator--dev"></div>
+                    <div class="status-label">移动应用开发中</div>
+                </div>
+                <div class="status-item" data-reveal>
+                    <div class="status-indicator status-indicator--live"></div>
+                    <div class="status-label">钱包架构已部署</div>
+                </div>
+            </div>
+            
+            <p class="section__footer" data-reveal>
+                SHUI 已在 Solana 上线，并为透明、渐进式的生态增长做好了结构化准备。
+            </p>
+        </div>
+    </section>
+
+    <!-- Tokenomics -->
+    <section class="section" id="rewards">
+        <div class="container">
+            <h2 class="section__title" data-reveal>代币结构与奖励逻辑</h2>
+            
+            <div class="tokenomics">
+                <div class="tokenomics__supply" data-reveal>
+                    <div class="supply-badge">
+                        <span class="supply-label">总供应量</span>
+                        <span class="supply-value">1,000,000,000 SHUI</span>
+                    </div>
+                </div>
+                
+                <div class="allocation" data-reveal>
+                    <div class="allocation__item">
+                        <div class="allocation__bar" style="width: 30%"></div>
+                        <div class="allocation__label">
+                            <span>社区奖励</span>
+                            <strong>30%</strong>
+                        </div>
+                    </div>
+                    <div class="allocation__item">
+                        <div class="allocation__bar" style="width: 25%"></div>
+                        <div class="allocation__label">
+                            <span>流动性池</span>
+                            <strong>25%</strong>
+                        </div>
+                    </div>
+                    <div class="allocation__item">
+                        <div class="allocation__bar" style="width: 20%"></div>
+                        <div class="allocation__label">
+                            <span>金库 / 项目</span>
+                            <strong>20%</strong>
+                        </div>
+                    </div>
+                    <div class="allocation__item">
+                        <div class="allocation__bar" style="width: 15%"></div>
+                        <div class="allocation__label">
+                            <span>团队</span>
+                            <strong>15%</strong>
+                        </div>
+                    </div>
+                    <div class="allocation__item">
+                        <div class="allocation__bar" style="width: 10%"></div>
+                        <div class="allocation__label">
+                            <span>合作 / 市场</span>
+                            <strong>10%</strong>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="wallet-logic" data-reveal>
+                    <h3>合作钱包结构</h3>
+                    <p>合作奖励由专门的钱包发放 <strong>合作 / 市场 wallet</strong>.</p>
+                    <div class="wallet-amount">已分配 100 000 000 SHUI 奖励池</div>
+                    <p class="wallet-note">一个钱包 = 一个功能。透明的链上分发。</p>
+                </div>
+                
+                <!-- Verification Block (Optimization 3) -->
+                <div class="verification" data-reveal>
+                    <h3 class="verification__title">
+                        <svg width="20" height="20" fill="currentColor" style="vertical-align: -4px;">
+                            <path d="M10 2l2.5 5.1 5.6.8-4 3.9 1 5.6L10 15l-5 2.6 1-5.6-4-3.9 5.6-.8z"/>
+                        </svg>
+                        链上验证与透明度
+                    </h3>
+                    <div class="verification__grid">
+                        <div class="verification__item">
+                            <div class="verification__label">区块链</div>
+                            <div class="verification__value">Solana</div>
+                        </div>
+                        <div class="verification__item">
+                            <div class="verification__label">代币合约</div>
+                            <div class="verification__value">
+                                <a href="https://solscan.io/token/CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C" target="_blank" rel="noopener">
+                                    在 Solscan 查看
+                                    <svg width="14" height="14" fill="currentColor" style="vertical-align: -2px; margin-left: 4px;">
+                                        <path d="M11 2H5v2h4.6L2 11.6 3.4 13 11 5.4V10h2V4c0-1.1-.9-2-2-2z"/>
+                                    </svg>
+                                </a>
+                            </div>
+                        </div>
+                        <div class="verification__item">
+                            <div class="verification__label">Reward 分配</div>
+                            <div class="verification__value">合作钱包</div>
+                        </div>
+                        <div class="verification__item">
+                            <div class="verification__label">分配 Model</div>
+                            <div class="verification__value">Performance-based, transparent, on-chain</div>
+                        </div>
+                    </div>
+                    <a href="https://solscan.io/token/CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C" target="_blank" rel="noopener" class="btn btn--solscan">
+                        <svg width="18" height="18" fill="currentColor" style="vertical-align: -4px; margin-right: 8px;">
+                            <path d="M9 2C5.1 2 2 5.1 2 9s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 12c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5z"/>
+                        </svg>
+                        View SHUI on Solscan
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Why Creators Join -->
+    <section class="section section--dark">
+        <div class="container">
+            <h2 class="section__title" data-reveal>创作者为什么加入 SHUI SHUI early</h2>
+            
+            <div class="reasons">
+                <div class="reason" data-reveal>
+                    <div class="reason__icon">🌱</div>
+                    <h3>早期定位</h3>
+                    <p>Position yourself at the foundation stage of a growing ecosystem</p>
+                </div>
+                <div class="reason" data-reveal>
+                    <div class="reason__icon">🎖️</div>
+                    <h3>官方合作伙伴身份</h3>
+                    <p>Present yourself as an official early partner with credibility</p>
+                </div>
+                <div class="reason" data-reveal>
+                    <div class="reason__icon">💰</div>
+                    <h3>直接 SHUI 奖励</h3>
+                    <p>以 SHUI 代币获得透明且基于表现的奖励</p>
+                </div>
+                <div class="reason" data-reveal>
+                    <div class="reason__icon">🌊</div>
+                    <h3>网络增长</h3>
+                    <p>Participate in building a sustainable community network</p>
+                </div>
+            </div>
+            
+            <p class="highlight" data-reveal>The earliest creators become the first builders.</p>
+        </div>
+    </section>
+
+    <!-- 生态增长 -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section__title" data-reveal>Grow with the ecosystem</h2>
+            
+            <div class="timeline">
+                <div class="timeline__item" data-reveal>
+                    <div class="timeline__year">2025</div>
+                    <div class="timeline__stage">Early Stage</div>
+                    <div class="timeline__description">基础 building, early partner recruitment, community establishment</div>
+                </div>
+                <div class="timeline__item" data-reveal>
+                    <div class="timeline__year">2026</div>
+                    <div class="timeline__stage">扩张</div>
+                    <div class="timeline__description">Ecosystem growth, app launch, increased utility and partnerships</div>
+                </div>
+                <div class="timeline__item" data-reveal>
+                    <div class="timeline__year">2027</div>
+                    <div class="timeline__stage">成熟</div>
+                    <div class="timeline__description">Established network, sustained growth, progressive governance</div>
+                </div>
+            </div>
+            
+            <p class="section__footer" data-reveal>
+                Creators who join early position themselves at the foundation stage and can grow alongside the ecosystem.
+            </p>
+            <p class="note" data-reveal>
+                <em>Focus: positioning, growth, ecosystem visibility, long-term role — not financial promises.</em>
+            </p>
+        </div>
+    </section>
+
+    <!-- 早期优势 -->
+    <section class="section section--dark">
+        <div class="container">
+            <h2 class="section__title" data-reveal>The 早期优势</h2>
+            
+            <div class="advantages">
+                <div class="advantage" data-reveal>
+                    <div class="advantage__icon">✨</div>
+                    <h3>Highest Reward 倍数s</h3>
+                    <p>Early partners benefit from the most favorable reward structures</p>
+                </div>
+                <div class="advantage" data-reveal>
+                    <div class="advantage__icon">🗳️</div>
+                    <h3>First Governance Influence</h3>
+                    <p>Shape the ecosystem's direction as an early contributor</p>
+                </div>
+                <div class="advantage" data-reveal>
+                    <div class="advantage__icon">👁️</div>
+                    <h3>优先级 Ecosystem 可见度</h3>
+                    <p>Featured placement and recognition across community channels</p>
+                </div>
+                <div class="advantage" data-reveal>
+                    <div class="advantage__icon">🚀</div>
+                    <h3>Long-Term Positioning</h3>
+                    <p>Establish yourself as a founding member of the network</p>
+                </div>
+            </div>
+            
+            <p class="highlight" data-reveal>The earlier you join, the stronger your position becomes.</p>
+        </div>
+    </section>
+
+    <!-- 合作伙伴等级 -->
+    <section class="section" id="levels">
+        <div class="container">
+            <h2 class="section__title" data-reveal>合作伙伴等级</h2>
+            <p class="section__intro" data-reveal>Progress through contribution, impact and consistency.</p>
+            
+            <div class="levels">
+                <div class="level" data-reveal>
+                    <div class="level__icon">💧</div>
+                    <div class="level__name">DROP</div>
+                    <div class="level__tier">Entry Partner</div>
+                    <div class="level__multiplier">×1.0</div>
+                    <div class="level__description">Your journey begins here. Start contributing and earning.</div>
+                </div>
+                <div class="level" data-reveal>
+                    <div class="level__icon">🌊</div>
+                    <div class="level__name">STREAM</div>
+                    <div class="level__tier">Active Contributor</div>
+                    <div class="level__multiplier">×1.2</div>
+                    <div class="level__description">持续参与可获得更高奖励。</div>
+                </div>
+                <div class="level" data-reveal>
+                    <div class="level__icon">🏞️</div>
+                    <div class="level__name">RIVER</div>
+                    <div class="level__tier">Advanced Contributor</div>
+                    <div class="level__multiplier">×1.5</div>
+                    <div class="level__description">High-impact partners with proven track record.</div>
+                </div>
+                <div class="level" data-reveal>
+                    <div class="level__icon">🌍</div>
+                    <div class="level__name">OCEAN</div>
+                    <div class="level__tier">Top Ecosystem Partner</div>
+                    <div class="level__multiplier">×2.0</div>
+                    <div class="level__description">Elite partners shaping the ecosystem's future.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 任务类型 -->
+    <section class="section section--dark" id="missions">
+        <div class="container">
+            <h2 class="section__title" data-reveal>任务类型</h2>
+            
+            <div class="missions">
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">📱</div>
+                        <div class="mission__title">Reel / TikTok + Story</div>
+                    </div>
+                    <div class="mission__reward">50,000 SHUI</div>
+                    <div class="mission__description">Short-form video content with accompanying story post</div>
+                </div>
+                
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">🎥</div>
+                        <div class="mission__title">YouTube Video</div>
+                    </div>
+                    <div class="mission__reward">80,000 SHUI</div>
+                    <div class="mission__description">Educational or promotional video content</div>
+                </div>
+                
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">🧵</div>
+                        <div class="mission__title">X Thread</div>
+                    </div>
+                    <div class="mission__reward">30,000 SHUI</div>
+                    <div class="mission__description">In-depth Twitter/X thread explaining SHUI concepts</div>
+                </div>
+                
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">🎙️</div>
+                        <div class="mission__title">X / Twitter Space</div>
+                    </div>
+                    <div class="mission__reward">70,000 SHUI</div>
+                    <div class="mission__description">Live audio discussion about SHUI ecosystem</div>
+                </div>
+                
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">📚</div>
+                        <div class="mission__title">Tutorial</div>
+                    </div>
+                    <div class="mission__reward">120,000 SHUI</div>
+                    <div class="mission__description">Comprehensive guide or educational content</div>
+                </div>
+                
+                <div class="mission" data-reveal>
+                    <div class="mission__header">
+                        <div class="mission__icon">🤝</div>
+                        <div class="mission__title">Referral</div>
+                    </div>
+                    <div class="mission__reward">1,000 SHUI per member</div>
+                    <div class="mission__description">Each active, qualified community member referred</div>
+                </div>
+            </div>
+            
+            <p class="note" data-reveal>
+                <strong>Note:</strong> Qualified members must be real, active and aligned with the ecosystem values.
+            </p>
+        </div>
+    </section>
+
+    <!-- 表现奖励 -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section__title" data-reveal>表现奖励</h2>
+            
+            <div class="performance">
+                <div class="performance__category" data-reveal>
+                    <h3>Audience Bonus</h3>
+                    <div class="bonus-tier">
+                        <span class="bonus-threshold">10K views</span>
+                        <span class="bonus-arrow">→</span>
+                        <span class="bonus-reward">+15,000 SHUI</span>
+                    </div>
+                    <div class="bonus-tier">
+                        <span class="bonus-threshold">25K views</span>
+                        <span class="bonus-arrow">→</span>
+                        <span class="bonus-reward">+40,000 SHUI</span>
+                    </div>
+                    <div class="bonus-tier">
+                        <span class="bonus-threshold">50K views</span>
+                        <span class="bonus-arrow">→</span>
+                        <span class="bonus-reward">+100,000 SHUI</span>
+                    </div>
+                </div>
+                
+                <div class="performance__category" data-reveal>
+                    <h3>Conversion Bonus</h3>
+                    <div class="bonus-tier">
+                        <span class="bonus-threshold">20 qualified new members</span>
+                        <span class="bonus-arrow">→</span>
+                        <span class="bonus-reward">+20,000 SHUI</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 奖励计算器 -->
+    <section class="section section--dark">
+        <div class="container">
+            <h2 class="section__title" data-reveal>Reward Examples</h2>
+            
+            <div class="examples">
+                <div class="example" data-reveal>
+                    <div class="example__badge">Example 1</div>
+                    <div class="example__level">DROP Partner</div>
+                    <div class="example__mission">Reel + Story</div>
+                    <div class="example__calculation">
+                        <div class="calc-line">Base reward: <strong>50,000 SHUI</strong></div>
+                        <div class="calc-line">10K views bonus: <strong>+15,000 SHUI</strong></div>
+                        <div class="calc-line separator"></div>
+                        <div class="calc-line total">Total: <strong>65,000 SHUI</strong></div>
+                    </div>
+                </div>
+                
+                <div class="example" data-reveal>
+                    <div class="example__badge">Example 2</div>
+                    <div class="example__level">STREAM Partner (×1.2)</div>
+                    <div class="example__mission">Reel + Story</div>
+                    <div class="example__calculation">
+                        <div class="calc-line">Base: 50,000</div>
+                        <div class="calc-line">25K views: +40,000</div>
+                        <div class="calc-line">Conversion: +20,000</div>
+                        <div class="calc-line">Subtotal: 110,000</div>
+                        <div class="calc-line separator"></div>
+                        <div class="calc-line total">×1.2 = <strong>132,000 SHUI</strong></div>
+                    </div>
+                </div>
+                
+                <div class="example" data-reveal>
+                    <div class="example__badge">Example 3</div>
+                    <div class="example__level">RIVER Partner (×1.5)</div>
+                    <div class="example__mission">Tutorial</div>
+                    <div class="example__calculation">
+                        <div class="calc-line">Base: 120,000</div>
+                        <div class="calc-line">25K views: +40,000</div>
+                        <div class="calc-line">Conversion: +20,000</div>
+                        <div class="calc-line">Subtotal: 180,000</div>
+                        <div class="calc-line separator"></div>
+                        <div class="calc-line total">×1.5 = <strong>270,000 SHUI</strong></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Reward 分配 -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section__title" data-reveal>Reward 分配</h2>
+            
+            <div class="distribution" data-reveal>
+                <div class="distribution__visual">
+                    <div class="distribution__center">
+                        <div class="distribution__icon">🏦</div>
+                        <div class="distribution__label">合作钱包</div>
+                    </div>
+                    <div class="distribution__partners">
+                        <div class="partner-node">Partner A</div>
+                        <div class="partner-node">Partner B</div>
+                        <div class="partner-node">Partner C</div>
+                        <div class="partner-node">Partner D</div>
+                        <div class="partner-node">Partner E</div>
+                    </div>
+                </div>
+                
+                <div class="distribution__principles">
+                    <h3>分配 Principles</h3>
+                    <ul>
+                        <li>✓ Performance-based</li>
+                        <li>✓ Transparent</li>
+                        <li>✓ Controlled distribution</li>
+                        <li>✓ Progressive reporting</li>
+                    </ul>
+                </div>
+                
+                <div class="protection-note" data-reveal>
+                    <strong>Sustainable Growth:</strong> SHUI 优先采用可控的奖励分发机制 
+                    and sustainable ecosystem growth over rapid token circulation.
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 社区价值观 -->
+    <section class="section section--dark">
+        <div class="container">
+            <h2 class="section__title" data-reveal>社区价值观</h2>
+            
+            <div class="values">
+                <div class="value" data-reveal>
+                    <div class="value__icon">🚫</div>
+                    <h3>No Financial Promises</h3>
+                    <p>We focus on ecosystem building, not speculation or guaranteed returns</p>
+                </div>
+                <div class="value" data-reveal>
+                    <div class="value__icon">💬</div>
+                    <h3>Responsible Communication</h3>
+                    <p>Clear, honest messaging without hype or misleading claims</p>
+                </div>
+                <div class="value" data-reveal>
+                    <div class="value__icon">📖</div>
+                    <h3>Education First</h3>
+                    <p>Partners prioritize teaching and informing over promotion</p>
+                </div>
+                <div class="value" data-reveal>
+                    <div class="value__icon">🔍</div>
+                    <h3>透明度 First</h3>
+                    <p>对运营、奖励和进展保持开放沟通</p>
+                </div>
+            </div>
+            
+            <p class="highlight" data-reveal>
+                SHUI does not seek opportunistic promotion.<br>
+                SHUI seeks partners capable of building with the ecosystem responsibly.
+            </p>
+        </div>
+    </section>
+
+    <!-- 专属权益 -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section__title" data-reveal>专属权益</h2>
+            
+            <div class="perks">
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">🎖️</div>
+                    <div class="perk__title">OG Badge</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">🔐</div>
+                    <div class="perk__title">Alpha 访问权</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">⭐</div>
+                    <div class="perk__title">优先级 任务</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">💬</div>
+                    <div class="perk__title">Exclusive Partner Channels</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">📢</div>
+                    <div class="perk__title">Featured Partner Spotlight</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">🗳️</div>
+                    <div class="perk__title">Progressive Governance Voice</div>
+                </div>
+                <div class="perk" data-reveal>
+                    <div class="perk__icon">👁️</div>
+                    <div class="perk__title">Long-Term Ecosystem 可见度</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 如何加入 -->
+    <section class="section section--dark" id="apply">
+        <div class="container">
+            <h2 class="section__title" data-reveal>如何加入</h2>
+            
+            <div class="steps">
+                <div class="step" data-reveal>
+                    <div class="step__number">1</div>
+                    <div class="step__content">
+                        <h3>申请</h3>
+                        <p>Send your application via email with your information and platform links</p>
+                    </div>
+                </div>
+                <div class="step" data-reveal>
+                    <div class="step__number">2</div>
+                    <div class="step__content">
+                        <h3>Get Reviewed</h3>
+                        <p>Our team reviews your profile and alignment with SHUI values</p>
+                    </div>
+                </div>
+                <div class="step" data-reveal>
+                    <div class="step__number">3</div>
+                    <div class="step__content">
+                        <h3>Complete Your First Mission</h3>
+                        <p>Start contributing with your chosen content format</p>
+                    </div>
+                </div>
+                <div class="step" data-reveal>
+                    <div class="step__number">4</div>
+                    <div class="step__content">
+                        <h3>Receive 奖励</h3>
+                        <p>以透明方式领取你的 SHUI 奖励</p>
+                    </div>
+                </div>
+                <div class="step" data-reveal>
+                    <div class="step__number">5</div>
+                    <div class="step__content">
+                        <h3>Grow Through 等级</h3>
+                        <p>Progress from DROP to OCEAN as you contribute</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="cta-center" data-reveal>
+                <a href="mailto:shui.officialtoken@gmail.com?subject=SHUI%20Early%20Partner%20Application&body=Hello%20SHUI%20团队%2C%0A%0AI%20would%20like%20to%20apply%20to%20the%20SHUI%20Early%20Partner%20Program.%0A%0AName%3A%0APrimary%20platform%20(X%2FYouTube%2FTikTok%2FInstagram)%3A%0ALinks%3A%0ACountry%2FTimezone%3A%0AWhat%20I%20want%20to%20build%20with%20SHUI%3A%0A%0AThank%20you." class="btn btn--primary btn--large">
+                    申请成为 Early Partner
+                </a>
+                <!-- Microcopy under 申请 button (Optimization 2) -->
+                <p class="cta-microcopy">将打开您的邮箱，并自动填入申请模板</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="cta-final">
+        <div class="cta-final__bg"></div>
+        <div class="cta-final__overlay"></div>
+        <div class="container">
+            <div class="cta-final__content" data-reveal>
+                <h2>Join the SHUI Early Partner Network</h2>
+                <p>
+                    SHUI is building a network of early creators and growth partners 
+                    aligned with responsible ecosystem expansion.
+                </p>
+                <div class="cta-final__buttons">
+                    <a href="mailto:shui.officialtoken@gmail.com?subject=SHUI%20Early%20Partner%20Application&body=Hello%20SHUI%20团队%2C%0A%0AI%20would%20like%20to%20apply%20to%20the%20SHUI%20Early%20Partner%20Program.%0A%0AName%3A%0APrimary%20platform%20(X%2FYouTube%2FTikTok%2FInstagram)%3A%0ALinks%3A%0ACountry%2FTimezone%3A%0AWhat%20I%20want%20to%20build%20with%20SHUI%3A%0A%0AThank%20you." class="btn btn--primary btn--large">
+                        申请 Now
+                    </a>
+                    <a href="mailto:shui.officialtoken@gmail.com" class="btn btn--ghost btn--large">
+                        Contact the 团队
+                    </a>
+                </div>
+                <p class="cta-final__microcopy">Opens your email client with a pre-filled template</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer__content">
+                <div class="footer__brand">
+                    <img src="images/logo.png" alt="SHUI Logo" class="footer__logo">
+                    <p class="footer__tagline">我们是水滴，汇聚成海洋。</p>
+                </div>
+                
+                <div class="footer__links">
+                    <div class="footer__column">
+                        <h4>Resources</h4>
+                        <a href="https://shui-community.vercel.app" target="_blank" rel="noopener">网站</a>
+                        <a href="https://solscan.io/token/CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C" target="_blank" rel="noopener">Solscan</a>
+                        <a href="mailto:shui.officialtoken@gmail.com">Contact</a>
+                    </div>
+                    
+                    <div class="footer__column">
+                        <h4>社区</h4>
+                        <a href="https://x.com/Shui_Labs" target="_blank" rel="noopener">X (Twitter)</a>
+                        <a href="https://t.me/Shui_社区" target="_blank" rel="noopener">Telegram</a>
+                        <a href="https://www.instagram.com/shui.officialtoken/" target="_blank" rel="noopener">Instagram</a>
+                        <a href="https://www.facebook.com/profile.php?id=61585051808919" target="_blank" rel="noopener">Facebook</a>
+                    </div>
+                    
+                    <div class="footer__column">
+                        <h4>Program</h4>
+                        <a href="#overview">概览</a>
+                        <a href="#rewards">奖励</a>
+                        <a href="#levels">等级</a>
+                        <a href="#missions">任务</a>
+                        <a href="#apply">申请</a>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer__bottom">
+                <p>&copy; 2025 SHUI 社区. Built on Solana.</p>
+                <p class="footer__disclaimer">
+                    No financial advice. No guaranteed returns. 社区-driven ecosystem building only.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+
+<script src="i18n-dom-fix.js"></script>
+</body>
+</html>

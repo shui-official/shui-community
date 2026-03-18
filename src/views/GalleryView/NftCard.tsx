@@ -41,8 +41,7 @@ export const NftCard: FC<Props> = ({ details, onSelect, onTokenDetailsFetched = 
           <div className="relative w-full h-48 bg-gray-800">
             <Image
               src={imgSrc}
-              alt={altText}
-              layout="fill"
+              alt={altText} fill
               objectFit="cover"
               unoptimized
               loader={({ src }) => src}

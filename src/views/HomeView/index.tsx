@@ -41,7 +41,7 @@ export const HomeView: FC = () => {
           {/* LEFT: logo */}
           <div className="flex items-center gap-3 min-w-[220px]">
             <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <Image src="/shui-token.png" alt="SHUI Token" layout="fill" objectFit="cover" priority />
+              <Image src="/shui-token.png" alt="SHUI Token" fill priority  style={{objectFit: "cover"}} />
             </div>
 
             <div className="leading-tight">
@@ -115,27 +115,19 @@ export const HomeView: FC = () => {
             <p className="mt-6 max-w-xl text-base text-white/70 md:text-lg">{t("home.intro")}</p>
 
             <div className="mt-8 flex flex-wrap gap-3">
-              <Link href="/explorer" passHref>
-                <a
-                  target="_blank"
+              <Link href="/explorer" target="_blank"
                   rel="noreferrer"
-                  className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90"
-                >
+                  className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-[#0b1220] hover:bg-white/90">
                   {t("home.ctaToken")}
-                </a>
-              </Link>
+                </Link>
 
-              <Link href="/community" passHref>
-                <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+              <Link href="/community" className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
                   {t("nav.community")}
-                </a>
-              </Link>
+                </Link>
 
-              <Link href="/download" passHref>
-                <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+              <Link href="/download" className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
                   {t("home.ctaDapp")}
-                </a>
-              </Link>
+                </Link>
             </div>
 
             <div className="mt-5 text-xs text-white/50">{t("home.liveHolderMapPowered")}</div>
@@ -195,11 +187,9 @@ export const HomeView: FC = () => {
           <p className="mt-3 text-white/70">{t("home.communitySectionIntro")}</p>
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <Link href="/community" passHref>
-              <a className="rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white hover:bg-purple-500">
+            <Link href="/community" className="rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white hover:bg-purple-500">
                 {t("home.communityCtaAccess")}
-              </a>
-            </Link>
+              </Link>
 
             <a
               href={SOCIALS.tg}
@@ -210,11 +200,9 @@ export const HomeView: FC = () => {
               {t("home.communityCtaJoinTelegram")}
             </a>
 
-            <Link href="/early-partner-program" passHref>
-              <a className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
+            <Link href="/early-partner-program" className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10">
                 {t("home.communityCtaEarlyPartner", "Early Partner Program")}
-              </a>
-            </Link>
+              </Link>
           </div>
 
           <p className="mt-4 text-xs text-white/50">{t("home.noTxNoticeV1")}</p>

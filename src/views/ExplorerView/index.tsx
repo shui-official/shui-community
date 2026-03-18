@@ -162,7 +162,7 @@ const Hero: FC = () => {
             style={{ background: "radial-gradient(circle, rgba(34,211,238,0.25), transparent 70%)" }}
           />
           <div className="relative h-28 w-28 overflow-hidden rounded-full ring-2 ring-cyan-400/30 shadow-[0_0_40px_rgba(34,211,238,0.3)]">
-            <Image src="/shui-token.png" alt="SHUI" layout="fill" objectFit="cover" priority />
+            <Image src="/shui-token.png" alt="SHUI" fill priority  style={{objectFit: "cover"}} />
           </div>
         </motion.div>
 
@@ -1347,14 +1347,12 @@ const Nav: FC = () => {
   return (
     <motion.nav className="fixed left-1/2 top-4 z-50 w-auto -translate-x-1/2" initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 1.2 }}>
       <div className={`flex items-center gap-1 rounded-2xl px-3 py-2 transition-all duration-500 ${scrolled ? "border border-white/10 bg-black/70 shadow-2xl backdrop-blur-xl" : ""}`}>
-        <Link href="/" passHref>
-          <a className="mr-2 flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 transition-colors hover:bg-white/8">
+        <Link href="/" className="mr-2 flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 transition-colors hover:bg-white/8">
             <div className="relative h-6 w-6 overflow-hidden rounded-full ring-1 ring-white/20">
-              <Image src="/shui-token.png" alt="SHUI" layout="fill" objectFit="cover" />
+              <Image src="/shui-token.png" alt="SHUI" fill  style={{objectFit: "cover"}} />
             </div>
             <span className="text-xs font-extrabold tracking-wider text-white">{t("explorer.nav.brand")}</span>
-          </a>
-        </Link>
+          </Link>
         {links.map((l) => (
           <a key={l.l} href={l.h} className="hidden rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-400 transition-all hover:bg-white/8 hover:text-white sm:block">
             {l.l}

@@ -5,6 +5,7 @@ import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
 import { setUsedOnce } from "../../../lib/security/kvRest";
 import { requireCsrf } from "../../../lib/security/csrf";
+import { setSessionCookie } from "../../../lib/security/session";
 
 function getRequestOrigin(req: NextApiRequest): string | undefined {
   const origin = req.headers.origin;
@@ -114,26 +115,6 @@ function verifyToken(token: string, secret: string): any | null {
   }
 }
 
-function signSession(payload: object, secret: string): string {
-  const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-  const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
-  return `${body}.${sig}`;
-}
-
-function setSessionCookie(res: NextApiResponse, token: string) {
-  const secure = process.env.NODE_ENV === "production";
-  const parts = [
-    `shui_session=${token}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    secure ? "Secure" : "",
-    `Max-Age=${7 * 24 * 60 * 60}`,
-  ].filter(Boolean);
-
-  res.setHeader("Set-Cookie", parts.join("; "));
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -225,15 +206,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  const now = Date.now();
-  const sessionPayload = {
-    wallet: parsedWallet.wallet,
-    iat: now,
-    exp: now + 7 * 24 * 60 * 60 * 1000,
-  };
-
-  const token = signSession(sessionPayload, secret);
-  setSessionCookie(res, token);
+  setSessionCookie(res, parsedWallet.wallet, 7 * 24 * 60 * 60);
 
   res.status(200).json({ ok: true, wallet: parsedWallet.wallet });
 }

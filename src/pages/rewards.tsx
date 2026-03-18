@@ -20,7 +20,7 @@ export default function RewardsPage() {
         <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur">
           <div className="flex items-center gap-3">
             <div className="relative h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <Image src="/shui-token.png" alt="SHUI Token" layout="fill" objectFit="cover" priority />
+              <Image src="/shui-token.png" alt="SHUI Token" fill priority  style={{objectFit: "cover"}} />
             </div>
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
@@ -28,11 +28,9 @@ export default function RewardsPage() {
             </div>
           </div>
 
-          <Link href="/community" passHref>
-            <a className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
+          <Link href="/community" className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
               Aller à /community
-            </a>
-          </Link>
+            </Link>
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">

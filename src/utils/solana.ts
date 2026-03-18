@@ -7,7 +7,7 @@ export const SHUI_MINT = new PublicKey(
 
 export function getConnection(): Connection {
   const rpc =
-    process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
+    process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
   return new Connection(rpc, "confirmed");
 }
 

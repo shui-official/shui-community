@@ -83,8 +83,8 @@ export default function CommunityView() {
       <div className="relative mx-auto max-w-6xl px-6 pt-8">
         <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/10 bg-black/20">
-              <img src="/shui-token.png" alt="SHUI Token" className="h-full w-full object-cover" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full ring-1 ring-white/10 bg-white/5">
+              <div className="h-4 w-4 rounded-full bg-gradient-to-br from-cyan-300 to-blue-500" />
             </div>
             <div className="leading-tight">
               <div className="text-lg font-semibold tracking-wide">SHUI</div>
@@ -97,14 +97,10 @@ export default function CommunityView() {
               {publicKey ? <span className="text-emerald-300">{connectedLabel}</span> : connectedLabel}
             </div>
 
-            <Link href="/dashboard" passHref>
-              <a
-                onClick={onDashboardClick}
-                className="hidden md:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:text-white"
-              >
+            <Link href="/dashboard" onClick={onDashboardClick}
+                className="hidden md:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/10 hover:text-white">
                 {t("nav.dashboard")}
-              </a>
-            </Link>
+              </Link>
 
             <a
               href={SOCIALS.tg}
@@ -129,11 +125,9 @@ export default function CommunityView() {
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3">
-          <Link href="/" passHref>
-            <a className="inline-flex rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
+          <Link href="/" className="inline-flex rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
               {t("nav.backHome")}
-            </a>
-          </Link>
+            </Link>
 
           <div className="text-xs text-white/50 break-all">
             {wallet ? (
@@ -148,7 +142,7 @@ export default function CommunityView() {
         </div>
       </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 py-10">
+      <div className="relative mx-auto max-w-6xl px-6 py-6">
         <div className="grid gap-6 lg:grid-cols-2">
           <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">
             <div className="text-sm text-white/60">{t("nav.community")}</div>
@@ -205,6 +199,25 @@ export default function CommunityView() {
 
             <div id="secure-login">
               <SecureLogin />
+            </div>
+
+            <div className="rounded-2xl border border-cyan-400/10 bg-cyan-400/[0.05] p-5 backdrop-blur">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white/90">Accès rapide</div>
+                  <p className="mt-1 text-sm text-white/65">
+                    Une fois ta session sécurisée active, tu peux ouvrir ton dashboard immédiatement.
+                  </p>
+                </div>
+
+                <Link
+                  href="/dashboard"
+                  onClick={onDashboardClick}
+                  className="inline-flex items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-400/15"
+                >
+                  Accéder au dashboard
+                </Link>
+              </div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur">

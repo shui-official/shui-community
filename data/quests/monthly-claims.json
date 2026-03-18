@@ -49,6 +49,16 @@
         "total": 155
       },
       "updatedAt": 1773821036538
+    },
+    "Fcm1Z5CiXgpu1Eyz2QQmnw85jH5NzQXjJGJHNVjE3xs3": {
+      "claimed": [],
+      "bonusAwarded": [],
+      "points": {
+        "activity": 0,
+        "onchain": 0,
+        "total": 0
+      },
+      "updatedAt": 1773832917813
     }
   }
 }

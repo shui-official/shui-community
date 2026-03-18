@@ -14,21 +14,24 @@ export function getHost(req: NextApiRequest): string {
 }
 
 export function requireSameOrigin(req: any) {
-  // Anti-CSRF: si Origin est présent, il doit matcher exactement l'origine attendue.
-  // Si Origin est absent (curl / certains contextes), on tolère et on se base sur Host.
-  const origin = String(req.headers?.origin || "");
-  const referer = String(req.headers?.referer || "");
+  const origin = String(req.headers?.origin || "").trim();
+  const referer = String(req.headers?.referer || "").trim();
 
-  const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "");
+  const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "").trim();
   const proto =
-    String(req.headers?.["x-forwarded-proto"] || "") ||
+    String(req.headers?.["x-forwarded-proto"] || "").trim() ||
     (req.socket && req.socket.encrypted ? "https" : "http");
 
   const expected = host ? `${proto}://${host}` : "";
 
-  // 1) Si Origin est présent, il doit matcher expected
+  if (!expected) {
+    const err: any = new Error("Bad Origin");
+    err.statusCode = 403;
+    throw err;
+  }
+
   if (origin) {
-    if (!expected || origin !== expected) {
+    if (origin !== expected) {
       const err: any = new Error("Bad Origin");
       err.statusCode = 403;
       throw err;
@@ -36,9 +39,8 @@ export function requireSameOrigin(req: any) {
     return;
   }
 
-  // 2) Si Origin absent mais Referer présent, il doit commencer par expected
   if (referer) {
-    if (!expected || !referer.startsWith(expected)) {
+    if (!referer.startsWith(expected)) {
       const err: any = new Error("Bad Origin");
       err.statusCode = 403;
       throw err;
@@ -46,10 +48,10 @@ export function requireSameOrigin(req: any) {
     return;
   }
 
-  // 3) Origin + Referer absents => on tolère (ex: curl) et on laisse la session + SameSite protéger.
-  return;
+  const err: any = new Error("Bad Origin");
+  err.statusCode = 403;
+  throw err;
 }
-
 
 export function isString(x: any): x is string {
   return typeof x === "string" && x.length > 0;

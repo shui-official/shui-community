@@ -27,6 +27,7 @@ import RewardsLedgerTable from "../components/rewards/admin/RewardsLedgerTable";
 // Dynamic components (SSR disabled — wallet/data dependent)
 const QuestPanel = dynamic(() => import("../components/QuestPanel"), { ssr: false });
 const RewardsPanel = dynamic(() => import("../components/RewardsPanel"), { ssr: false });
+const UserRewardsTokenomicsCard = dynamic(() => import("../components/rewards/user/UserRewardsTokenomicsCard"), { ssr: false });
 const RaydiumPoolPanel = dynamic(() => import("../components/RaydiumPoolPanel"), { ssr: false });
 
 // ────────────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ type Props = {
   wallet: string;
   exp: number;
   iat: number;
+  isRewardsAdmin: boolean;
 };
 
 
@@ -44,6 +46,16 @@ type Props = {
 // ────────────────────────────────────────────────────────────
 // Server-side: session guard
 // ────────────────────────────────────────────────────────────
+
+function getRewardsAdminWallets(): Set<string> {
+  const raw = process.env.REWARDS_ADMIN_WALLETS || "";
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+}
 
 export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
   const req = ctx.req as any;
@@ -55,9 +67,16 @@ export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
 
   const locale = ctx.locale ?? "fr";
   const i18nProps = await serverSideTranslations(locale, ["common"]);
+  const isRewardsAdmin = getRewardsAdminWallets().has(session.wallet);
 
   return {
-    props: { wallet: session.wallet, exp: session.exp, iat: session.iat, ...i18nProps } as any,
+    props: {
+      wallet: session.wallet,
+      exp: session.exp,
+      iat: session.iat,
+      isRewardsAdmin,
+      ...i18nProps,
+    } as any,
   };
 };
 
@@ -173,14 +192,12 @@ function DashboardNav({ wallet, t }: { wallet: string; t: (k: string) => string 
       <div className={`flex items-center justify-between px-6 py-3 transition-all duration-500 ${scrolled ? "border-b border-white/8 bg-black/60 backdrop-blur-xl" : ""}`}>
         {/* Left — brand */}
         <div className="flex items-center gap-3">
-          <Link href="/" passHref>
-            <a className="flex items-center gap-2 rounded-xl px-2 py-1.5 hover:bg-white/8 transition-colors">
+          <Link href="/" className="flex items-center gap-2 rounded-xl px-2 py-1.5 hover:bg-white/8 transition-colors">
               <div className="relative h-7 w-7 overflow-hidden rounded-full ring-1 ring-white/20">
-                <Image src="/shui-token.png" alt="SHUI" layout="fill" objectFit="cover" />
+                <Image src="/shui-token.png" alt="SHUI" fill  style={{objectFit: "cover"}} />
               </div>
               <span className="text-xs font-extrabold tracking-wider text-white">SHUI</span>
-            </a>
-          </Link>
+            </Link>
 
           <div className="hidden h-4 w-px bg-white/10 sm:block" />
 
@@ -189,11 +206,9 @@ function DashboardNav({ wallet, t }: { wallet: string; t: (k: string) => string 
               { href: "/explorer", label: "Explorer" },
               { href: "/community", label: "Communauté" },
             ].map((l) => (
-              <Link key={l.href} href={l.href} passHref>
-                <a className="rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-400 transition-all hover:bg-white/8 hover:text-white">
+              <Link key={l.href} href={l.href} className="rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-400 transition-all hover:bg-white/8 hover:text-white">
                   {l.label}
-                </a>
-              </Link>
+                </Link>
             ))}
           </div>
         </div>
@@ -587,7 +602,7 @@ type TabId = typeof TABS[number]["id"];
 // Main Dashboard Page
 // ────────────────────────────────────────────────────────────
 
-export default function DashboardPage({ wallet, exp, iat }: Props) {
+export default function DashboardPage({ wallet, exp, iat, isRewardsAdmin }: Props) {
   const maintenanceActive = isDashboardMaintenanceEnabled();
   const maintenanceTitle = getMaintenanceTitle();
   const maintenanceMessage = getMaintenanceMessage();
@@ -677,17 +692,13 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
             </div>
 
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              <Link href="/explorer" passHref>
-                <a className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 px-5 py-3 text-sm font-bold text-cyan-300 transition hover:bg-cyan-500/15">
+              <Link href="/explorer" className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 px-5 py-3 text-sm font-bold text-cyan-300 transition hover:bg-cyan-500/15">
                   Explorer SHUI
-                </a>
-              </Link>
+                </Link>
 
-              <Link href="/community" passHref>
-                <a className="rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/10">
+              <Link href="/community" className="rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/10">
                   Communauté
-                </a>
-              </Link>
+                </Link>
             </div>
           </div>
         </div>
@@ -778,9 +789,12 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
                     subtitle="Chaque quête validée contribue à la communauté et génère des points convertibles en SHUI."
                     icon="✨"
                   />
-                        <RewardsMonthlyOverview />
-
-                        <RewardsLedgerTable />
+                        {isRewardsAdmin ? (
+                          <>
+                            <RewardsMonthlyOverview />
+                            <RewardsLedgerTable />
+                          </>
+                        ) : null}
 
 <QuestPanel />
                 </motion.div>
@@ -813,7 +827,10 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
                     subtitle="Points validés → conversion périodique en SHUI depuis le wallet Communauté."
                     icon="💰"
                   />
-                  <RewardsPanel />
+                  <>
+                    <UserRewardsTokenomicsCard />
+                    <RewardsPanel />
+                  </>
                 </motion.div>
               )}
 
@@ -908,12 +925,8 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
                 Ton compte, tes points, tes quêtes et ton historique seront synchronisés en temps réel avec l&apos;application mobile SHUI.
               </p>
               <div className="mt-3 flex items-center gap-2">
-                <Link href="/download" passHref>
-                <a
-                  className="flex items-center gap-1.5 rounded-xl border border-cyan-500/20 bg-cyan-500/6 px-3 py-1.5 text-xs font-semibold text-cyan-400 hover:bg-cyan-500/12 transition-colors"
-                >
+                <Link href="/download" className="flex items-center gap-1.5 rounded-xl border border-cyan-500/20 bg-cyan-500/6 px-3 py-1.5 text-xs font-semibold text-cyan-400 hover:bg-cyan-500/12 transition-colors">
                   📥 Télécharger APK
-                </a>
                 </Link>
                 <span className="rounded-full border border-white/8 bg-white/4 px-2 py-0.5 text-[10px] text-slate-500">Beta</span>
               </div>
@@ -944,7 +957,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
         <footer className="mt-16 border-t border-white/6 pt-8 text-center">
           <div className="flex items-center justify-center gap-2 mb-3">
             <div className="relative h-6 w-6 overflow-hidden rounded-full ring-1 ring-white/15">
-              <Image src="/shui-token.png" alt="SHUI" layout="fill" objectFit="cover" />
+              <Image src="/shui-token.png" alt="SHUI" fill  style={{objectFit: "cover"}} />
             </div>
             <span className="text-xs font-extrabold tracking-wider text-white">SHUI</span>
           </div>

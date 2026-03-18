@@ -90,3 +90,19 @@ _backup_*
 backups/
 .i18n_audit/
 *.bak.*
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Local backups
+*.bak
+*.bak.*
+*.tmp
+*.old
+.backup*
+backup*
+
+# Local data / exports if needed
+*.csv
