@@ -49,19 +49,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "yarn"
+          cache: "npm"
 
       - name: Install dependencies
-        run: yarn install --frozen-lockfile
+        run: npm install
 
       - name: TypeScript check
-        run: yarn tsc --noEmit
+        run: npm run tsc -- --noEmit
 
       - name: ESLint
-        run: yarn lint
+        run: npm run lint
 
       - name: Build (devnet only, no real secrets)
-        run: yarn build
+        run: npm run build
         env:
           NEXT_PUBLIC_SOLANA_NETWORK: devnet
           NEXT_PUBLIC_SHUI_MINT: CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C
