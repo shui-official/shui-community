@@ -1,0 +1,25 @@
+{
+  "agent_id": "agent-community",
+  "version": "1.0.0",
+  "name": "Agent COMMUNITY SHUI",
+  "branch_prefix": "agent/community-",
+  "permissions": {
+    "github_read": true,
+    "github_create_branch": true,
+    "github_create_pr": true,
+    "github_create_issue": true,
+    "github_merge_pr": false,
+    "validate_quests_solo": false,
+    "attribute_points": false,
+    "ban_users": false,
+    "access_wallets": false,
+    "access_treasury": false
+  },
+  "anti_abuse_flags": [
+    "circular_referral",
+    "multi_wallet_same_ip",
+    "new_wallet_under_48h",
+    "abnormal_progression",
+    "duplicate_proofs"
+  ]
+}
