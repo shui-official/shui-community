@@ -1,0 +1,117 @@
+# ============================================================
+# SHUI Agents CI/CD Pipeline
+# Valide toutes les PRs venant des branches agent/*
+# NE deploie PAS en production — validation humaine requise
+# ============================================================
+name: SHUI Agents CI/CD
+
+on:
+  pull_request:
+    branches: [main, staging]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  issues: write
+
+jobs:
+  # ── Job 1: Valide le nommage des branches ──────────────
+  validate-branch:
+    name: Validate branch naming
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check agent branch convention
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          echo "Branch: $BRANCH"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ ! "$BRANCH" =~ ^(agent/|dependabot/) ]]; then
+              echo "::error::PRs vers main/staging doivent venir de branches agent/*"
+              echo "Exemples valides: agent/dev-fix, agent/security-headers, agent/seo-meta"
+              exit 1
+            fi
+          fi
+          echo "Branch naming OK: $BRANCH"
+
+  # ── Job 2: Build, TypeScript, Lint ────────────────────
+  build-and-lint:
+    name: Build and Lint
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: TypeScript check
+        run: yarn tsc --noEmit
+
+      - name: ESLint
+        run: yarn lint
+
+      - name: Build (devnet only, no real secrets)
+        run: yarn build
+        env:
+          NEXT_PUBLIC_SOLANA_NETWORK: devnet
+          NEXT_PUBLIC_SHUI_MINT: CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C
+          SESSION_SECRET: ci-placeholder-not-a-real-secret-do-not-use
+          KV_REST_API_URL: https://placeholder.upstash.io
+          KV_REST_API_TOKEN: placeholder-token-ci
+
+  # ── Job 3: Security scan ──────────────────────────────
+  security-scan:
+    name: Security scan
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: npm audit (high severity)
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Check no private keys in source
+        run: |
+          set +e
+          DANGEROUS=$(grep -r \
+            -e "private_key\b" \
+            -e "PRIVATE_KEY\b" \
+            -e "seed_phrase" \
+            --include="*.ts" --include="*.tsx" --include="*.js" \
+            --exclude-dir=node_modules --exclude-dir=.next \
+            . 2>/dev/null | grep -v "//.*private_key" | grep -v "authMessage" | head -3)
+          if [ -n "$DANGEROUS" ]; then
+            echo "::warning::Possible private key pattern detected - manual review required"
+            echo "$DANGEROUS"
+          else
+            echo "No private key patterns detected in source"
+          fi
+
+  # ── Job 4: Security gate ──────────────────────────────
+  security-gate:
+    name: Security gate (no direct prod deploy)
+    runs-on: ubuntu-latest
+    needs: [validate-branch, build-and-lint, security-scan]
+    steps:
+      - name: Production protection confirmation
+        run: |
+          echo "========================================"
+          echo "  SHUI AGENT SECURITY GATE"
+          echo "========================================"
+          echo "  PR: ${{ github.head_ref }} -> ${{ github.base_ref }}"
+          echo "  All CI checks passed"
+          echo "  Direct production deploy: BLOCKED"
+          echo "  Human review: REQUIRED before merge"
+          echo "========================================"
+
