@@ -1,0 +1,42 @@
+{
+  "agent_id": "agent-dev",
+  "version": "1.0.0",
+  "name": "Agent DEV SHUI",
+  "branch_prefix": "agent/dev-",
+  "permissions": {
+    "github_read": true,
+    "github_create_branch": true,
+    "github_create_pr": true,
+    "github_create_issue": true,
+    "github_comment_pr": true,
+    "github_merge_pr": false,
+    "github_push_main": false,
+    "github_push_staging": false,
+    "vercel_deploy": false,
+    "env_vars_read": false,
+    "wallet_access": false,
+    "treasury_access": false,
+    "sign_transaction": false
+  },
+  "allowed_file_patterns": [
+    "src/components/**",
+    "src/pages/**",
+    "src/styles/**",
+    "src/lib/**",
+    "public/**",
+    "tailwind.config.js",
+    "next.config.js"
+  ],
+  "forbidden_file_patterns": [
+    ".env*",
+    "*.pem",
+    "*.key",
+    ".github/workflows/**",
+    "agents/rules/**"
+  ],
+  "rate_limits": {
+    "prs_per_day": 5,
+    "issues_per_day": 10,
+    "branches_per_day": 5
+  }
+}

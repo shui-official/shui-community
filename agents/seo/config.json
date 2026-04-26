@@ -1,0 +1,20 @@
+{
+  "agent_id": "agent-seo",
+  "version": "1.0.0",
+  "name": "Agent SEO/CONTENT SHUI",
+  "branch_prefix": "agent/seo-",
+  "permissions": {
+    "github_read": true,
+    "github_create_branch": true,
+    "github_create_pr": true,
+    "github_create_issue": true,
+    "github_merge_pr": false,
+    "github_push_main": false,
+    "publish_social_media": false,
+    "publish_website_direct": false,
+    "access_social_accounts": false
+  },
+  "content_types": ["article", "faq", "meta-tags", "og-tags", "social-post"],
+  "languages": ["fr", "en"],
+  "draft_label": "[DRAFT - A VALIDER PAR L'EQUIPE SHUI]"
+}
