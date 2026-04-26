@@ -1,0 +1,32 @@
+{
+  "agent_id": "agent-security",
+  "version": "1.0.0",
+  "name": "Agent SECURITY SHUI",
+  "branch_prefix": "agent/security-",
+  "permissions": {
+    "github_read": true,
+    "github_create_branch": true,
+    "github_create_pr": true,
+    "github_create_issue": true,
+    "github_merge_pr": false,
+    "github_push_main": false,
+    "vercel_deploy": false,
+    "env_vars_read": false,
+    "wallet_access": false,
+    "treasury_access": false,
+    "sign_transaction": false,
+    "http_scan_passive_only": true
+  },
+  "forbidden_actions": [
+    "connect_to_wallets",
+    "sign_transactions",
+    "access_private_keys",
+    "disable_security_measures",
+    "access_treasury"
+  ],
+  "rate_limits": {
+    "prs_per_day": 3,
+    "issues_per_day": 10,
+    "http_scans_per_day": 5
+  }
+}

@@ -1,0 +1,9 @@
+# SHUI Code Owners
+# Fichiers critiques necessitant approbation explicite
+
+src/lib/security/**     @shui-official
+src/pages/api/auth/**   @shui-official
+.github/workflows/**    @shui-official
+agents/rules/**         @shui-official
+src/config/**           @shui-official
+agents/**               @shui-official
