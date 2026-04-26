@@ -8,6 +8,7 @@ import RoadmapPanel from '@/components/RoadmapPanel';
 import AuditReport from '@/components/AuditReport';
 import SystemPromptModal from '@/components/SystemPromptModal';
 import ConfigFilesPanel from '@/components/ConfigFilesPanel';
+import RunAgentPanel from '@/components/RunAgentPanel';
 import type { Agent } from '@/data/agents';
 
 type Tab = 'overview' | 'github' | 'agents' | 'security' | 'workflow' | 'roadmap' | 'audit' | 'configs';
@@ -588,6 +589,8 @@ export default function Dashboard() {
           {/* ── AGENTS TAB ── */}
           {activeTab === 'agents' && (
             <div className="space-y-6">
+              <RunAgentPanel />
+
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-white">Agents IA — Détails &amp; Actions</h2>
                 <div className="text-sm text-gray-400">Cliquez pour voir les détails</div>
