@@ -19,6 +19,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { getSession } from "../lib/security/session";
 import { getLevelProgress } from "../lib/quests/catalog";
+import { getForcedQuestLevel } from "../lib/quests/admin";
 
 // Dynamic components (SSR disabled — wallet/data dependent)
 const QuestPanel = dynamic(() => import("../components/QuestPanel"), { ssr: false });
@@ -33,11 +34,22 @@ type Props = {
   wallet: string;
   exp: number;
   iat: number;
+  isRewardsAdmin: boolean;
 };
 
 // ────────────────────────────────────────────────────────────
 // Server-side: session guard
 // ────────────────────────────────────────────────────────────
+
+function getRewardsAdminWallets(): Set<string> {
+  const raw = process.env.REWARDS_ADMIN_WALLETS || "";
+  return new Set(
+    raw
+      .split(",")
+      .map((w) => w.trim())
+      .filter(Boolean)
+  );
+}
 
 export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
   const req = ctx.req as any;
@@ -49,9 +61,16 @@ export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
 
   const locale = ctx.locale ?? "fr";
   const i18nProps = await serverSideTranslations(locale, ["common"]);
+  const isRewardsAdmin = getRewardsAdminWallets().has(session.wallet);
 
   return {
-    props: { wallet: session.wallet, exp: session.exp, iat: session.iat, ...i18nProps } as any,
+    props: {
+      wallet: session.wallet,
+      exp: session.exp,
+      iat: session.iat,
+      isRewardsAdmin,
+      ...i18nProps,
+    } as any,
   };
 };
 
@@ -207,18 +226,24 @@ function DashboardNav({ wallet, t }: { wallet: string; t: (k: string) => string 
 /** Level progression card */
 function LevelHeroCard({
   totalPoints,
+  forcedLevel,
   wallet,
   questsData,
 }: {
   totalPoints: number;
+  forcedLevel?: string | null;
   wallet: string;
   questsData: { total: number; claimed: number } | null;
 }) {
   const info = getLevelProgress(totalPoints);
-  const meta = LEVEL_META[info.level];
+  const effectiveLevel =
+    (forcedLevel && forcedLevel in LEVEL_META
+      ? forcedLevel
+      : info.level) as keyof typeof LEVEL_META;
+  const meta = LEVEL_META[effectiveLevel];
   const nextMeta = (() => {
     const keys = Object.keys(LEVEL_META);
-    const idx = keys.indexOf(info.level);
+    const idx = keys.indexOf(effectiveLevel);
     return idx < keys.length - 1 ? LEVEL_META[keys[idx + 1] as keyof typeof LEVEL_META] : null;
   })();
 
@@ -575,7 +600,7 @@ type TabId = typeof TABS[number]["id"];
 // Main Dashboard Page
 // ────────────────────────────────────────────────────────────
 
-export default function DashboardPage({ wallet, exp, iat }: Props) {
+export default function DashboardPage({ wallet, exp, iat, isRewardsAdmin }: Props) {
   const { t } = useTranslation("common");
   const router = useRouter();
   const { connected, publicKey } = useWallet();
@@ -619,6 +644,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
   }, []);
 
   const totalPoints = questsData?.totalPoints ?? 0;
+  const forcedLevelFromWallet = isRewardsAdmin ? getForcedQuestLevel(wallet) : null;
 
   return (
     <div className="relative min-h-screen text-white" style={{ fontFamily: "-apple-system, 'Segoe UI', sans-serif" }}>
@@ -636,6 +662,7 @@ export default function DashboardPage({ wallet, exp, iat }: Props) {
         <section className="mt-6">
           <LevelHeroCard
             totalPoints={totalPoints}
+            forcedLevel={forcedLevelFromWallet}
             wallet={wallet}
             questsData={questsData}
           />
