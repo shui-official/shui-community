@@ -42,24 +42,29 @@ async function upstashSetNxEx(key: string, value: string, ttlSec: number): Promi
   const token = envToken();
   if (!url || !token) return false;
 
-  // Upstash REST supports pipeline. We use:
-  // ["SET", key, value, "NX", "EX", ttlSec]
-  const endpoint = `${url.replace(/\/+$/, "")}/pipeline`;
+  try {
+    // Upstash REST supports pipeline. We use:
+    // ["SET", key, value, "NX", "EX", ttlSec]
+    const endpoint = `${url.replace(/\/+$/, "")}/pipeline`;
 
-  const r = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify([["SET", key, value, "NX", "EX", String(ttlSec)]]),
-  });
+    const r = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([["SET", key, value, "NX", "EX", String(ttlSec)]]),
+    });
 
-  if (!r.ok) return false;
+    if (!r.ok) return false;
 
-  const j = (await r.json()) as Array<{ result?: any; error?: string }>;
-  const first = j && j[0];
-  return !!first && first.result === "OK";
+    const j = (await r.json()) as Array<{ result?: any; error?: string }>;
+    const first = j && j[0];
+    return !!first && first.result === "OK";
+  } catch (err) {
+    console.warn("[kvRest] Upstash unavailable, falling back to memory:", err);
+    return false;
+  }
 }
 
 export async function setUsedOnce(key: string, ttlSec: number): Promise<boolean> {
