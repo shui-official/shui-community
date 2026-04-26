@@ -37,6 +37,10 @@
     "_i18n_lock2_backup_*",
     "_bank_hardening_backup_*",
     "_security_hardening_backup_*",
-    "*.bak.*"
+    "*.bak.*",
+    "agents-dashboard",
+    "agents-dashboard/**/*",
+    ".backup",
+    ".backup/**/*"
   ]
 }
