@@ -29,6 +29,14 @@ interface GHPRItem extends GHItem {
   isDraft: boolean;
 }
 
+interface AgentRunResult {
+  ok?: boolean;
+  agent?: string;
+  mode?: string;
+  result?: string;
+  error?: string;
+}
+
 interface GitHubData {
   connected: boolean;
   repo?: string;
@@ -293,6 +301,10 @@ function GitHubPanel({ data, loading, onRefresh }: { data: GitHubData | null; lo
 // ─── Main Dashboard ────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [runAgentKey, setRunAgentKey] = useState<'dev' | 'security' | 'seo' | 'community'>('dev');
+  const [runPrompt, setRunPrompt] = useState('Analyse le site SHUI et propose une correction de maintenance safe.');
+  const [runLoading, setRunLoading] = useState(false);
+  const [runResult, setRunResult] = useState<AgentRunResult | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [showPromptModal, setShowPromptModal] = useState(false);
   const [promptAgent, setPromptAgent] = useState<Agent | null>(null);
@@ -313,6 +325,26 @@ export default function Dashboard() {
       setGithubFetched(true);
     }
   }, []);
+
+  const runAgent = useCallback(async () => {
+    setRunLoading(true);
+    setRunResult(null);
+
+    try {
+      const res = await fetch('/api/agents/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: runAgentKey, prompt: runPrompt }),
+      });
+
+      const json = await res.json() as AgentRunResult;
+      setRunResult(json);
+    } catch (e) {
+      setRunResult({ ok: false, error: String(e) });
+    } finally {
+      setRunLoading(false);
+    }
+  }, [runAgentKey, runPrompt]);
 
   // Auto-fetch on GitHub tab
   useEffect(() => {
@@ -595,6 +627,93 @@ export default function Dashboard() {
                 <h2 className="text-xl font-bold text-white">Agents IA — Détails &amp; Actions</h2>
                 <div className="text-sm text-gray-400">Cliquez pour voir les détails</div>
               </div>
+
+              <div className="agent-runner-card p-6">
+                <div className="relative z-10">
+                  <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
+                    <div>
+                      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs mb-3"
+                        style={{ background: 'rgba(0,212,255,0.10)', border: '1px solid rgba(0,212,255,0.25)', color: '#00D4FF' }}>
+                        ⚡ Local Agent Runner
+                      </div>
+                      <h3 className="text-2xl font-bold text-white tracking-tight">Maintenance contrôlée</h3>
+                      <p className="text-sm text-gray-400 mt-2 max-w-2xl">
+                        Donne une instruction à un agent. Il répond en diagnostic sécurisé uniquement :
+                        aucun fichier modifié, aucun commit, aucun push, aucun déploiement.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <span className="text-xs px-3 py-1 rounded-full" style={{ background: 'rgba(0,255,136,0.12)', color: '#00FF88', border: '1px solid rgba(0,255,136,0.25)' }}>
+                        SAFE MODE
+                      </span>
+                      <span className="text-xs px-3 py-1 rounded-full" style={{ background: 'rgba(255,140,0,0.10)', color: '#FF8C00', border: '1px solid rgba(255,140,0,0.22)' }}>
+                        HUMAN REVIEW
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr_220px] gap-4 items-stretch">
+                    <label className="block">
+                      <span className="text-xs text-gray-500 uppercase tracking-wide">Agent</span>
+                      <select
+                        value={runAgentKey}
+                        onChange={(e) => setRunAgentKey(e.target.value as 'dev' | 'security' | 'seo' | 'community')}
+                        className="agent-input mt-2 w-full rounded-2xl px-4 py-4 text-sm text-white outline-none"
+                      >
+                        <option value="dev">⚙️ Agent DEV</option>
+                        <option value="security">🛡️ Agent SECURITY</option>
+                        <option value="seo">📈 Agent SEO</option>
+                        <option value="community">🌊 Agent COMMUNITY</option>
+                      </select>
+                    </label>
+
+                    <label className="block">
+                      <span className="text-xs text-gray-500 uppercase tracking-wide">Instruction</span>
+                      <textarea
+                        value={runPrompt}
+                        onChange={(e) => setRunPrompt(e.target.value)}
+                        rows={4}
+                        className="agent-input mt-2 w-full rounded-2xl px-4 py-4 text-sm text-white outline-none resize-y"
+                        placeholder="Ex: Corrige les clés i18n affichées sur la homepage..."
+                      />
+                    </label>
+
+                    <button
+                      onClick={runAgent}
+                      disabled={runLoading || runPrompt.trim().length < 3}
+                      className="agent-run-button mt-6 lg:mt-8 rounded-2xl px-5 py-4 text-sm font-bold text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {runLoading ? '⏳ Analyse…' : '▶ Run Agent'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-5">
+                    {['No write', 'No commit', 'No push', 'No deploy'].map((item) => (
+                      <div key={item} className="rounded-xl px-3 py-2 text-xs text-gray-400"
+                        style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        🔒 {item}
+                      </div>
+                    ))}
+                  </div>
+
+                  {runResult && (
+                    <div className="agent-result mt-5 rounded-2xl overflow-hidden">
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-[#1A2440]">
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Résultat agent</div>
+                        <div className="text-xs px-2 py-1 rounded-full"
+                          style={{ background: runResult.ok === false ? 'rgba(255,140,0,0.12)' : 'rgba(0,255,136,0.12)', color: runResult.ok === false ? '#FF8C00' : '#00FF88' }}>
+                          {runResult.mode || (runResult.ok === false ? 'error' : 'ready')}
+                        </div>
+                      </div>
+                      <pre className="p-5 text-sm leading-6 whitespace-pre-wrap overflow-x-auto text-[#D7E3F4]">
+                        {runResult.error || runResult.result || JSON.stringify(runResult, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-6">
                 {AGENTS.map(agent => (
                   <AgentCard key={agent.id} agent={agent} compact={false}
