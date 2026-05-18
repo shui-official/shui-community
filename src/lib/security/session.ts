@@ -1,6 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 
+// ────────────────────────────────────────────────────────
+// Session token SHUI — HMAC-SHA256
+// Agent SECURITY fix: SameSite Lax -> Strict (2026-04-25)
+// ────────────────────────────────────────────────────────
+
 type SessionPayload = {
   wallet: string;
   iat: number;
@@ -53,15 +58,18 @@ export function setSessionCookie(res: NextApiResponse, wallet: string, maxAgeSec
 
   const isProd = process.env.NODE_ENV === "production";
 
+  // Agent SECURITY fix: SameSite=Strict (was Lax) — 2026-04-25
+  // Strict empeche l'envoi du cookie sur toute navigation cross-site.
+  // Compatible car SHUI n'a pas de flux OAuth externe avec session active.
   res.setHeader("Set-Cookie", [
-    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}; ${isProd ? "Secure;" : ""}`,
+    `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}; ${isProd ? "Secure;" : ""}`,
   ]);
 }
 
 export function clearSessionCookie(res: NextApiResponse) {
   const isProd = process.env.NODE_ENV === "production";
   res.setHeader("Set-Cookie", [
-    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; ${isProd ? "Secure;" : ""}`,
+    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; ${isProd ? "Secure;" : ""}`,
   ]);
 }
 
