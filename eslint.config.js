@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 import globals from "globals";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", ".vercel/**", "agents-dashboard/**"] },
+  { ignores: ["dist/**", "node_modules/**", ".vercel/**", "agents-dashboard/**", ".backup_*.tsx"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts"], languageOptions: { globals: { ...globals.browser, ...globals.node } } },
