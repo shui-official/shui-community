@@ -1,62 +1,52 @@
-# Create Solana Dapp with Next.JS
+# shui-website — Vitrine SHUI 水 + dApp Swap / Farm
 
-Want to start develop with Solana fetching NFTs from the blockchain or power-up your [Anchor](https://project-serum.github.io/anchor/getting-started/introduction.html) app with UI?   
-This boilerplate can be used to setup your UI with React.JS / Next.JS and deploy it to [Vercel Platform](https://vercel.com/) in just a minutes.
+Projet **indépendant** de `shui-community` (lecture seule) et de SHUI Mobile (référence uniquement).
 
+## Prérequis
+- **Node.js 22 LTS** (voir `.nvmrc` ; `engines` + `engine-strict` refusent Node 20 : plusieurs dépendances wallet-standard exigent Node ≥ 22).
+- npm ≥ 10. Les options d'installation (`legacy-peer-deps`, `save-exact`) sont dans `.npmrc`.
 
-
-https://user-images.githubusercontent.com/188568/152035121-400a89b2-a5f7-4dca-9abd-b5991dc99f2c.mp4
-
-
-
-
-## 🛵 ◍ Demo: https://create-dapp-solana-nextjs.vercel.app/
-
-This project includes:
-
-- Next.JS
-- TypeScript
-- [@solana/wallet-adapter](https://github.com/solana-labs/wallet-adapter) and [@solana/web3.js](https://solana-labs.github.io/solana-web3.js) for interactions with wallets & blockchain.
-- Tailwind CSS (with [daisyUI](https://daisyui.com/))
-
-## Getting Started
-
-First, run the development server:
-
+## Lancer
 ```bash
-yarn
-yarn run dev
+nvm use            # Node 22
+npm ci             # installation reproductible depuis package-lock.json
+npm run dev          # http://localhost:4321  (Home = /, Swap = /swap.html, Farm = /farm.html)
+npm run typecheck    # tsc --noEmit
+npm run lint         # eslint
+npm test             # vitest (56 tests, AUCUN appel réseau)
+npm run build        # dist/ statique
+npm run check        # domaines autorisés, assets, absence de secrets
+npx tsx scripts/simulate-mainnet.ts   # diagnostic : construit + SIMULE sur Mainnet, ne signe ni n'envoie jamais
+```
+RPC : `VITE_SOLANA_RPC=https://…` (le RPC public Mainnet est limité en débit — un RPC dédié est recommandé en production).
+
+## Architecture
+```
+public/index.html            Home V1 validée — copiée TELLE QUELLE dans dist/ (aucune transformation)
+public/assets/css/main.css   CSS V1 (inchangé, octet pour octet)
+public/assets/css/dapp.css   CSS additif Swap/Farm (réutilise les tokens V1)
+public/assets/js/*.js        JS V1 (water.js + main.js inchangés ; config.js : +2 liens internes)
+swap.html · farm.html        Pages dApp (même header, typographies, palette)
+src/lib/solana/              constantes vérifiées, montants bigint, connexion + contrôle Mainnet, soldes/ATA
+src/lib/raydium/             quote + build swap CPMM SOL⇄SHUI
+src/lib/orca/                quote + build swap Whirlpool USDC⇄SHUI (direct)
+src/lib/farm/                lecture état/position Farm v6, rewards en attente, build deposit/withdraw/claim
+src/lib/transactions/        pipeline unique : validate → simulate → sign → broadcast → confirm
+src/lib/wallet/              Phantom + Solflare (adapters officiels, clé publique uniquement)
+src/ui/ · src/pages/         UI (aucune logique de transaction)
+tests/                       tests unitaires
+SHUI_WEB3_PARITY.md          parité Web ⇄ Mobile + vérifications on-chain
 ```
 
-// TODO
-If you deploy new Candy Machine you can update UI config here: `./src/config/candy-machine.config.js`.
+## Sécurité
+- Aucune seed / clé privée / mnemonic : le site ne lit que la clé publique ; toute signature se fait dans le wallet.
+- Simulation `err === null` obligatoire avant toute demande de signature.
+- Liste blanche de programmes par opération, comptes attendus obligatoires, comptes interdits, 1 seul signataire.
+- Blockhash frais, vérifié avant et après signature ; transaction jamais modifiée après signature.
+- Aucune fonction de création / administration de Farm dans le code.
+- Mode diagnostic : ajouter `?debug=1` à l'URL (err / logs / unitsConsumed, données publiques uniquement).
+- Persistance wallet entre pages : seul le NOM du wallet (`localStorage["shui.wallet"]`) est mémorisé ; reconnexion via `adapter.autoConnect()` (extension déjà autorisée). Effacé uniquement par « Déconnecter ».
+- Solflare affiche « Site inconnu » sur localhost : protection normale du wallet, à ne pas contourner.
 
-## Style
-
-[Tailwind CSS](https://tailwindcss.com/) or [daisyUI](https://daisyui.com/) are selected tools for rapid style development.
-
-You can quickly change theme changing `daisy.themes` within `./tailwind.config.js`.
-More info here: https://daisyui.com/docs/default-themes
-
-This app encourage you to use CSS Modules over other style technics (like SASS/LESS, Styled Components, usual CSS).
-It have modular nature and supports modern CSS. [Read more on Next.JS site](https://nextjs.org/docs/basic-features/built-in-css-support).
-Anyway, if you want to connect LESS there is example code in `./next.config.js`
-
-## Deploy on Vercel
-
-Before push run localy `npm run build` to make sure app can be build succesffully on vercel .
-
-Vercel will automatically create environment and deployment for you if you have vercel account connected to your GitHub account. Go to the vercel.com to connect it.
-Then any push to `main` branch will automatically rebuild and redploy app.
-
-### Possible Issues 
-
-- You might [need to overwrite default output derictory](https://github.com/thuglabs/create-dapp-solana-nextjs/issues/23) for vercel settings if you see [`Routes Manifest Could Not Be Found
-`](https://github.com/vercel/vercel/blob/main/errors/now-next-routes-manifest.md) error.
-
-## Templates
-
-This boilerplate includes some templates you may find useful:
-
-- NFT Gallery Template
-- UI for Anchor app (Anchor program based on [this tutorial](https://lorisleiva.com/create-a-solana-dapp-from-scratch))
+## Propriété
+Projet propriétaire — dépôt source PRIVÉ. Aucune licence open-source. Voir `docs/V1_FINALISATION_REPORT.md` §Licences (obligations tierces : GPL-3.0 Raydium SDK, licence Orca non commerciale).

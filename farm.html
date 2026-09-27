@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Farmer SHUI — Farm SHUI/SOL · SHUI 水</title>
+  <meta name="description" content="Déposez vos LP SHUI/SOL dans la Farm Raydium et réclamez vos récompenses SHUI." />
+  <meta name="theme-color" content="#03060c" />
+  <meta name="robots" content="noindex" />
+  <link rel="icon" type="image/png" href="./assets/shui-mark.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&family=Noto+Serif+SC:wght@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/css/main.css" />
+  <link rel="stylesheet" href="/assets/css/dapp.css" />
+</head>
+<body>
+<header class="hdr is-scrolled" id="hdr">
+  <div class="wrap hdr__in">
+    <a href="./index.html" class="brand" aria-label="SHUI — accueil">
+      <img src="./assets/shui-mark.png" alt="" />
+      <span class="brand__t">SHUI</span><span class="brand__h">水</span>
+    </a>
+    <nav class="nav" aria-label="Navigation dApp">
+      <a href="./index.html">Accueil</a>
+      <a href="./swap.html">Swap</a>
+      <a href="./farm.html" class="is-active">Farm</a>
+    </nav>
+    <div class="hdr__cta">
+      <button class="btn btn--sm btn--primary wbtn" id="walletBtn" type="button">Connecter wallet</button>
+    </div>
+  </div>
+</header>
+
+<main class="app" data-screen-label="11 Farm">
+  <div class="wrap">
+    <div class="app__head">
+      <div class="app__switch" aria-label="Navigation dApp"><a href="./index.html">← Accueil</a><a href="./swap.html">Swap</a><a href="./farm.html" aria-current="page">Farm</a></div>
+      <div class="sec__num"><b>dApp</b> / Farm</div>
+      <div>
+        <h1 class="h2">Farmer SHUI, <span class="serif">goutte à goutte.</span></h1>
+        <p class="lede">Déposez vos LP SHUI/SOL dans la Farm Raydium v6, suivez votre position et réclamez vos SHUI. Toutes les valeurs sont lues on-chain.</p>
+      </div>
+    </div>
+
+    <div class="app__grid">
+      <section class="panel" aria-label="Farm">
+        <div class="panel__hd">
+          <div class="farm__pair"><div class="vis-pair" aria-hidden="true"><b>SHUI</b><b>SOL</b></div><div><strong>SHUI / SOL</strong><small>RAYDIUM FARM V6</small></div></div>
+          <span class="pill" id="farmState">—</span>
+        </div>
+        <dl class="pos">
+          <div><dt>LP dans le wallet</dt><dd id="pWallet">—</dd></div>
+          <div><dt>LP en Farm</dt><dd id="pStaked">—</dd></div>
+          <div><dt>SHUI à réclamer</dt><dd id="pPending">—</dd></div>
+        </dl>
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected="true" data-tab="deposit" type="button">Déposer</button>
+          <button role="tab" aria-selected="false" data-tab="withdraw" type="button">Retirer</button>
+          <button role="tab" aria-selected="false" data-tab="claim" type="button">Réclamer</button>
+        </div>
+        <div class="panel__bd">
+          <div class="field" id="lpField">
+            <div class="field__top"><span id="lpLabel">LP à déposer</span><span>Disponible <span id="lpAvail">—</span> <button class="max" id="maxBtn" type="button">MAX</button></span></div>
+            <div class="field__row"><input id="lpAmount" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Montant LP" /><span class="pill">LP</span></div>
+          </div>
+          <dl class="recap">
+            <div><dt>Opération</dt><dd id="rAction">—</dd></div>
+            <div><dt>Montant LP</dt><dd id="rAmount">—</dd></div>
+            <div><dt>SHUI réclamés au passage</dt><dd class="hl" id="rHarvest">—</dd></div>
+            <div><dt>Frais réseau (est.)</dt><dd id="rNet">—</dd></div>
+            <div><dt>Farm</dt><dd id="rFarm">—</dd></div>
+          </dl>
+          <div class="cta-row"><button class="btn btn--primary" id="actionBtn" type="button" disabled>Connecter un wallet</button></div>
+          <div class="status" id="status" role="status" aria-live="polite"></div>
+        </div>
+        <div class="panel__ft">Dans la Farm v6, chaque dépôt ou retrait réclame automatiquement les SHUI accumulés. « Réclamer » = retrait de 0 LP. Aucun APR/APY n'est affiché.</div>
+      </section>
+
+      <aside class="side">
+        <div class="card"><span class="tag">Campagne on-chain</span>
+          <div class="bal" id="farmInfo"><div><span>Chargement</span><span>…</span></div></div>
+        </div>
+        <div class="card"><span class="tag">Obtenir des LP</span>
+          <p class="muted" style="font-size:14px;margin:14px 0 16px">Les LP SHUI/SOL s'obtiennent en ajoutant de la liquidité au pool Raydium.</p>
+          <a class="btn btn--sm" id="addLiq" target="_blank" rel="noopener noreferrer">Ajouter de la liquidité — Raydium <span class="arr">↗</span></a>
+        </div>
+      </aside>
+    </div>
+  </div>
+</main>
+
+<div class="wm" id="walletModal" role="dialog" aria-modal="true" aria-labelledby="wmTitle">
+  <div class="panel wm__box">
+    <div class="panel__hd"><strong id="wmTitle">Connecter un wallet</strong><button class="wm__x" id="wmClose" type="button" aria-label="Fermer">✕</button></div>
+    <div class="panel__bd"><div class="wm__list" id="wmList"></div></div>
+    <div class="panel__ft">SHUI ne demande jamais votre phrase de récupération ni votre clé privée. Seule votre adresse publique est lue ; chaque transaction est signée dans votre wallet.</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script type="module" src="./src/pages/farm.ts"></script>
+</body>
+</html>
