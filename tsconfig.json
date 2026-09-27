@@ -1,46 +1,19 @@
 {
   "compilerOptions": {
-    "target": "es2017",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": false,
-    "forceConsistentCasingInFileNames": true,
-    "noEmit": true,
-    "incremental": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "node",
+    "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "downlevelIteration": true,
-    "baseUrl": "./src"
+    "noEmit": true,
+    "types": ["vite/client", "node"]
   },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx"
-  ],
-  "exclude": [
-    "node_modules",
-    ".next",
-    "_i18n_lock_backup_*",
-    "_backup_*",
-    "backups",
-    ".i18n_audit",
-    "audit_report_*.txt",
-    "_i18n_lock2_backup_*",
-    "_bank_hardening_backup_*",
-    "_security_hardening_backup_*",
-    "*.bak.*",
-    "agents-dashboard",
-    "agents-dashboard/**/*",
-    ".backup",
-    ".backup/**/*"
-  ]
+  "include": ["src", "tests", "vite.config.ts"]
 }

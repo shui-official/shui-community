@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>SHUI 水 — Nous sommes des gouttes. Ensemble, nous formons un océan.</title>
+  <meta name="description" content="SHUI est une infrastructure communautaire Web3 sur Solana : participation, liquidité, transparence on-chain et trésorerie orientée projets." />
+  <meta property="og:title" content="SHUI 水 — Infrastructure communautaire Web3 sur Solana" />
+  <meta property="og:description" content="Nous sommes des gouttes. Ensemble, nous formons un océan." />
+  <meta name="theme-color" content="#03060c" />
+  <link rel="icon" type="image/png" href="assets/shui-mark.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&family=Noto+Serif+SC:wght@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/main.css" />
+  <script src="assets/js/config.js"></script>
+</head>
+<body>
+
+<!-- ============ HEADER ============ -->
+<header class="hdr" id="hdr">
+  <div class="wrap hdr__in">
+    <a href="#top" class="brand" aria-label="SHUI — accueil">
+      <img src="assets/shui-mark.png" alt="" />
+      <span class="brand__t">SHUI</span><span class="brand__h">水</span>
+    </a>
+    <nav class="nav" aria-label="Navigation principale">
+      <a href="#origine">Origine</a>
+      <a href="#philosophie">Philosophie</a>
+      <a href="#ecosysteme">Écosystème</a>
+      <a href="#token">Token</a>
+      <a href="#farm">Farm</a>
+      <a href="#mobile">Mobile</a>
+      <a href="#communaute">Communauté</a>
+    </nav>
+    <div class="hdr__cta">
+      <a class="btn btn--sm" data-link="explorer" target="_blank" rel="noopener noreferrer">Explorer <span class="arr">↗</span></a>
+      <a class="btn btn--sm btn--primary" href="#mobile">Télécharger SHUI</a>
+      <button class="burger" id="burger" aria-label="Menu" aria-expanded="false"><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<nav class="mnav" aria-label="Navigation mobile">
+  <a href="#origine">Origine <span>01</span></a>
+  <a href="#philosophie">Philosophie <span>02</span></a>
+  <a href="#ecosysteme">Écosystème <span>03</span></a>
+  <a href="#token">Token <span>04</span></a>
+  <a href="#farm">Farm <span>05</span></a>
+  <a href="#mobile">Mobile <span>06</span></a>
+  <a href="#communaute">Communauté <span>07</span></a>
+  <a href="#ressources">Ressources <span>08</span></a>
+</nav>
+
+<main id="top">
+
+<!-- ============ HERO ============ -->
+<section class="hero" data-screen-label="00 Hero">
+  <div class="hero__fallback"></div>
+  <canvas class="hero__gl" id="waterGL" aria-hidden="true"></canvas>
+
+  <div class="hero__main">
+    <div class="wrap">
+      <div class="hero__mark rv">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <img src="assets/shui-mark.png" alt="Logo SHUI" />
+      </div>
+      <div class="hero__eyebrow rv" data-d="1"><span class="tag">Infrastructure communautaire · Solana</span></div>
+      <h1 class="hero__title rv" data-d="2">SHUI<span class="han">水</span></h1>
+      <p class="hero__quote rv" data-d="3">Nous sommes des gouttes. <span class="serif">Ensemble, nous formons un océan.</span></p>
+      <p class="hero__sub rv" data-d="3">Participation, liquidité, transparence on-chain et trésorerie orientée projets — une structure plutôt qu'une promesse.</p>
+      <div class="hero__ctas rv" data-d="4">
+        <a class="btn btn--primary" href="#origine">Découvrir SHUI <span class="arr">↓</span></a>
+        <a class="btn" data-link="explorer" target="_blank" rel="noopener noreferrer">Ouvrir l'Explorer <span class="arr">↗</span></a>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero__rail">
+    <dl class="wrap rail">
+      <div><dt>Réseau</dt><dd>Solana</dd></div>
+      <div><dt>Supply fixe</dt><dd>1 000 000 000</dd></div>
+      <div><dt>Decimals</dt><dd>9</dd></div>
+      <div>
+        <dt>Mint officiel</dt>
+        <dd><button class="copy" data-copy="CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C"><span class="addr">CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C</span><span class="ico">Copier</span></button></dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============ 01 ORIGINE ============ -->
+<section class="sec" id="origine" data-screen-label="01 Origine">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>01</b> / Origine</div>
+      <div>
+        <h2 class="h2 rv">Un nom, un élément : <span class="serif">l'eau.</span></h2>
+      </div>
+    </div>
+
+    <div class="origin">
+      <div class="origin__glyph rv">
+        <canvas id="glyphCanvas" aria-hidden="true"></canvas>
+        <span class="han fill" aria-hidden="true">水</span>
+        <span class="han">水</span>
+        <div class="origin__meta"><span>水 · shuǐ</span><span>« eau »</span></div>
+      </div>
+
+      <div class="origin__txt">
+        <p class="rv"><strong>SHUI (水) signifie « eau ».</strong> Une goutte seule ne pèse rien. Des millions de gouttes qui se rejoignent creusent des vallées, alimentent des rivières et forment un océan.</p>
+        <p class="rv" data-d="1">SHUI est né d'un constat simple : <strong>le marché crypto mérite mieux que la spéculation pure.</strong> Trop de projets n'ont aucune utilité réelle, les fonds restent opaques et la contribution des membres n'est jamais reconnue.</p>
+        <p class="rv" data-d="2">SHUI propose l'inverse : une infrastructure communautaire sur Solana, avec des règles publiques, une liquidité identifiable, une trésorerie séparée et une gouvernance progressive.</p>
+
+        <ul class="contrast rv" data-d="3">
+          <li><span class="from">Spéculation pure</span><span class="ar">→</span><span class="to">Utilité et participation</span></li>
+          <li><span class="from">Opacité des fonds</span><span class="ar">→</span><span class="to">Wallets publics et séparés</span></li>
+          <li><span class="from">Communauté passive</span><span class="ar">→</span><span class="to">Contribution reconnue</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 02 PHILOSOPHIE ============ -->
+<section class="sec" id="philosophie" data-screen-label="02 Philosophie">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>02</b> / Philosophie</div>
+      <div>
+        <h2 class="h2 rv">De la goutte <span class="serif">à l'océan.</span></h2>
+        <p class="lede rv" data-d="1">Chaque membre suit le même cycle que l'eau. Plus la contribution à la communauté grandit, plus l'impact s'étend.</p>
+      </div>
+    </div>
+
+    <div class="flow" id="flow">
+      <div class="flow__track"><div class="flow__fill" id="flowFill"></div></div>
+      <div class="flow__grid">
+        <article class="stage rv">
+          <div class="stage__orb"><i></i></div>
+          <div class="stage__n">I · GOUTTE</div>
+          <h3 class="stage__t">Goutte</h3>
+          <p class="stage__r">Nouveau membre — découverte de l'écosystème.</p>
+          <ul><li>Rejoindre la communauté</li><li>Lire le litepaper</li><li>Voter sur une proposition</li></ul>
+        </article>
+        <article class="stage rv" data-d="1">
+          <div class="stage__orb"><i></i></div>
+          <div class="stage__n">II · FLUX</div>
+          <h3 class="stage__t">Flux</h3>
+          <p class="stage__r">Participant actif — partage et contribution régulière.</p>
+          <ul><li>Créer du contenu</li><li>Inviter des membres</li><li>Répondre aux questions</li></ul>
+        </article>
+        <article class="stage rv" data-d="2">
+          <div class="stage__orb"><i></i></div>
+          <div class="stage__n">III · RIVIÈRE</div>
+          <h3 class="stage__t">Rivière</h3>
+          <p class="stage__r">Contributeur avancé — mentor et bâtisseur.</p>
+          <ul><li>Développer des outils</li><li>Mentorer les nouveaux</li><li>Organiser des événements</li></ul>
+        </article>
+        <article class="stage rv" data-d="3">
+          <div class="stage__orb"><i></i></div>
+          <div class="stage__n">IV · OCÉAN</div>
+          <h3 class="stage__t">Océan</h3>
+          <p class="stage__r">Leader — ambassadeur et architecte de l'écosystème.</p>
+          <ul><li>Ambassadeur officiel</li><li>Gouvernance stratégique</li><li>Partenariats clés</li></ul>
+        </article>
+      </div>
+      <p class="flow__note">// Les niveaux, missions et récompenses détaillés sont présentés dans l'Explorer SHUI.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 03 ÉCOSYSTÈME ============ -->
+<section class="sec" id="ecosysteme" data-screen-label="03 Ecosysteme">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>03</b> / Écosystème</div>
+      <div>
+        <h2 class="h2 rv">Un portail, <span class="serif">trois courants.</span></h2>
+        <p class="lede rv" data-d="1">Ce site raconte SHUI. Les produits, eux, vivent chacun à leur place : l'application mobile, la Farm de liquidité sur Raydium et l'Explorer de l'écosystème.</p>
+      </div>
+    </div>
+
+    <div class="eco">
+      <article class="card card--prod rv" data-glow>
+        <div class="card__top"><span class="card__k">PRODUIT · 01</span><span class="pill pill--live">v0.2.10</span></div>
+        <div class="card__vis">
+          <div class="vis-grid" aria-hidden="true">
+            <i></i><i style="animation-delay:.3s"></i><i style="animation-delay:.9s"></i><i style="animation-delay:.1s"></i><i style="animation-delay:1.4s"></i><i style="animation-delay:.6s"></i><i style="animation-delay:2s"></i>
+            <i style="animation-delay:1.1s"></i><i style="animation-delay:.2s"></i><i style="animation-delay:1.7s"></i><i style="animation-delay:.4s"></i><i style="animation-delay:2.4s"></i><i style="animation-delay:.8s"></i><i style="animation-delay:1.3s"></i>
+            <i style="animation-delay:.5s"></i><i style="animation-delay:2.2s"></i><i style="animation-delay:1s"></i><i style="animation-delay:.7s"></i><i style="animation-delay:1.9s"></i><i style="animation-delay:.15s"></i><i style="animation-delay:2.7s"></i>
+          </div>
+        </div>
+        <h3 class="h3">SHUI Mobile</h3>
+        <p>L'application SHUI pour Android : wallet, swap, quêtes et communauté dans la poche.</p>
+        <a class="card__link" href="#mobile">Télécharger l'application <span class="mono">→</span></a>
+      </article>
+
+      <article class="card card--prod rv" data-d="1" data-glow>
+        <div class="card__top"><span class="card__k">PRODUIT · 02</span><span class="pill">Raydium</span></div>
+        <div class="card__vis"><div class="vis-pair" aria-hidden="true"><b>SHUI</b><b>SOL</b></div></div>
+        <h3 class="h3">SHUI Farm</h3>
+        <p>Le pool de liquidité SHUI/SOL et son infrastructure Farm sur Raydium.</p>
+        <a class="card__link" href="#farm">Découvrir la Farm <span class="mono">→</span></a>
+      </article>
+
+      <article class="card card--prod rv" data-d="2" data-glow>
+        <div class="card__top"><span class="card__k">PRODUIT · 03</span><span class="pill">Web</span></div>
+        <div class="card__vis"><div class="vis-rings" aria-hidden="true"><span></span><span></span><span></span><span></span></div></div>
+        <h3 class="h3">SHUI Explorer</h3>
+        <p>Tokenomics, wallets, niveaux, missions et boucle économique : l'univers SHUI en détail.</p>
+        <a class="card__link" data-link="explorer" target="_blank" rel="noopener noreferrer">Explorer l'écosystème <span class="mono">↗</span></a>
+      </article>
+
+      <div class="pillars rv">
+        <div class="pillar"><span class="mono">01</span><h4>Participation</h4><p>Récompenser les contributions utiles, missions, relais et support.</p></div>
+        <div class="pillar"><span class="mono">02</span><h4>Liquidité</h4><p>Créer un accès plus stable au token et réduire le slippage.</p></div>
+        <div class="pillar"><span class="mono">03</span><h4>Trésorerie</h4><p>Allouer des moyens à des initiatives choisies, documentées et suivies.</p></div>
+        <div class="pillar"><span class="mono">04</span><h4>Gouvernance</h4><p>Commencer simplement, publier les décisions et formaliser progressivement.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 04 TOKEN ============ -->
+<section class="sec" id="token" data-screen-label="04 Token">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>04</b> / Token</div>
+      <div>
+        <h2 class="h2 rv">1 milliard de SHUI, <span class="serif">répartis avec intention.</span></h2>
+        <p class="lede rv" data-d="1">Supply fixe, non-inflationnaire. Chaque catégorie dispose de son propre wallet, public et vérifiable sur Solscan.</p>
+      </div>
+    </div>
+
+    <div class="token">
+      <div class="rv">
+        <div class="coin" id="coin">
+          <div class="coin__orbit"></div>
+          <div class="coin__face"><img src="assets/shui-mark.png" alt="" /></div>
+          <span class="coin__label" style="left:0;top:4%">SPL · Solana</span>
+          <span class="coin__label" style="right:0;bottom:4%">1 000 000 000 SHUI</span>
+        </div>
+      </div>
+
+      <div>
+        <dl class="spec rv">
+          <div><dt>Nom / Symbole</dt><dd>Shui · SHUI</dd></div>
+          <div><dt>Réseau</dt><dd>Solana Mainnet</dd></div>
+          <div><dt>Supply</dt><dd class="mono">1 000 000 000</dd></div>
+          <div><dt>Decimals</dt><dd class="mono">9</dd></div>
+          <div><dt>Mint Authority</dt><dd><span class="ok">Révoquée</span></dd></div>
+          <div><dt>Freeze Authority</dt><dd><span class="ok">Révoquée</span></dd></div>
+          <div><dt>Mint</dt><dd><button class="copy" data-copy="CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C"><span class="addr">CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C</span><span class="ico">Copier</span></button></dd></div>
+        </dl>
+
+        <div class="alloc rv" id="alloc">
+          <div class="alloc__bar" aria-hidden="true">
+            <i style="--p:30"></i><i style="--p:25"></i><i style="--p:20"></i><i style="--p:15"></i><i style="--p:10"></i>
+          </div>
+          <div class="alloc__list">
+            <div class="alloc__row"><span class="sw"></span><span>Community Rewards</span><span class="pct">30 %</span><span class="amt">300 000 000</span><a href="https://solscan.io/account/6GA59g4RZyiZ3b4uxB7PnwgmENP1AhoXWP9iq147bDXw" target="_blank" rel="noopener noreferrer">6GA5…bDXw ↗</a></div>
+            <div class="alloc__row"><span class="sw"></span><span>Liquidity Pool</span><span class="pct">25 %</span><span class="amt">250 000 000</span><a href="https://solscan.io/account/HzE9puz2RbCazSoipebJXsV5Sb6vAyy7bQDZApVfNsVb" target="_blank" rel="noopener noreferrer">HzE9…NsVb ↗</a></div>
+            <div class="alloc__row"><span class="sw"></span><span>Treasury / DAO</span><span class="pct">20 %</span><span class="amt">200 000 000</span><a href="https://solscan.io/account/5JW3kXLWjG3z8JrDs8JQmYWrcDTZqNV6qnqrwJXXEqu7" target="_blank" rel="noopener noreferrer">5JW3…Equ7 ↗</a></div>
+            <div class="alloc__row"><span class="sw"></span><span>Équipe / Ops</span><span class="pct">15 %</span><span class="amt">150 000 000</span><a href="https://solscan.io/account/BWZqpCNdoKaZ6To67XvFLUeZ7v2MaNghQJSNH3tBtnb" target="_blank" rel="noopener noreferrer">BWZq…tnb ↗</a></div>
+            <div class="alloc__row"><span class="sw"></span><span>Partenariats</span><span class="pct">10 %</span><span class="amt">100 000 000</span><a href="https://solscan.io/account/6ppGTdGGJYRTSiDN1RTCPYKoS4ZB1RuxHizgJCfcqZya" target="_blank" rel="noopener noreferrer">6ppG…qZya ↗</a></div>
+          </div>
+        </div>
+
+        <div class="token__ctas rv">
+          <a class="btn btn--primary" data-link="solscan" target="_blank" rel="noopener noreferrer">Vérifier sur Solscan <span class="arr">↗</span></a>
+          <a class="btn" data-link="bubblemaps" target="_blank" rel="noopener noreferrer">Distribution — Bubblemaps <span class="arr">↗</span></a>
+          <a class="btn" data-link="swapApp">Acheter SHUI <span class="arr">→</span></a>
+        </div>
+      </div>
+    </div>
+
+    <div class="transp">
+      <article class="card rv" data-glow><span class="mono">TRANSPARENCE · 01</span><h4>1 wallet = 1 rôle</h4><p>Cinq wallets séparés par fonction. Aucun fonds mixte.</p></article>
+      <article class="card rv" data-d="1" data-glow><span class="mono">TRANSPARENCE · 02</span><h4>Supply figée</h4><p>Mint et Freeze Authority révoquées. Jamais plus d'un milliard de SHUI.</p></article>
+      <article class="card rv" data-d="2" data-glow><span class="mono">TRANSPARENCE · 03</span><h4>Auditable on-chain</h4><p>Chaque adresse est publique et consultable sur Solscan.</p></article>
+      <article class="card rv" data-d="3" data-glow><span class="mono">TRANSPARENCE · 04</span><h4>Reporting régulier</h4><p>Soldes, décisions, usage des fonds et objectifs publiés au fil de l'exécution.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 05 FARM ============ -->
+<section class="sec" id="farm" data-screen-label="05 Farm">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>05</b> / DeFi · Farm</div>
+      <div>
+        <h2 class="h2 rv">La liquidité, <span class="serif">là où l'eau circule.</span></h2>
+        <p class="lede rv" data-d="1">SHUI dispose d'un pool de liquidité SHUI/SOL sur Raydium (Standard / CPMM) et d'une infrastructure Farm basée sur le programme Raydium Farm v6.</p>
+      </div>
+    </div>
+
+    <div class="farm">
+      <div>
+        <ol class="steps rv">
+          <li><div><b>Un pool public SHUI/SOL</b><span>Un point d'accès identifiable au token, pour des échanges plus fluides.</span></div></li>
+          <li><div><b>Une Farm Raydium</b><span>Une campagne Farm SHUI/SOL a déjà été déployée sur Raydium Farm v6.</span></div></li>
+          <li><div><b>Tout est vérifiable</b><span>Pool, LP mint et programmes sont consultables directement on-chain.</span></div></li>
+        </ol>
+        <div class="token__ctas rv" style="margin-top:0">
+          <a class="btn btn--primary" data-link="farmApp">Farmer SHUI <span class="arr">→</span></a>
+          <a class="btn" href="https://solscan.io/account/52w19QzFSHPYTqJWk4akyhVsoeyg4A6iVn2bRsGAAXEC" target="_blank" rel="noopener noreferrer">Pool sur Solscan <span class="arr">↗</span></a>
+        </div>
+      </div>
+
+      <div class="farm__panel rv" data-d="1">
+        <div class="farm__hd">
+          <div class="farm__pair">
+            <div class="vis-pair" aria-hidden="true"><b>SHUI</b><b>SOL</b></div>
+            <div><strong>SHUI / SOL</strong><small>RAYDIUM · STANDARD / CPMM</small></div>
+          </div>
+          <span class="pill">Mainnet</span>
+        </div>
+        <dl class="farm__rows">
+          <div><dt>Pool</dt><dd><button class="copy" data-copy="52w19QzFSHPYTqJWk4akyhVsoeyg4A6iVn2bRsGAAXEC"><span class="addr">52w19QzFSHPYTqJWk4akyhVsoeyg4A6iVn2bRsGAAXEC</span><span class="ico">Copier</span></button></dd></div>
+          <div><dt>LP Mint</dt><dd><button class="copy" data-copy="FwTPGe7q8teWCppWCXT1pQixQtDsaMrCNTrYBPPWfrrn"><span class="addr">FwTPGe7q8teWCppWCXT1pQixQtDsaMrCNTrYBPPWfrrn</span><span class="ico">Copier</span></button></dd></div>
+          <div><dt>Programme CPMM</dt><dd><button class="copy" data-copy="CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"><span class="addr">CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C</span><span class="ico">Copier</span></button></dd></div>
+          <div><dt>Farm v6</dt><dd><button class="copy" data-copy="FarmqiPv5eAj3j1GMdMCMUGXqPUvmquZtMy86QH6rzhG"><span class="addr">FarmqiPv5eAj3j1GMdMCMUGXqPUvmquZtMy86QH6rzhG</span><span class="ico">Copier</span></button></dd></div>
+        </dl>
+        <div class="farm__ft">Déposez, retirez vos LP et réclamez vos SHUI depuis la page Farm : chaque opération est simulée puis signée par votre propre wallet. Aucun rendement estimé n'est affiché.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 06 MOBILE ============ -->
+<section class="sec" id="mobile" data-screen-label="06 Mobile">
+  <div class="wrap">
+    <div class="mobile">
+      <div class="phone-stage rv">
+        <div class="phone" aria-label="Aperçu illustratif de l'application SHUI Mobile">
+          <div class="phone__scr">
+            <div class="phone__notch"></div>
+            <div class="phone__bar"><span>9:41</span><span>●●●</span></div>
+            <div class="app__hd">
+              <div class="brand"><img src="assets/shui-mark.png" alt="" /><span class="brand__t">SHUI</span></div>
+              <div class="app__av"></div>
+            </div>
+            <div class="app__hero">
+              <small>Mon wallet</small>
+              <div class="v">— — —<span>SHUI</span></div>
+            </div>
+            <div class="app__acts">
+              <div><i>↓</i>Recevoir</div>
+              <div><i>↑</i>Envoyer</div>
+              <div><i>⇄</i>Swap</div>
+              <div><i>✦</i>Quêtes</div>
+            </div>
+            <div class="app__list">
+              <div><b></b><span></span><span></span></div>
+              <div><b></b><span></span><span></span></div>
+              <div><b></b><span></span><span></span></div>
+            </div>
+            <div class="app__nav"><span>Accueil</span><span>Swap</span><span>Quêtes</span><span>Profil</span></div>
+          </div>
+        </div>
+        <span class="phone-tag" style="left:2%;top:18%">Solana</span>
+        <span class="phone-tag" style="right:0;top:46%">Android · v0.2.10</span>
+        <span class="phone-tag" style="left:6%;bottom:14%">Aperçu illustratif</span>
+      </div>
+
+      <div>
+        <div class="sec__num" style="margin-bottom:22px"><b>06</b> / SHUI Mobile</div>
+        <h2 class="h2 rv">SHUI, <span class="serif">dans la poche.</span></h2>
+        <p class="lede rv" data-d="1">L'application SHUI réunit les outils Web3 de l'écosystème sur Solana dans une interface pensée pour la sécurité et la simplicité.</p>
+
+        <div class="feat rv" data-d="2">
+          <div><b>Wallet</b><span>Gérer ses SHUI sur Solana.</span></div>
+          <div><b>Swap</b><span>Échanger simplement.</span></div>
+          <div><b>Quêtes</b><span>Contribuer et progresser.</span></div>
+          <div><b>Communauté</b><span>Rester connecté à l'océan.</span></div>
+        </div>
+
+        <div class="dl rv" data-d="3">
+          <div class="dl__main">
+            <a class="btn btn--primary" id="dlAndroid">Télécharger pour Android <span class="arr">↓</span></a>
+            <span class="dl__meta" id="dlMeta">Version 0.2.10 · APK — disponible prochainement</span>
+          </div>
+          <div class="stores">
+            <div class="store"><i>▶</i><div><b>Google Play</b><small>Prochainement</small></div></div>
+            <div class="store"><i></i><div><b>App Store</b><small>Prochainement</small></div></div>
+          </div>
+        </div>
+        <p class="safety rv">Téléchargez SHUI uniquement depuis ce site officiel. L'équipe SHUI ne vous demandera jamais votre phrase de récupération ni votre clé privée.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 07 COMMUNAUTÉ ============ -->
+<section class="sec commu" id="communaute" data-screen-label="07 Communaute">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>07</b> / Communauté</div>
+      <div>
+        <h2 class="h2 rv">Sa force vient <span class="serif">de ses membres.</span></h2>
+        <p class="lede rv" data-d="1">Chaque participation, chaque contribution, chaque partage renforce l'écosystème. Tu es une goutte.</p>
+      </div>
+    </div>
+
+    <div class="commu__pond rv" id="pond">
+      <canvas id="pondCanvas" aria-hidden="true"></canvas>
+      <div class="commu__q">
+        <blockquote>Nous sommes des gouttes.<br /><span class="serif">Ensemble, nous formons un océan.</span></blockquote>
+        <div class="hint">Touchez la surface — ajoutez votre goutte</div>
+      </div>
+    </div>
+
+    <div class="socials">
+      <a class="card social rv" data-link="telegram" target="_blank" rel="noopener noreferrer" data-glow><div><b>Telegram</b><small>t.me/Shui_Community</small></div><span class="arr">→</span></a>
+      <a class="card social rv" data-d="1" data-link="x" target="_blank" rel="noopener noreferrer" data-glow><div><b>X</b><small>@Shui_Labs</small></div><span class="arr">→</span></a>
+      <a class="card social rv" data-d="2" data-link="instagram" target="_blank" rel="noopener noreferrer" data-glow><div><b>Instagram</b><small>@shui.officialtoken</small></div><span class="arr">→</span></a>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 08 RESSOURCES ============ -->
+<section class="sec" id="ressources" data-screen-label="08 Ressources">
+  <div class="wrap">
+    <div class="sec__head">
+      <div class="sec__num"><b>08</b> / Ressources</div>
+      <div>
+        <h2 class="h2 rv">Tout vérifier, <span class="serif">par soi-même.</span></h2>
+      </div>
+    </div>
+
+    <div class="res" id="resList">
+      <a class="res__row rv" data-link="litepaper" target="_blank" rel="noopener noreferrer">
+        <span class="mono">R·01</span><h4>Litepaper</h4><p>Vision, architecture, tokenomics et gouvernance de SHUI.</p><span class="go">Lire <span>↗</span></span>
+      </a>
+      <a class="res__row rv" data-link="explorer" target="_blank" rel="noopener noreferrer">
+        <span class="mono">R·02</span><h4>SHUI Explorer</h4><p>Tokenomics, wallets, niveaux, missions et roadmap.</p><span class="go">Ouvrir <span>↗</span></span>
+      </a>
+      <a class="res__row rv" data-link="solscan" target="_blank" rel="noopener noreferrer">
+        <span class="mono">R·03</span><h4>Solscan</h4><p>Le token SHUI et son mint officiel, on-chain.</p><span class="go">Vérifier <span>↗</span></span>
+      </a>
+      <a class="res__row rv" data-link="bubblemaps" target="_blank" rel="noopener noreferrer">
+        <span class="mono">R·04</span><h4>Bubblemaps</h4><p>La distribution des holders, visualisée.</p><span class="go">Visualiser <span>↗</span></span>
+      </a>
+      <a class="res__row rv" data-link="farm" target="_blank" rel="noopener noreferrer">
+        <span class="mono">R·05</span><h4>Pool Raydium SHUI/SOL</h4><p>Liquidité et Farm sur Raydium.</p><span class="go">Accéder <span>↗</span></span>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ============ FOOTER ============ -->
+<footer class="ftr" data-screen-label="09 Footer">
+  <div class="wrap">
+    <div class="ftr__big" aria-hidden="true">SHUI<span class="han">水</span></div>
+    <div class="ftr__grid">
+      <div class="ftr__about">
+        <a href="#top" class="brand"><img src="assets/shui-mark.png" alt="" /><span class="brand__t">SHUI</span><span class="brand__h">水</span></a>
+        <p>Infrastructure communautaire Web3 sur Solana. Nous sommes des gouttes. Ensemble, nous formons un océan.</p>
+      </div>
+      <div>
+        <h5>Produits</h5>
+        <ul>
+          <li><a href="#mobile">SHUI Mobile</a></li>
+          <li><a data-link="farmApp">SHUI Farm</a></li>
+          <li><a data-link="swapApp">Acheter SHUI</a></li>
+          <li><a data-link="explorer" target="_blank" rel="noopener noreferrer">SHUI Explorer</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Ressources</h5>
+        <ul>
+          <li><a data-link="litepaper" target="_blank" rel="noopener noreferrer">Litepaper</a></li>
+          <li><a data-link="solscan" target="_blank" rel="noopener noreferrer">Solscan</a></li>
+          <li><a data-link="bubblemaps" target="_blank" rel="noopener noreferrer">Bubblemaps</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Communauté</h5>
+        <ul>
+          <li><a data-link="telegram" target="_blank" rel="noopener noreferrer">Telegram</a></li>
+          <li><a data-link="x" target="_blank" rel="noopener noreferrer">X</a></li>
+          <li><a data-link="instagram" target="_blank" rel="noopener noreferrer">Instagram</a></li>
+          <li><a data-link="email">Contact</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="ftr__bot">
+      <p>Site d'information uniquement. Ce site ne constitue ni un conseil en investissement, ni une sollicitation d'achat ou de vente. Les cryptoactifs sont volatils et comportent un risque de perte en capital. DYOR.</p>
+      <span>© <span id="yr"></span> SHUI</span>
+    </div>
+  </div>
+</footer>
+
+<div class="toast" id="toast">Adresse copiée</div>
+
+<script src="assets/js/water.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>
