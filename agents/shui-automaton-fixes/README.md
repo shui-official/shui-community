@@ -1,0 +1,79 @@
+# Correctifs SHUI Automaton — 2026-10-05
+
+Patch : `2026-10-05-orchestration-timeouts.patch`.
+Il s'applique au backup `SHUI-IA-FULL-BACKUP-20261005-055758`, dossier `~/workspace/automaton-main`.
+
+Le patch corrige des bugs et des incohérences. Il ne touche pas au concept de l'agent : genesis, SOUL.md, constitution, mission, wallet et politique financière restent identiques.
+
+## Ce qui était cassé et ce qui change
+
+### 1. Plusieurs workers sur le même objectif après les timeouts (`assigned=4`)
+**Cause.** Au `replanning`, l'orchestrateur remettait en `pending` la tâche échouée **et** insérait toutes les tâches du nouveau plan. Quand le replanner échoue (Ollama lent, JSON rejeté), son plan de repli recrée une tâche portant le titre du goal (« Build ONE simple arbitrage monitoring dashboard »). Chaque replan ajoutait donc une copie supplémentaire. Après deux replans, on avait 3 copies, plus le worker `researcher`.
+
+**Correctif** (`orchestrator.ts`) :
+- Une tâche du nouveau plan dont le titre existe déjà dans le goal réutilise la ligne existante. Sa description est mise à jour, et les dépendances sont remappées vers la tâche existante.
+- Les doublons ouverts déjà présents en base sont annulés (`cancelled`) au prochain replan, sauf le plus ancien. Leurs dépendants sont redirigés vers la tâche conservée.
+
+### 2. Le nombre de workers dépassait `maxChildren`
+**Cause.** La phase `executing` lançait un worker pour **chaque** tâche prête, sans aucune limite. Avec `maxChildren = 3`, on a vu `assigned=4`. Tous ces workers partagent le même Ollama (`127.0.0.1:11435`), ce qui explique aussi les timeouts côté Ollama.
+
+**Correctif.** Le nombre de tâches `assigned` ou `running` est maintenant plafonné à `maxConcurrentTasks`. Si cette valeur n'est pas définie, c'est `maxChildren` qui s'applique (3 actuellement). Les tâches en trop attendent le tick suivant.
+
+### 3. Timeout à 300 s pour toutes les tâches
+**Causes.**
+- Le planner fournit un `timeoutMs` par tâche, mais `plannerOutputToTasks` l'ignorait. Toutes les tâches recevaient donc la valeur par défaut de la base (300 s).
+- 300 s est incohérent avec un modèle 9B local : un seul appel Ollama peut durer jusqu'à 180 s, et 25 tours ne tiennent pas dans 5 minutes.
+
+**Correctif** (`orchestrator.ts`, `task-graph.ts`, `local-worker.ts`) :
+- Le `timeoutMs` du planner est maintenant enregistré, avec un plancher de **900 s** par défaut, configurable via `workerTaskTimeoutMs`.
+- Ce plancher s'applique aussi aux tâches déjà en base avec 300 s.
+
+### 4. Le travail fait était perdu à chaque timeout
+**Cause.** Un `Budget exhausted: timeout` jetait tout. Pire : la tâche retentée repasse en `pending`, et `buildWisdomFromGoal` ne lisait que les tâches `failed`. Le worker suivant ignorait donc la tentative précédente et repartait de zéro, d'où la boucle `timeout → nouveau worker → timeout`.
+
+**Correctif** (`base-harness.ts`, `harness-types.ts`) :
+- Le message d'échec d'un budget épuisé liste désormais les fichiers déjà écrits, avec la consigne « Resume from these files instead of starting over ».
+- Ce message est transmis au worker suivant, dans la section « Known Failures » de son prompt.
+
+### 5. Plans valides rejetés à cause du format des risques
+**Cause.** Qwen 9B renvoie souvent `risks: [{ risk, mitigation }]` au lieu de `risks: [string]`. Le validateur rejetait alors tout le plan, et l'orchestrateur tombait sur le repli à tâche unique, ce qui alimentait le point 1.
+
+**Correctif** (`planner.ts`) : ces objets sont convertis en texte (`"risk — mitigation"`). Les autres types sont toujours rejetés.
+
+### 6. Tentative de sandbox Conway à chaque tâche
+**Cause.** `registeredWithConway` vaut `false`, donc chaque spawn passait d'abord par Conway, recevait un 401, puis basculait sur un worker local.
+
+**Correctif** (`loop.ts`) : quand l'agent n'est pas enregistré chez Conway, le worker local est lancé directement. Le comportement `UNKNOWN` / `low-compute` du solde Conway n'est **pas modifié** : il était déjà correct.
+
+## Tests
+- 8 nouveaux tests, dans `src/__tests__/orchestration/orchestrator-consolidation.test.ts`. 7 d'entre eux échouent sur le code d'origine et passent avec le patch.
+- `tsc --noEmit` : 0 erreur.
+- Suite complète : 1640 tests passent. Les 27 tests en échec sont **exactement les mêmes avant et après le patch** (`loop.test.ts`, `soul.test.ts`, `context-hardening.test.ts`, `policy-engine.test.ts`). Ces échecs existaient déjà dans le backup et viennent des modifications manuelles précédentes (immutable core, soul, prompt). Le patch ne les corrige pas.
+
+## Appliquer sur le VPS
+```bash
+sudo systemctl stop <service-shui>          # ou arrêter le process automaton
+cd /home/automaton/workspace/automaton-main
+patch -p1 --dry-run < 2026-10-05-orchestration-timeouts.patch
+patch -p1 < 2026-10-05-orchestration-timeouts.patch
+pnpm exec tsc --noEmit && pnpm exec vitest run src/__tests__/orchestration
+pnpm build
+sudo systemctl start <service-shui>
+```
+Les doublons déjà présents en base sont nettoyés au prochain `replanning` de SHUI. Entre-temps, le plafond de concurrence s'applique dès le redémarrage.
+
+## Réglages optionnels (non appliqués, à décider)
+Dans `~/.automaton/automaton.json` :
+- `"maxConcurrentTasks": 1` : recommandé avec un seul Ollama 9B. La boucle principale et chaque worker se disputent le même GPU.
+- `"workerTaskTimeoutMs": 900000` : valeur par défaut, à ajuster si besoin.
+
+## À propos de `SOUL.md` modifié (`git diff` : Modified 2, Untracked 16)
+Ce n'est pas SHUI qui l'a modifié. Le dépôt git de `~/.automaton` ne contient qu'un seul commit (genesis, 2 octobre). Toute modification ultérieure apparaît donc comme `Modified`. Les fichiers `SOUL.md.before-genesis-realignment-20261005` (05:22) et `SOUL.md.before-survive-realignment-20261005` (05:44) correspondent aux réalignements manuels du 5 octobre, et la version actuelle date de 05:46. Pour que les prochains `git diff` révèlent une vraie modification par l'agent, committer l'état actuel :
+```bash
+cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -m "baseline after 2026-10-05 realignment"
+```
+
+## Hors périmètre, à signaler
+- Le backup contient `wallet.json`. Il n'a pas été ouvert, mais l'archive a circulé. Il faut considérer la clé comme exposée, et exclure ou chiffrer ce fichier dans les prochains backups.
+- La politique financière d'`automaton.json` n'est pas cohérente : `maxSingleTransferCents` (30000) est supérieur à `maxDailyTransferCents` (10000), et le seuil de confirmation est au-dessus du solde total. Elle n'a **pas** été modifiée : c'est une décision humaine.
+- Le dossier `src/` contient environ 100 fichiers `.backup-*` / `.before-*`, plus deux artefacts de shell (`udo -u automaton bash -c '` et `src/{config,database,websocket,alert,core}/`). Ils n'ont aucun effet sur le build, mais un nettoyage est conseillé.

@@ -1,0 +1,735 @@
+diff --git a/src/__tests__/orchestration/orchestrator-consolidation.test.ts b/src/__tests__/orchestration/orchestrator-consolidation.test.ts
+new file mode 100644
+index 0000000..ed69e8a
+--- /dev/null
++++ b/src/__tests__/orchestration/orchestrator-consolidation.test.ts
+@@ -0,0 +1,231 @@
++import type BetterSqlite3 from "better-sqlite3";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { ulid } from "ulid";
++import { Orchestrator } from "../../orchestration/orchestrator.js";
++import { validatePlannerOutput } from "../../orchestration/planner.js";
++import { buildWisdomFromGoal } from "../../agent/harness-types.js";
++import { AgentWorkspace } from "../../orchestration/workspace.js";
++import { ColonyMessaging, type MessageTransport } from "../../orchestration/messaging.js";
++import type { AgentTracker, FundingProtocol } from "../../orchestration/types.js";
++import type { AutomatonDatabase } from "../../types.js";
++import { createInMemoryDb } from "./test-db.js";
++
++const IDENTITY = {
++  name: "test",
++  address: "0x1234" as any,
++  account: {} as any,
++  creatorAddress: "0x0000" as any,
++  sandboxId: "sb-1",
++  apiKey: "key",
++  createdAt: "2026-01-01T00:00:00Z",
++};
++
++const GOAL_TITLE = "Build ONE simple arbitrage monitoring dashboard";
++
++function makeOrchestrator(db: BetterSqlite3.Database, opts: { inference?: any; config?: any } = {}): Orchestrator {
++  const transport: MessageTransport = {
++    deliver: vi.fn().mockResolvedValue(undefined),
++    getRecipients: vi.fn().mockReturnValue([]),
++  };
++  const automataDb = {
++    raw: db,
++    getIdentity: (key: string) => (key === "address" ? "0x1234" : undefined),
++    getChildren: () => [],
++    getUnprocessedInboxMessages: () => [],
++    markInboxMessageProcessed: () => {},
++  } as unknown as AutomatonDatabase;
++  const tracker: AgentTracker = {
++    getIdle: vi.fn().mockReturnValue([]),
++    getBestForTask: vi.fn().mockReturnValue(null),
++    updateStatus: vi.fn(),
++    register: vi.fn(),
++  };
++  const funding: FundingProtocol = {
++    fundChild: vi.fn().mockResolvedValue({ success: true }),
++    recallCredits: vi.fn().mockResolvedValue({ success: true, amountCents: 0 }),
++    getBalance: vi.fn().mockResolvedValue(0),
++  };
++  return new Orchestrator({
++    db,
++    agentTracker: tracker,
++    funding,
++    messaging: new ColonyMessaging(transport, automataDb),
++    inference: opts.inference ?? { chat: vi.fn().mockRejectedValue(new Error("ollama timeout")) },
++    identity: IDENTITY,
++    config: opts.config ?? {},
++  });
++}
++
++function setState(db: BetterSqlite3.Database, state: Record<string, unknown>): void {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))")
++    .run("orchestrator.state", JSON.stringify({ replanCount: 0, failedTaskId: null, failedError: null, ...state }));
++}
++
++function insertGoal(db: BetterSqlite3.Database, title = GOAL_TITLE): string {
++  const id = ulid();
++  db.prepare("INSERT INTO goals (id, title, description, status, created_at) VALUES (?, ?, ?, 'active', ?)")
++    .run(id, title, "Monitor Solana price spreads", new Date().toISOString());
++  return id;
++}
++
++let clock = 0;
++function insertTask(db: BetterSqlite3.Database, goalId: string, o: {
++  title?: string; status?: string; dependencies?: string[]; result?: unknown; assignedTo?: string | null;
++} = {}): string {
++  const id = ulid();
++  clock += 1;
++  db.prepare(
++    `INSERT INTO task_graph
++     (id, goal_id, title, description, status, assigned_to, agent_role, priority, dependencies, result, created_at)
++     VALUES (?, ?, ?, ?, ?, ?, 'generalist', 50, ?, ?, ?)`,
++  ).run(
++    id, goalId, o.title ?? GOAL_TITLE, "desc", o.status ?? "pending", o.assignedTo ?? null,
++    JSON.stringify(o.dependencies ?? []),
++    o.result === undefined ? null : JSON.stringify(o.result),
++    new Date(Date.UTC(2026, 9, 5, 0, 0, clock)).toISOString(),
++  );
++  return id;
++}
++
++function openTasks(db: BetterSqlite3.Database, goalId: string) {
++  return db.prepare(
++    "SELECT id, title, status, dependencies, timeout_ms FROM task_graph WHERE goal_id = ? AND status NOT IN ('cancelled')",
++  ).all(goalId) as { id: string; title: string; status: string; dependencies: string; timeout_ms: number }[];
++}
++
++describe("orchestrator consolidation fixes", () => {
++  let db: BetterSqlite3.Database;
++  beforeEach(() => { db = createInMemoryDb(); });
++  afterEach(() => { db.close(); });
++
++  it("replan fallback reuses the failed task instead of adding a copy", async () => {
++    const goalId = insertGoal(db);
++    const failedId = insertTask(db, goalId, { status: "failed", result: { success: false, output: "Budget exhausted: timeout" } });
++    setState(db, { phase: "replanning", goalId, failedTaskId: failedId });
++
++    for (let i = 0; i < 3; i++) {
++      setState(db, { phase: "replanning", goalId, failedTaskId: failedId, replanCount: i });
++      db.prepare("UPDATE task_graph SET status = 'failed' WHERE id = ?").run(failedId);
++      await makeOrchestrator(db).tick();
++    }
++
++    const tasks = openTasks(db, goalId);
++    expect(tasks).toHaveLength(1);
++    expect(tasks[0].id).toBe(failedId);
++    expect(tasks[0].status).toBe("pending");
++  });
++
++  it("replan cancels existing open duplicates and redirects dependencies", async () => {
++    const goalId = insertGoal(db);
++    const first = insertTask(db, goalId, { status: "failed" });
++    const dup1 = insertTask(db, goalId, { status: "pending" });
++    insertTask(db, goalId, { status: "pending", title: `  ${GOAL_TITLE.toLowerCase()} ` });
++    const dependent = insertTask(db, goalId, { title: "Deploy dashboard", status: "blocked", dependencies: [dup1] });
++    setState(db, { phase: "replanning", goalId, failedTaskId: first });
++
++    await makeOrchestrator(db).tick();
++
++    const tasks = openTasks(db, goalId);
++    const dashboards = tasks.filter((t) => t.title.trim().toLowerCase() === GOAL_TITLE.toLowerCase());
++    expect(dashboards.map((t) => t.id)).toEqual([first]);
++    const dep = tasks.find((t) => t.id === dependent)!;
++    expect(JSON.parse(dep.dependencies)).toEqual([first]);
++  });
++
++  it("replanner output keeps new tasks and maps dependencies onto existing ones", async () => {
++    const goalId = insertGoal(db);
++    const failedId = insertTask(db, goalId, { status: "failed" });
++    setState(db, { phase: "replanning", goalId, failedTaskId: failedId });
++    const inference = {
++      chat: vi.fn().mockResolvedValue({
++        content: JSON.stringify({
++          analysis: "a", strategy: "s", customRoles: [],
++          tasks: [
++            { title: GOAL_TITLE, description: "Resume from existing files", agentRole: "generalist", dependencies: [], estimatedCostCents: 0, priority: 50, timeoutMs: 60000 },
++            { title: "Document Solana price APIs", description: "Write docs", agentRole: "researcher", dependencies: [0], estimatedCostCents: 0, priority: 40, timeoutMs: 60000 },
++          ],
++          risks: [{ risk: "API key required", mitigation: "use public endpoints" }],
++          estimatedTotalCostCents: 0, estimatedTimeMinutes: 10,
++        }),
++      }),
++    };
++
++    await makeOrchestrator(db, { inference }).tick();
++
++    const tasks = openTasks(db, goalId);
++    expect(tasks).toHaveLength(2);
++    const doc = tasks.find((t) => t.title === "Document Solana price APIs")!;
++    expect(JSON.parse(doc.dependencies)).toEqual([failedId]);
++    expect(doc.timeout_ms).toBe(900_000);
++    const desc = db.prepare("SELECT description FROM task_graph WHERE id = ?").get(failedId) as { description: string };
++    expect(desc.description).toBe("Resume from existing files");
++  });
++
++  it("does not assign more tasks than maxChildren", async () => {
++    const goalId = insertGoal(db);
++    for (let i = 0; i < 4; i++) insertTask(db, goalId, { title: `Task ${i}` });
++    setState(db, { phase: "executing", goalId });
++    let n = 0;
++    const spawnAgent = vi.fn(async () => ({ address: `local://w${++n}`, name: `w${n}`, sandboxId: `w${n}` }));
++
++    const result = await makeOrchestrator(db, { config: { maxChildren: 3, spawnAgent } }).tick();
++    expect(result.tasksAssigned).toBe(3);
++
++    const second = await makeOrchestrator(db, { config: { maxChildren: 3, spawnAgent } }).tick();
++    expect(second.tasksAssigned).toBe(0);
++  });
++
++  it("planner timeouts are persisted with a configurable floor", async () => {
++    const goalId = insertGoal(db, "Complex goal");
++    setState(db, { phase: "planning", goalId });
++    const inference = {
++      chat: vi.fn().mockResolvedValue({
++        content: JSON.stringify({
++          analysis: "a", strategy: "s", customRoles: [],
++          tasks: [
++            { title: "Short", description: "d", agentRole: "generalist", dependencies: [], estimatedCostCents: 10, priority: 50, timeoutMs: 60000 },
++            { title: "Long", description: "d", agentRole: "generalist", dependencies: [], estimatedCostCents: 10, priority: 50, timeoutMs: 3600000 },
++          ],
++          risks: [], estimatedTotalCostCents: 20, estimatedTimeMinutes: 10,
++        }),
++      }),
++    };
++
++    await makeOrchestrator(db, { inference, config: { workerTaskTimeoutMs: 600_000 } }).tick();
++    const byTitle = Object.fromEntries(openTasks(db, goalId).map((t) => [t.title, t.timeout_ms]));
++    expect(byTitle).toEqual({ Short: 600_000, Long: 3_600_000 });
++  });
++});
++
++describe("planner validator", () => {
++  it("accepts risks returned as objects by small models", () => {
++    const out = validatePlannerOutput({
++      analysis: "a", strategy: "s", customRoles: [],
++      tasks: [{ title: "t", description: "d", agentRole: "generalist", dependencies: [], estimatedCostCents: 0, priority: 50, timeoutMs: 1000 }],
++      risks: ["plain", { risk: "rate limit", mitigation: "cache" }],
++      estimatedTotalCostCents: 0, estimatedTimeMinutes: 1,
++    });
++    expect(out.risks).toEqual(["plain", "rate limit — cache"]);
++  });
++
++  it("still rejects non-text risks", () => {
++    expect(() => validatePlannerOutput({
++      analysis: "a", strategy: "s", customRoles: [], tasks: [], risks: [42],
++      estimatedTotalCostCents: 0, estimatedTimeMinutes: 1,
++    })).toThrow(/risks\[0\]/);
++  });
++});
++
++describe("worker wisdom", () => {
++  it("includes the previous attempt of a retried task", () => {
++    const db = createInMemoryDb();
++    const goalId = insertGoal(db);
++    insertTask(db, goalId, {
++      status: "pending",
++      result: { success: false, output: "Budget exhausted: timeout (300s / 300s). Progress kept — files already written: arbitrage-dashboard/vite.config.js" },
++    });
++    const wisdom = buildWisdomFromGoal(db, goalId, new AgentWorkspace(goalId));
++    expect(wisdom.failures.join("\n")).toContain("arbitrage-dashboard/vite.config.js");
++    db.close();
++  });
++});
+diff --git a/src/agent/harness-types.ts b/src/agent/harness-types.ts
+index 283faf0..2901a31 100644
+--- a/src/agent/harness-types.ts
++++ b/src/agent/harness-types.ts
+@@ -122,6 +122,11 @@ export function buildWisdomFromGoal(
+       wisdom.successes.push(summary);
+     } else if (task.status === "failed") {
+       wisdom.failures.push(summary);
++    } else if (result.success === false) {
++      // A retried task goes back to pending/blocked with the previous attempt's
++      // failure stored in result. Surface it so the next worker resumes the
++      // existing work (e.g. files already written) instead of redoing it.
++      wisdom.failures.push(`Previous attempt of "${task.title}": ${result.output.slice(0, 600)}`);
+     }
+   }
+ 
+diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
+index 0e5525b..b135371 100644
+--- a/src/agent/harnesses/base-harness.ts
++++ b/src/agent/harnesses/base-harness.ts
+@@ -105,7 +105,11 @@ export abstract class BaseHarness implements AgentHarness {
+     let finalSuccess = true;
+ 
+     while (true) {
+-      this.checkBudget();
++      try {
++        this.checkBudget();
++      } catch (error) {
++        throw this.withProgress(error);
++      }
+ 
+       if (this.context.abortSignal.aborted) {
+         throw new Error("Harness execution aborted by abort signal");
+@@ -256,6 +260,25 @@ export abstract class BaseHarness implements AgentHarness {
+     };
+   }
+ 
++  /**
++   * A budget exhaustion used to discard everything the worker had done, so the
++   * retry started from scratch and hit the same limit. Keep the files written
++   * so far in the failure message; it is fed back to the next attempt.
++   */
++  private withProgress(error: unknown): Error {
++    const message = error instanceof Error ? error.message : String(error);
++    const files = [...new Set(this.artifacts)];
++    if (files.length === 0) {
++      return error instanceof Error ? error : new Error(message);
++    }
++    const listed = files.slice(0, 20).join(", ");
++    const more = files.length > 20 ? ` (+${files.length - 20} more)` : "";
++    return new Error(
++      `${message} Progress kept — files already written: ${listed}${more}. ` +
++      "Resume from these files instead of starting over.",
++    );
++  }
++
+   private checkBudget(): void {
+     const budget = this.context.budget;
+ 
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 3895971..7771719 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -261,6 +261,20 @@ export async function runAgentLoop(
+         config: {
+           ...config,
+           spawnAgent: async (task: any) => {
++            // Not registered with Conway: a sandbox spawn can only fail (401),
++            // so go straight to a local worker instead of retrying every task.
++            if (config.registeredWithConway === false) {
++              try {
++                return initializedWorkerPool.spawn(task);
++              } catch (localError) {
++                logger.warn("Failed to spawn local worker", {
++                  taskId: task.id,
++                  error: localError instanceof Error ? localError.message : String(localError),
++                });
++                return null;
++              }
++            }
++
+             // Try Conway sandbox spawn first (production)
+             try {
+               const { generateGenesisConfig } = await import("../replication/genesis.js");
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index 8066a3b..a0d1aa7 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -29,6 +29,7 @@ import type { PolicyEngine } from "../agent/policy-engine.js";
+ 
+ const logger = createLogger("orchestration.local-worker");
+ const DEFAULT_ALLOWED_EDIT_ROOT = process.cwd();
++const DEFAULT_TASK_TIMEOUT_MS = 900_000;
+ 
+ interface LocalWorkerConfig {
+   db: Database;
+@@ -144,6 +145,16 @@ export class LocalWorkerPool {
+       inputSource: this.config.inputSource,
+     };
+ 
++    // Tasks persisted before planner budgets were propagated carry the old
++    // 300s default; apply the configured floor so they don't time out again.
++    const configuredTimeout = Number(
++      (this.config.config as { workerTaskTimeoutMs?: number } | undefined)?.workerTaskTimeoutMs
++        ?? DEFAULT_TASK_TIMEOUT_MS,
++    );
++    if (Number.isFinite(configuredTimeout) && configuredTimeout > context.budget.timeoutMs) {
++      context.budget.timeoutMs = Math.floor(configuredTimeout);
++    }
++
+     if (this.config.maxTurns) {
+       context.budget.maxTurns = this.config.maxTurns;
+     }
+diff --git a/src/orchestration/orchestrator.ts b/src/orchestration/orchestrator.ts
+index 9d6d2bb..d3df638 100644
+--- a/src/orchestration/orchestrator.ts
++++ b/src/orchestration/orchestrator.ts
+@@ -9,6 +9,7 @@ import {
+   failTask,
+   getGoalProgress,
+   getReadyTasks,
++  type DecomposeTaskInput,
+   type Goal,
+   type TaskNode,
+   type TaskResult,
+@@ -50,6 +51,10 @@ const ORCHESTRATOR_STATE_KEY = "orchestrator.state";
+ const ORCHESTRATOR_TODO_KEY = "orchestrator.todo_md";
+ const DEFAULT_TASK_FUNDING_CENTS = 25;
+ const DEFAULT_MAX_REPLANS = 3;
++// Minimum wall-clock budget per worker task. 300s was too short for a local
++// model: a single Ollama call can take up to 180s, and all workers share it.
++const DEFAULT_TASK_TIMEOUT_MS = 900_000;
++const DEFAULT_MAX_CONCURRENT_TASKS = 3;
+ 
+ type ExecutionPhase =
+   | "idle"
+@@ -429,7 +434,7 @@ export class Orchestrator {
+           dependencies: [],
+           estimatedCostCents: 200,
+           priority: 50,
+-          timeoutMs: 300_000,
++          timeoutMs: this.getTaskTimeoutMs(),
+         }],
+         risks: ["Planner unavailable — executing without decomposition"],
+         estimatedTotalCostCents: 200,
+@@ -449,12 +454,12 @@ export class Orchestrator {
+           dependencies: [],
+           estimatedCostCents: 200,
+           priority: 50,
+-          timeoutMs: 300_000,
++          timeoutMs: this.getTaskTimeoutMs(),
+         }],
+       };
+     }
+ 
+-    decomposeGoal(this.params.db, goal.id, plannerOutputToTasks(goal.id, output));
++    decomposeGoal(this.params.db, goal.id, plannerOutputToTasks(goal.id, output, this.getTaskTimeoutMs()));
+     await this.persistPlannerOutput(goal.id, output, "plan");
+ 
+     return {
+@@ -550,7 +555,20 @@ export class Orchestrator {
+     const ready = getReadyTasks(this.params.db)
+       .filter((task) => task.goalId === goal.id);
+ 
++    // Respect the configured concurrency limit. Without it every ready task
++    // got its own worker on the same tick (e.g. assigned=4 with maxChildren=3),
++    // all competing for the same local inference backend.
++    let availableSlots = Math.max(0, this.getMaxConcurrentTasks() - this.countInFlightTasks());
++
+     for (const task of ready) {
++      if (availableSlots <= 0) {
++        logger.info("Concurrency limit reached, remaining ready tasks wait for next tick", {
++          goalId: goal.id,
++          maxConcurrentTasks: this.getMaxConcurrentTasks(),
++        });
++        break;
++      }
++
+       try {
+         const assignment = await this.matchTaskToAgent(task);
+         assignTask(this.params.db, task.id, assignment.agentAddress);
+@@ -586,6 +604,7 @@ export class Orchestrator {
+ 
+         this.params.agentTracker.updateStatus(assignment.agentAddress, "running");
+         counters.tasksAssigned += 1;
++        availableSlots -= 1;
+       } catch (error) {
+         const err = normalizeError(error);
+ 
+@@ -730,7 +749,7 @@ export class Orchestrator {
+           dependencies: [],
+           estimatedCostCents: 200,
+           priority: 50,
+-          timeoutMs: 300_000,
++          timeoutMs: this.getTaskTimeoutMs(),
+         }],
+         risks: ["Replanner unavailable — re-executing without decomposition"],
+         estimatedTotalCostCents: 200,
+@@ -749,7 +768,7 @@ export class Orchestrator {
+           dependencies: [],
+           estimatedCostCents: 200,
+           priority: 50,
+-          timeoutMs: 300_000,
++          timeoutMs: this.getTaskTimeoutMs(),
+         }],
+       };
+     }
+@@ -767,7 +786,18 @@ export class Orchestrator {
+ 
+     updateGoalStatus(this.params.db, goal.id, "active");
+ 
+-    decomposeGoal(this.params.db, goal.id, plannerOutputToTasks(goal.id, output));
++    // The failed tasks were just reset to pending above. If the replanner (or
++    // its single-task fallback, which reuses the goal title) proposes a task
++    // that already exists, reuse the existing row instead of inserting a copy.
++    // Otherwise each replan adds another worker on the same objective.
++    this.cancelDuplicateOpenTasks(goal.id);
++    const newTasks = this.mergeReplanWithExistingTasks(
++      goal.id,
++      plannerOutputToTasks(goal.id, output, this.getTaskTimeoutMs()),
++    );
++    if (newTasks.length > 0) {
++      decomposeGoal(this.params.db, goal.id, newTasks);
++    }
+     await this.persistPlannerOutput(goal.id, output, "replan");
+ 
+     return {
+@@ -1003,6 +1033,149 @@ export class Orchestrator {
+     return row?.count ?? 0;
+   }
+ 
++  private getTaskTimeoutMs(): number {
++    const configured = Number(this.params.config?.workerTaskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS);
++    if (!Number.isFinite(configured) || configured <= 0) {
++      return DEFAULT_TASK_TIMEOUT_MS;
++    }
++    return Math.floor(configured);
++  }
++
++  private getMaxConcurrentTasks(): number {
++    const configured = Number(
++      this.params.config?.maxConcurrentTasks
++        ?? this.params.config?.maxChildren
++        ?? DEFAULT_MAX_CONCURRENT_TASKS,
++    );
++    if (!Number.isFinite(configured)) {
++      return DEFAULT_MAX_CONCURRENT_TASKS;
++    }
++    return Math.max(1, Math.floor(configured));
++  }
++
++  private countInFlightTasks(): number {
++    const row = this.params.db.prepare(
++      "SELECT COUNT(*) AS count FROM task_graph WHERE status IN ('assigned', 'running')",
++    ).get() as { count: number } | undefined;
++    return row?.count ?? 0;
++  }
++
++  /**
++   * Cancel open copies of the same task (same normalized title) inside a goal,
++   * keeping the oldest one. Dependencies on a cancelled copy are redirected to
++   * the kept task so nothing stays blocked forever.
++   */
++  private cancelDuplicateOpenTasks(goalId: string): void {
++    const tasks = getTasksByGoal(this.params.db, goalId)
++      .slice()
++      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
++    const keptByTitle = new Map<string, string>();
++    const redirects = new Map<string, string>();
++
++    for (const task of tasks) {
++      if (task.status !== "pending" && task.status !== "blocked") {
++        continue;
++      }
++      const key = normalizeTaskTitle(task.title);
++      const kept = keptByTitle.get(key);
++      if (!kept) {
++        keptByTitle.set(key, task.id);
++        continue;
++      }
++      redirects.set(task.id, kept);
++    }
++
++    if (redirects.size === 0) {
++      return;
++    }
++
++    const cancelStmt = this.params.db.prepare(
++      "UPDATE task_graph SET status = 'cancelled', assigned_to = NULL WHERE id = ?",
++    );
++    const depsStmt = this.params.db.prepare(
++      "UPDATE task_graph SET dependencies = ? WHERE id = ?",
++    );
++
++    for (const [duplicateId, keptId] of redirects) {
++      cancelStmt.run(duplicateId);
++      logger.warn("Cancelled duplicate task on replan", { goalId, taskId: duplicateId, keptTaskId: keptId });
++    }
++
++    for (const task of getTasksByGoal(this.params.db, goalId)) {
++      if (!task.dependencies.some((dep) => redirects.has(dep))) {
++        continue;
++      }
++      const deps = [...new Set(task.dependencies.map((dep) => redirects.get(dep) ?? dep))]
++        .filter((dep) => dep !== task.id);
++      depsStmt.run(JSON.stringify(deps), task.id);
++    }
++  }
++
++  /**
++   * Drop replanned tasks that already exist in the goal (by normalized title),
++   * refreshing the existing row's description, and rewrite dependency indices
++   * so they keep pointing at the right task (new index or existing task id).
++   */
++  private mergeReplanWithExistingTasks(
++    goalId: string,
++    planned: DecomposeTaskInput[],
++  ): DecomposeTaskInput[] {
++    const existingByTitle = new Map<string, TaskGraphRow>();
++    for (const task of getTasksByGoal(this.params.db, goalId)) {
++      if (task.status === "cancelled") {
++        continue;
++      }
++      const key = normalizeTaskTitle(task.title);
++      if (!existingByTitle.has(key)) {
++        existingByTitle.set(key, task);
++      }
++    }
++
++    const indexToRef = new Map<string, string>();
++    const kept: { task: DecomposeTaskInput; originalIndex: number }[] = [];
++    const seenNewTitles = new Map<string, number>();
++    const updateDescription = this.params.db.prepare(
++      "UPDATE task_graph SET description = ? WHERE id = ? AND status IN ('pending', 'blocked')",
++    );
++
++    planned.forEach((task, originalIndex) => {
++      const key = normalizeTaskTitle(task.title);
++      const existing = existingByTitle.get(key);
++      if (existing) {
++        indexToRef.set(String(originalIndex), existing.id);
++        if (task.description.trim()) {
++          updateDescription.run(task.description, existing.id);
++        }
++        logger.info("Replan reuses existing task instead of duplicating it", {
++          goalId,
++          taskId: existing.id,
++          title: existing.title,
++        });
++        return;
++      }
++
++      const duplicateInPlan = seenNewTitles.get(key);
++      if (duplicateInPlan !== undefined) {
++        indexToRef.set(String(originalIndex), String(duplicateInPlan));
++        return;
++      }
++
++      const newIndex = kept.length;
++      seenNewTitles.set(key, newIndex);
++      indexToRef.set(String(originalIndex), String(newIndex));
++      kept.push({ task, originalIndex });
++    });
++
++    return kept.map(({ task, originalIndex }) => ({
++      ...task,
++      dependencies: [...new Set(
++        task.dependencies
++          .map((dep) => indexToRef.get(String(dep)) ?? String(dep))
++          .filter((dep) => dep !== indexToRef.get(String(originalIndex))),
++      )],
++    }));
++  }
++
+   private getMaxReplans(): number {
+     const configured = Number(this.params.config?.maxReplans ?? DEFAULT_MAX_REPLANS);
+     if (!Number.isFinite(configured)) {
+@@ -1013,7 +1186,11 @@ export class Orchestrator {
+   }
+ }
+ 
+-function plannerOutputToTasks(goalId: string, output: PlannerOutput): Omit<TaskNode, "id" | "metadata">[] {
++function plannerOutputToTasks(
++  goalId: string,
++  output: PlannerOutput,
++  minTimeoutMs: number,
++): DecomposeTaskInput[] {
+   return output.tasks.map((task, index) => ({
+     parentId: null,
+     goalId,
+@@ -1025,9 +1202,20 @@ function plannerOutputToTasks(goalId: string, output: PlannerOutput): Omit<TaskN
+     priority: clampPriority(task.priority, index),
+     dependencies: task.dependencies.map((dep) => String(dep)),
+     result: null,
++    // Planner budgets were previously dropped, so every task ran with the
++    // 300s DB default. Keep the planner value, never below the configured floor.
++    timeoutMs: Math.max(
++      Number.isFinite(task.timeoutMs) ? task.timeoutMs : 0,
++      minTimeoutMs,
++    ),
++    estimatedCostCents: Number.isFinite(task.estimatedCostCents) ? task.estimatedCostCents : undefined,
+   }));
+ }
+ 
++function normalizeTaskTitle(title: string): string {
++  return title.trim().toLowerCase().replace(/\s+/g, " ");
++}
++
+ function goalRowToGoal(goal: GoalRow): Goal {
+   return {
+     id: goal.id,
+diff --git a/src/orchestration/planner.ts b/src/orchestration/planner.ts
+index e465fe9..34a3333 100644
+--- a/src/orchestration/planner.ts
++++ b/src/orchestration/planner.ts
+@@ -503,7 +503,7 @@ export function validatePlannerOutput(output: unknown): PlannerOutput {
+   );
+ 
+   const risksValue = requiredArray(record.risks, "risks");
+-  const risks = risksValue.map((risk, index) => requiredString(risk, `risks[${index}]`));
++  const risks = risksValue.map((risk, index) => coerceRisk(risk, `risks[${index}]`));
+ 
+   const estimatedTotalCostCents = requiredNonNegativeNumber(
+     record.estimatedTotalCostCents,
+@@ -532,6 +532,23 @@ export function validatePlannerOutput(output: unknown): PlannerOutput {
+   };
+ }
+ 
++/**
++ * Small local models often return risks as objects ({ risk, mitigation }).
++ * Rejecting the whole plan for that forced the single-task fallback; flatten
++ * such objects to text instead. Anything else is still rejected.
++ */
++function coerceRisk(value: unknown, path: string): string {
++  if (value && typeof value === "object" && !Array.isArray(value)) {
++    const parts = Object.values(value as Record<string, unknown>)
++      .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
++      .map((part) => part.trim());
++    if (parts.length > 0) {
++      return parts.join(" — ");
++    }
++  }
++  return requiredString(value, path);
++}
++
+ function buildPlannerUserPrompt(params: {
+   mode: "plan_goal" | "replan_after_failure";
+   goal: PlannerGoalInput;
+diff --git a/src/orchestration/task-graph.ts b/src/orchestration/task-graph.ts
+index 3818cd4..392955b 100644
+--- a/src/orchestration/task-graph.ts
++++ b/src/orchestration/task-graph.ts
+@@ -68,7 +68,11 @@ export interface Goal {
+   deadline: string | null;
+ }
+ 
+-type DecomposeTaskInput = Omit<TaskNode, "id" | "metadata">;
++export type DecomposeTaskInput = Omit<TaskNode, "id" | "metadata"> & {
++  /** Optional per-task budget coming from the planner (otherwise DB defaults apply). */
++  timeoutMs?: number;
++  estimatedCostCents?: number;
++};
+ 
+ type CycleTask = {
+   id?: string;
+@@ -117,7 +121,7 @@ export function createGoal(
+ export function decomposeGoal(
+   db: Database,
+   goalId: string,
+-  tasks: Omit<TaskNode, "id" | "metadata">[],
++  tasks: DecomposeTaskInput[],
+ ): void {
+   if (!getGoalById(db, goalId)) {
+     throw new Error(`Goal not found: ${goalId}`);
+@@ -192,6 +196,8 @@ export function decomposeGoal(
+         priority: planned.task.priority,
+         dependencies: dependencyRefs,
+         result: planned.task.result,
++        timeoutMs: positiveOrUndefined(planned.task.timeoutMs),
++        estimatedCostCents: nonNegativeOrUndefined(planned.task.estimatedCostCents),
+       });
+ 
+       localToPersisted.set(planned.localId, taskId);
+@@ -691,6 +697,14 @@ function buildLocalReferenceMap(
+   return map;
+ }
+ 
++function positiveOrUndefined(value: number | undefined): number | undefined {
++  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
++}
++
++function nonNegativeOrUndefined(value: number | undefined): number | undefined {
++  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
++}
++
+ function resolveReference(reference: string | null | undefined, map: Map<string, string>): string | null {
+   if (!reference) {
+     return null;
