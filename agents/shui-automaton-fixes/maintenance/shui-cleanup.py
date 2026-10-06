@@ -19,12 +19,12 @@ heartbeat schedule, the agent code.
 
 RESET: conversation turns and tool calls (the last 20 turns are replayed into
 SHUI's context, so old "value creation completed" turns kept steering it),
-working/episodic/semantic/procedural/relationship memories, session summaries,
-knowledge store, event stream (planner "recent outcomes", incl. fake
+working/episodic/relationship memories, session summaries, event stream (planner "recent outcomes", incl. fake
 successes), goals and tasks, stopped worker records, orchestrator state.
 SERVICES: published services that answer are kept online; those that do not
 answer are stopped and archived, and folders never published are archived.
-Orders, chat history and the Jupiter key are kept.
+Orders, chat history and the Jupiter key are kept. LEARNING (semantic and
+procedural memory, knowledge store) is kept unless --forget-learning.
 """
 import argparse
 import datetime as dt
@@ -45,15 +45,15 @@ CLEAR_TABLES = [
     "turns",
     "working_memory",
     "episodic_memory",
-    "semantic_memory",
-    "procedural_memory",
     "relationship_memory",
     "session_summaries",
-    "knowledge_store",
     "event_stream",
     "task_graph",          # references goals
     "goals",
 ]
+# What SHUI learned (facts, methods, knowledge base, incl. "this does not work").
+# Kept by default: it is an evolving agent. --forget-learning wipes them too.
+LEARNING_TABLES = ["semantic_memory", "procedural_memory", "knowledge_store"]
 KV_DELETE_PATTERNS = ["orchestrator.%", "sleep_until"]
 KV_PROTECTED_PREFIXES = ("lifespan.", "ledger.", "solana.", "payment.")
 
@@ -121,7 +121,10 @@ def untracked_repo_root_items():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="really archive and reset (default: preview)")
+    parser.add_argument("--forget-learning", action="store_true", help="also wipe learned facts, methods and knowledge")
     args = parser.parse_args()
+    if args.forget_learning:
+        CLEAR_TABLES[1:1] = LEARNING_TABLES
 
     if os.geteuid() == 0:
         sys.exit("run as user automaton: sudo -u automaton python3 shui-cleanup.py")
@@ -144,6 +147,11 @@ def main():
                for row in cur.execute("SELECT key FROM kv WHERE key LIKE ?", (pattern,))]
     kv_keys = [k for k in kv_keys if not k.startswith(KV_PROTECTED_PREFIXES)]
     print(f"  {'kv keys':22} {len(kv_keys)}")
+    if not args.forget_learning:
+        print("== learning kept (facts, methods, knowledge):")
+        for table in LEARNING_TABLES:
+            if table_exists(cur, table):
+                print(f"  {table:22} {cur.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]}")
     print("== kept: " + ", ".join(sorted(
         r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         if r[0] not in CLEAR_TABLES)))
