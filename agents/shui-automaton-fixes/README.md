@@ -93,3 +93,13 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 - Le journal affiche le détail des avertissements et des erreurs.
 - Les appels d'outils écrits en texte par qwen3-coder (`<function=…>`) sont récupérés. Consignes shell : `python3`, pas de `source`, serveurs en arrière-plan.
 - Tests : 30 échecs, les mêmes qu'avant le patch (fichiers `/etc/shui-agent/*` absents de l'environnement de test). Tous les tests de l'orchestration et des workers passent.
+
+## Patch `2026-10-06-guards-swap-dryrun.patch`
+- Un `task_done` réussi est refusé une première fois si le code écrit simule encore son fonctionnement (`mock_…`, « simulating the execution »…). Si la simulation reste, la tâche est enregistrée en échec. Les tests et la documentation ne sont pas concernés.
+- Sans objectif ni message, SHUI se rendort 5 minutes au lieu de 60 s.
+- Les outils qui ne marchent qu'avec Conway sont masqués tant que SHUI n'est pas enregistré.
+- La réserve de SOL passe à 0,01 SOL (frais et loyer des nouveaux comptes de tokens). `raydium_swap` explique les frais, le loyer et les unités brutes, accepte tout token SPL, et propose un mode `dryRun=true` (simulation sans signature ni envoi).
+
+## Patch `2026-10-06-prompt-value-machine-facts.patch` (prompt, approuvé par le créateur)
+- Ajoute aux règles de SHUI : *« Plans, documents and simulated services are not value: only verified revenue or realized trading profit counts. »*
+- Ajoute les faits sur la machine : pas de root, pas de Docker, pas de CLI `solana`, venv Python, ports non exposés, tout token SPL possible, 0,01 SOL réservé.

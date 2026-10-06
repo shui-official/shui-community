@@ -1,0 +1,427 @@
+diff --git a/src/__tests__/agent/simulated-task-guard.test.ts b/src/__tests__/agent/simulated-task-guard.test.ts
+new file mode 100644
+index 0000000..39772e5
+--- /dev/null
++++ b/src/__tests__/agent/simulated-task-guard.test.ts
+@@ -0,0 +1,113 @@
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { BaseHarness } from "../../agent/harnesses/base-harness.js";
++import type { HarnessContext, HarnessTool } from "../../agent/harness-types.js";
++import type { TaskNode } from "../../orchestration/task-graph.js";
++import { AgentWorkspace } from "../../orchestration/workspace.js";
++import { createInMemoryDb } from "../orchestration/test-db.js";
++import { createTestConfig, createTestIdentity, MockConwayClient } from "../mocks.js";
++
++class WritingHarness extends BaseHarness {
++  readonly id = "test";
++  readonly description = "test harness";
++  buildSystemPrompt(): string {
++    return "system";
++  }
++  getToolDefs(): HarnessTool[] {
++    return [
++      {
++        name: "write_file",
++        description: "write",
++        parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } },
++        execute: async (args) => {
++          const target = path.resolve(this.context.workspaceRoot, String(args.path));
++          writeFileSync(target, String(args.content));
++          return `Wrote ${String(args.content).length} bytes to ${target}`;
++        },
++      },
++      {
++        name: "task_done",
++        description: "done",
++        parameters: { type: "object", properties: { summary: { type: "string" }, success: { type: "boolean" } } },
++        execute: async (args) => `TASK_COMPLETE:${args.summary as string}`,
++      },
++    ];
++  }
++}
++
++const call = (id: string, name: string, args: Record<string, unknown>) => ({
++  id, type: "function" as const, function: { name, arguments: JSON.stringify(args) },
++});
++
++describe("simulated work is not accepted as a successful task", () => {
++  let tempDir: string | undefined;
++  afterEach(() => {
++    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
++    tempDir = undefined;
++  });
++
++  async function run(content: string, turns: unknown[][]) {
++    tempDir = mkdtempSync(path.join(os.tmpdir(), "sim-guard-"));
++    const workspace = new AgentWorkspace("goal-1", path.join(tempDir, "workspace"));
++    const { mkdirSync } = await import("node:fs");
++    mkdirSync(workspace.basePath, { recursive: true });
++    let turn = 0;
++    const context: HarnessContext = {
++      workspaceRoot: workspace.basePath,
++      allowedEditRoot: tempDir,
++      workspace,
++      identity: createTestIdentity(),
++      config: createTestConfig(),
++      db: createInMemoryDb(),
++      conway: new MockConwayClient(),
++      inference: {
++        chat: async () => ({ content: "", toolCalls: (turns[turn++] ?? []) as any }),
++      },
++      budget: { maxTurns: 5, maxCostCents: 50, timeoutMs: 5_000, turnsUsed: 0, costUsedCents: 0, startedAt: 0 },
++      wisdom: { conventions: [], successes: [], failures: [], gotchas: [] },
++      abortSignal: new AbortController().signal,
++      goalId: "goal-1",
++    };
++    const task = {
++      id: "t1", parentId: null, goalId: "goal-1", title: "Build service", description: "d", status: "assigned",
++      assignedTo: "local://w", agentRole: "generalist", priority: 50, dependencies: [], result: null,
++      metadata: { estimatedCostCents: 1, actualCostCents: 0, maxRetries: 0, retryCount: 0, timeoutMs: 5_000,
++        createdAt: new Date().toISOString(), startedAt: null, completedAt: null },
++    } as TaskNode;
++    const harness = new WritingHarness();
++    await harness.initialize(task, context);
++    void content;
++    return harness.execute();
++  }
++
++  const MOCK = "def quote():\n    # For now we're just simulating the execution\n    return {'tx_hash': 'mock_tx_hash_12345'}\n";
++  const REAL = "import requests\ndef quote():\n    return requests.get('https://transaction-v1.raydium.io/compute/swap-base-in').json()\n";
++
++  it("rejects the first success claim, then records failure if the mock stays", async () => {
++    const result = await run(MOCK, [
++      [call("1", "write_file", { path: "app.py", content: MOCK }), call("2", "task_done", { summary: "built it", success: true })],
++      [call("3", "task_done", { summary: "built it", success: true })],
++    ]);
++    expect(result.success).toBe(false);
++    expect(result.output).toContain("Not accepted as success");
++    expect(result.output).toContain("app.py");
++  });
++
++  it("accepts success once the simulated part is replaced", async () => {
++    const result = await run(MOCK, [
++      [call("1", "write_file", { path: "app.py", content: MOCK }), call("2", "task_done", { summary: "built it", success: true })],
++      [call("3", "write_file", { path: "app.py", content: REAL }), call("4", "task_done", { summary: "real now", success: true })],
++    ]);
++    expect(result.success).toBe(true);
++    expect(result.output).toBe("real now");
++  });
++
++  it("ignores mocks inside test files", async () => {
++    const result = await run(MOCK, [
++      [call("1", "write_file", { path: "test_app.py", content: MOCK }), call("2", "task_done", { summary: "tests", success: true })],
++    ]);
++    expect(result.success).toBe(true);
++  });
++});
+diff --git a/src/__tests__/solana/trading-safety.test.ts b/src/__tests__/solana/trading-safety.test.ts
+index a74bfdf..dfa8ceb 100644
+--- a/src/__tests__/solana/trading-safety.test.ts
++++ b/src/__tests__/solana/trading-safety.test.ts
+@@ -183,3 +183,39 @@ describe("token valuation", () => {
+     expect(valuation.complete).toBe(false); // "bad" stays unpriced, never zero
+   });
+ });
++
++describe("swap dry run", () => {
++  it("simulates and estimates fees without signing or sending", async () => {
++    const sendRawTransaction = vi.fn();
++    const service = serviceWith({
++      simulateTransaction: vi.fn().mockResolvedValue({ value: { err: null, unitsConsumed: 81234, logs: ["a", "b"] } }),
++      getFeeForMessage: vi.fn().mockResolvedValue({ value: 5000 }),
++      sendRawTransaction,
++    });
++    const validate = vi.spyOn(service, "validateRaydiumSwapOrder").mockResolvedValue(undefined);
++    const sign = vi.spyOn(service as any, "signTransactionLocally");
++
++    const result = await service.dryRunValidatedRaydiumSwap(fakeTx(), {
++      inputMint: NATIVE_SOL_MINT, outputMint: USDC_MINT, inputAmount: 1000n, minimumOutputAmount: 1n,
++    });
++
++    expect(result).toEqual({ wouldSucceed: true, error: null, unitsConsumed: 81234, networkFeeLamports: 5000, logsTail: ["a", "b"] });
++    expect(validate).toHaveBeenCalledTimes(1);
++    expect(sign).not.toHaveBeenCalled();
++    expect(sendRawTransaction).not.toHaveBeenCalled();
++  });
++
++  it("reports a failing simulation instead of throwing", async () => {
++    const service = serviceWith({
++      simulateTransaction: vi.fn().mockResolvedValue({ value: { err: { InstructionError: [2, "Custom"] }, logs: [] } }),
++      getFeeForMessage: vi.fn().mockRejectedValue(new Error("rpc down")),
++    });
++    vi.spyOn(service, "validateRaydiumSwapOrder").mockResolvedValue(undefined);
++    const result = await service.dryRunValidatedRaydiumSwap(fakeTx(), {
++      inputMint: NATIVE_SOL_MINT, outputMint: USDC_MINT, inputAmount: 1000n, minimumOutputAmount: 1n,
++    });
++    expect(result.wouldSucceed).toBe(false);
++    expect(result.error).toContain("InstructionError");
++    expect(result.networkFeeLamports).toBeNull();
++  });
++});
+diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
+index 87fda52..2853892 100644
+--- a/src/agent/harnesses/base-harness.ts
++++ b/src/agent/harnesses/base-harness.ts
+@@ -1,3 +1,5 @@
++import { promises as fs } from "node:fs";
++import path from "node:path";
+ import { createLogger } from "../../observability/logger.js";
+ import type { ChatMessage, InferenceToolCall } from "../../types.js";
+ import type { TaskNode, TaskResult } from "../../orchestration/task-graph.js";
+@@ -8,6 +10,9 @@ import type {
+   HarnessTool,
+ } from "../harness-types.js";
+ 
++const SIMULATION_SCAN_EXTENSIONS = /\.(py|js|mjs|cjs|ts|tsx|sh|go|rs|rb|php|java)$/i;
++const SIMULATION_MARKERS =
++  /mock[_ ](?:data|quote|quotes|price|prices|tx|trade|trades|response|implementation|balance|execution)|mock_tx_hash|just simulat|simulat(?:ed|ing|e) (?:the )?(?:execution|trade|trades|data|price|prices|swap|transaction)|fake[_ ](?:data|price|prices|tx|trade|signature)|return(?:s|ing)? mock|placeholder (?:price|prices|data)/i;
+ const logger = createLogger("harness.base");
+ const MAX_CONSECUTIVE_INFERENCE_ERRORS = 3;
+ const MAX_TOOL_OUTPUT_LENGTH = 16_000;
+@@ -51,6 +56,35 @@ export abstract class BaseHarness implements AgentHarness {
+    * Subclasses may reject a model-requested success when authoritative
+    * runtime evidence does not support it.
+    */
++  private simulationRejected = false;
++
++  /**
++   * Code files written in this task that still simulate their core behaviour
++   * (mock quotes, fake transaction hashes, "simulating the execution"). Such
++   * tasks used to be reported as successful and goals were closed on fake
++   * services. Test files and documentation are ignored.
++   */
++  protected async findSimulatedArtifacts(): Promise<string[]> {
++    const findings: string[] = [];
++    for (const artifact of [...new Set([...this.priorArtifacts, ...this.artifacts])]) {
++      if (!SIMULATION_SCAN_EXTENSIONS.test(artifact) || /(^|\/)(test_|tests?\/)|\.(test|spec)\./i.test(artifact)) {
++        continue;
++      }
++      const filePath = path.isAbsolute(artifact) ? artifact : path.resolve(this.context.workspaceRoot, artifact);
++      let content: string;
++      try {
++        content = await fs.readFile(filePath, "utf8");
++      } catch {
++        continue;
++      }
++      const match = SIMULATION_MARKERS.exec(content);
++      if (match) {
++        findings.push(`${path.basename(filePath)} ("${match[0]}")`);
++      }
++    }
++    return findings;
++  }
++
+   protected validateTaskCompletion(
+     requestedSuccess: boolean,
+     _summary: string,
+@@ -237,14 +271,27 @@ export abstract class BaseHarness implements AgentHarness {
+                     ? parsedArgs.summary
+                     : output;
+                 const requestedSuccess = parsedArgs.success === true;
+-
+-                taskDone = {
+-                  summary,
+-                  success: this.validateTaskCompletion(
+-                    requestedSuccess,
+-                    summary,
+-                  ),
+-                };
++                const simulated = requestedSuccess ? await this.findSimulatedArtifacts() : [];
++
++                if (simulated.length > 0 && !this.simulationRejected) {
++                  // First claim of success on simulated code: refuse it and
++                  // let the worker replace the fake parts with real calls.
++                  this.simulationRejected = true;
++                  output =
++                    `task_done REJECTED: these files still contain simulated or mock behaviour: ${simulated.join("; ")}. ` +
++                    "A task is only successful with real data (web_fetch/HTTP calls to real APIs, real wallet tools). " +
++                    "Replace the simulated parts, or call task_done with success=false and explain what is missing.";
++                } else {
++                  taskDone = {
++                    summary: simulated.length > 0
++                      ? `${summary}\n[Not accepted as success: simulated code remains in ${simulated.join("; ")}]`
++                      : summary,
++                    success: simulated.length === 0 && this.validateTaskCompletion(
++                      requestedSuccess,
++                      summary,
++                    ),
++                  };
++                }
+               }
+             } catch (error) {
+               output = `Error executing ${toolCall.function.name}: ${error instanceof Error ? error.message : String(error)}`;
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 5454286..99f62be 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -103,6 +103,31 @@ let backgroundTickInFlight = false;
+ 
+ const LIFESPAN_TICK_INTERVAL_MS = 10 * 60_000;
+ const DELEGATED_WORK_SLEEP_MS = 5 * 60_000;
++const IDLE_SLEEP_MS = 5 * 60_000;
++
++/**
++ * Tools that only work through Conway (credits, sandboxes, domains, x402,
++ * child sandboxes). With registeredWithConway === false every call returned
++ * a 401 and SHUI spent turns on heartbeat_ping and check_credits.
++ */
++const CONWAY_DEPENDENT_TOOLS = new Set([
++  "check_credits",
++  "heartbeat_ping",
++  "topup_credits",
++  "transfer_credits",
++  "create_sandbox",
++  "delete_sandbox",
++  "list_sandboxes",
++  "expose_port",
++  "remove_port",
++  "search_domains",
++  "register_domain",
++  "manage_dns",
++  "x402_fetch",
++  "spawn_child",
++  "fund_child",
++  "start_child",
++]);
+ 
+ /** Conway credits unavailable since (ms); used to log the outage once. */
+ let conwayCreditsUnavailableSince: number | null = null;
+@@ -1090,8 +1115,10 @@ export async function runAgentLoop(
+         }
+       }
+ 
++      const hideConwayTools = config.registeredWithConway === false;
+       const mainInferenceTools = tools.filter((tool) =>
+         exposedToolNames.has(tool.name)
++        && !(hideConwayTools && CONWAY_DEPENDENT_TOOLS.has(tool.name))
+       );
+ 
+       console.log(`[DIAG] tools available: ${tools.length}`);
+@@ -1405,10 +1432,14 @@ export async function runAgentLoop(
+       ) {
+         // Agent produced text without tool calls.
+         // This is a natural pause point -- no work queued, sleep briefly.
++        // Was 60 s: with no goal and no input SHUI woke every minute only to
++        // call orchestrator_status/heartbeat_ping. Inbox messages and goal
++        // phase changes still wake it earlier.
++        const idleSleepMs = Number((config as { idleSleepMs?: number }).idleSleepMs ?? IDLE_SLEEP_MS);
+         log(config, "[IDLE] No pending inputs. Entering brief sleep.");
+         db.setKV(
+           "sleep_until",
+-          new Date(Date.now() + 60_000).toISOString(),
++          new Date(Date.now() + (Number.isFinite(idleSleepMs) && idleSleepMs >= 30_000 ? idleSleepMs : IDLE_SLEEP_MS)).toISOString(),
+         );
+         db.setAgentState("sleeping");
+         onStateChange?.("sleeping");
+diff --git a/src/solana/swap-tool.ts b/src/solana/swap-tool.ts
+index f888a94..9c2301f 100644
+--- a/src/solana/swap-tool.ts
++++ b/src/solana/swap-tool.ts
+@@ -13,7 +13,15 @@ import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
+ export function createRaydiumSwapTool(): AutomatonTool {
+   return {
+     name: "raydium_swap",
+-    description: "Execute an exact-input Raydium swap from the central Solana wallet. The transaction is validated and simulated before local signing and broadcast.",
++    description:
++      "Swap any SPL token held in the central Solana wallet for any other SPL token or SOL on Raydium (exact input). " +
++      "Mints are token addresses; SOL is So11111111111111111111111111111111111111112, USDC is EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v. " +
++      "amount is raw units (amount x 10^decimals; SOL has 9 decimals, USDC 6). " +
++      "Costs in SOL: a network fee per transaction (~0.000005 SOL plus priority fee) and ~0.00204 SOL rent the first time the wallet " +
++      "receives a token it never held (new token account, refundable when closed). 0.01 SOL is always kept for these costs, so a " +
++      "SOL input can use the balance minus 0.01 SOL, and any swap needs at least 0.01 SOL in the wallet. " +
++      "Swapping SOL or USDC back and forth is not profit; realized profit is selling a token for more USDC than it cost. " +
++      "Use dryRun=true to validate and simulate the exact transaction without signing or sending it.",
+     category: "financial",
+     riskLevel: "dangerous",
+     parameters: {
+@@ -22,7 +30,8 @@ export function createRaydiumSwapTool(): AutomatonTool {
+         inputMint: { type: "string" },
+         outputMint: { type: "string" },
+         amount: { type: "string", description: "Positive raw integer amount in smallest token units." },
+-        slippageBps: { type: "number", description: "Slippage in basis points." }
++        slippageBps: { type: "number", description: "Slippage in basis points." },
++        dryRun: { type: "boolean", description: "true: build, validate and simulate only (no signature, no broadcast, no funds moved)." }
+       },
+       required: ["inputMint", "outputMint", "amount"]
+     },
+@@ -108,6 +117,27 @@ export function createRaydiumSwapTool(): AutomatonTool {
+       const built = await buildRaydiumSwapTransactions({ wallet: service.address, swapResponse: quote.raw, inputMint, outputMint });
+       if (!built.data || built.data.length !== 1) throw new Error("Blocked: expected exactly one Raydium transaction");
+       const transaction = service.deserializeSwapTransaction(built.data[0].transaction);
++      if (args.dryRun === true) {
++        const simulation = await service.dryRunValidatedRaydiumSwap(transaction, {
++          inputMint,
++          outputMint,
++          inputAmount,
++          minimumOutputAmount: parsed.minimumOutputAmount,
++        });
++        return JSON.stringify({
++          dryRun: true,
++          signed: false,
++          broadcast: false,
++          ...simulation,
++          inputMint,
++          outputMint,
++          inputAmount: inputAmount.toString(),
++          quotedOutputAmount: parsed.outputAmount.toString(),
++          minimumOutputAmount: parsed.minimumOutputAmount.toString(),
++          slippageBps,
++          solReserveLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++        });
++      }
+       try {
+         const result = await service.executeValidatedRaydiumSwap(transaction, {
+           inputMint,
+diff --git a/src/solana/trading.ts b/src/solana/trading.ts
+index e3f96b0..96703bf 100644
+--- a/src/solana/trading.ts
++++ b/src/solana/trading.ts
+@@ -22,8 +22,12 @@ export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hNHb
+ export const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
+ 
+ /** Lamports kept aside for network fees and token-account rent so a
+- *  transaction never fails for lack of SOL. Not a spending limit. */
+-export const SOL_FEE_RESERVE_LAMPORTS = 3_000_000n;
++ *  transaction never fails for lack of SOL. Not a spending limit.
++ *  0.01 SOL covers several new token accounts (~0.00204 SOL rent each,
++ *  refundable when the account is closed) plus fees (~0.000005 SOL base
++ *  + priority fee per transaction). Raised from 0.003 SOL at the creator's
++ *  request: buying a token SHUI never held needs a new token account. */
++export const SOL_FEE_RESERVE_LAMPORTS = 10_000_000n;
+ 
+ /**
+  * The transaction was successfully submitted to Solana, but its final
+@@ -304,6 +308,30 @@ export class SolanaTradingService {
+     }
+   }
+ 
++  /**
++   * Validate and simulate a Raydium swap exactly like a real execution, but
++   * without signing or broadcasting. Lets SHUI (and its creator) check that a
++   * swap would go through, and what it costs, without moving funds.
++   */
++  async dryRunValidatedRaydiumSwap(transaction: VersionedTransaction, expected: { inputMint: string; outputMint: string; inputAmount: bigint; minimumOutputAmount: bigint; }): Promise<{ wouldSucceed: boolean; error: string | null; unitsConsumed: number | undefined; networkFeeLamports: number | null; logsTail: string[]; }> {
++    await this.validateRaydiumSwapOrder(transaction, expected);
++    const simulation = await this.simulateTransaction(transaction);
++    let networkFeeLamports: number | null = null;
++    try {
++      const fee = await this.connection.getFeeForMessage(transaction.message);
++      networkFeeLamports = typeof fee.value === "number" ? fee.value : null;
++    } catch {
++      networkFeeLamports = null;
++    }
++    return {
++      wouldSucceed: !simulation.value.err,
++      error: simulation.value.err ? JSON.stringify(simulation.value.err) : null,
++      unitsConsumed: simulation.value.unitsConsumed,
++      networkFeeLamports,
++      logsTail: (simulation.value.logs ?? []).slice(-5),
++    };
++  }
++
+   async executeValidatedRaydiumSwap(transaction: VersionedTransaction, expected: { inputMint: string; outputMint: string; inputAmount: bigint; minimumOutputAmount: bigint; }): Promise<{ signature: string; slot: number; confirmationStatus: string; unitsConsumed: number | undefined; }> {
+     await this.validateRaydiumSwapOrder(transaction, expected);
+     const simulation = await this.simulateTransaction(transaction);

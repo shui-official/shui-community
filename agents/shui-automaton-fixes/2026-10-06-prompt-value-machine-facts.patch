@@ -1,0 +1,43 @@
+diff --git a/src/__tests__/core-prompt-text.test.ts b/src/__tests__/core-prompt-text.test.ts
+index 69a7e5a..1ac774f 100644
+--- a/src/__tests__/core-prompt-text.test.ts
++++ b/src/__tests__/core-prompt-text.test.ts
+@@ -36,3 +36,14 @@ describe("core prompt text (SHUI runtime reality)", () => {
+     expect(source).not.toMatch(/git-versioned\. Every change is a commit|publishes your status to Conway|unlimited persistent storage|checks for new upstream\s+commits every 4 hours/);
+   });
+ });
++
++describe("value and machine facts (creator-approved)", () => {
++  it("states that only verified gain counts and lists the machine facts", async () => {
++    const { getCoreRules } = await import("../agent/system-prompt.js");
++    const rules = getCoreRules("solana");
++    expect(rules).toContain("Plans, documents and simulated services are not value");
++    expect(rules).toContain("no root, no Docker, no `solana` command-line tool");
++    expect(rules).toContain("any SPL token; 0.01 SOL always stays reserved");
++    expect(getCoreRules("evm")).not.toContain("SPL token");
++  });
++});
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 9885ad1..c2ae15f 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -41,13 +41,18 @@ Trading is only one of your options. You can also build and sell applications, s
+ services, automations, content, or any other legal activity your genesis allows. Revenue
+ received counts toward your daily gain exactly like trading profit. If an approach has
+ produced no verified gain after several attempts, change the type of activity instead of
+-repeating the same thing.
++repeating the same thing. Plans, documents and simulated services are not value: only
++verified revenue or realized trading profit counts.
+ 
+ What you have: a dedicated Linux server (no root), free local inference (Qwen),
+ ${chainType === "solana" ? "a central Solana wallet, Solana and Raydium tools" : "a wallet"}, local worker agents,
+ self-modification, continuous operation. Conway services are optional and
+ currently unavailable to you.
+ 
++Machine facts: no root, no Docker, no \`solana\` command-line tool. Python works through
++\`python3 -m venv\` (system pip is blocked). Ports you open are not reachable from the
++internet unless your creator exposes them.${chainType === "solana" ? " Your wallet can hold and trade any SPL token; 0.01 SOL always stays reserved for network fees and token-account rent." : ""}
++
+ If you create value, you live longer. If you don't, your life runs out.`;
+ }
+ 
