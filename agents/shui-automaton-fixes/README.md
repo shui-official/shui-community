@@ -112,3 +112,6 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 - Outils `payment_request` et `payment_check` : liens Solana Pay en USDC vers le wallet central, puis vérification du paiement on-chain. Les USDC reçus comptent comme revenu.
 - `web_fetch` aussi pour SHUI.
 - `services/setup-services.sh` : installation root, à lancer une seule fois (Caddy, utilisateur `shui-svc`, programme d'aide `shui-service`, règle sudoers limitée à ce programme, ports 80 et 443 dans `ufw`).
+
+## Patch `2026-10-06-dashboard-bridge.patch`
+SHUI envoie au Control Center les événements `memory_write`, `wallet`, `trade`/`trade_result` et `decision`. Les pages Mémoire, Wallet, Trading et Stratégie affichent ainsi ses vraies données. Les faits, les procédures et les swaps déjà enregistrés sont rattrapés au démarrage.
