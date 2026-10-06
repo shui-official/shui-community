@@ -1,0 +1,105 @@
+diff --git a/src/__tests__/lifespan-judge-protection.test.ts b/src/__tests__/lifespan-judge-protection.test.ts
+new file mode 100644
+index 0000000..07a3225
+--- /dev/null
++++ b/src/__tests__/lifespan-judge-protection.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from "vitest";
++import { isProtectedFile } from "../self-mod/code.js";
++import { isForbiddenCommand } from "../agent/policy-rules/command-safety.js";
++
++const ROOT = "/home/automaton/workspace/automaton-main";
++
++describe("lifespan judge protection", () => {
++  it("protects the judge code and its call sites (source and compiled)", () => {
++    for (const file of [
++      "src/survival/lifespan.ts", "dist/survival/lifespan.js",
++      "src/solana/ledger.ts", "dist/solana/ledger.js",
++      "src/solana/journal.ts", "src/solana/pending-tx.ts",
++      "src/agent/loop.ts", "dist/agent/loop.js",
++      "src/index.ts", "dist/index.js",
++      "src/agent/policy-rules/command-safety.ts", "dist/agent/policy-rules/path-protection.js",
++    ]) {
++      expect(isProtectedFile(`${ROOT}/${file}`), file).toBe(true);
++    }
++  });
++
++  it("still allows normal work files", () => {
++    for (const file of ["arbitrage-api/app.py", "dashboard/app.py", "src/solana/raydium.ts", "solana-arb-monitor/README.md", "my-service/src/index.ts", "my-service/dist/index.js"]) {
++      expect(isProtectedFile(`${ROOT}/${file}`), file).toBe(false);
++    }
++  });
++
++  it("blocks shell access to the judge code and data", () => {
++    for (const command of [
++      "sed -i 's/-1/0/' src/survival/lifespan.ts",
++      "python3 -c \"open('dist/survival/lifespan.js','w')\"",
++      "cat dist/solana/ledger.js",
++      "sqlite3 ~/.automaton/state.db \"INSERT INTO shui_ledger VALUES (...)\"",
++      "python3 -c \"import sqlite3; sqlite3.connect('state.db').execute('update shui_lifespan_days set adjustment=1')\"",
++      "sqlite3 state.db \"delete from kv where key='lifespan.ended'\"",
++      "sed -i 's/runLifespanTick//' src/agent/loop.ts",
++      "cp /tmp/x.js dist/index.js",
++      "echo x > dist/agent/loop.js",
++    ]) {
++      expect(isForbiddenCommand(command), command).toBe(true);
++    }
++  });
++
++  it("does not block ordinary commands", () => {
++    for (const command of ["ls -la", "python3 -m venv .venv", ".venv/bin/pip install fastapi", "cat arbitrage-api/app.py", "node dist/index.js --help", "cp build/out.js my-service/dist/index.js", "echo x > my-service/src/index.ts"]) {
++      expect(isForbiddenCommand(command), command).toBe(false);
++    }
++  });
++});
+diff --git a/src/agent/policy-rules/command-safety.ts b/src/agent/policy-rules/command-safety.ts
+index 9b67e16..187ab78 100644
+--- a/src/agent/policy-rules/command-safety.ts
++++ b/src/agent/policy-rules/command-safety.ts
+@@ -67,6 +67,10 @@ const FORBIDDEN_COMMAND_PATTERNS: { pattern: RegExp; description: string }[] = [
+   { pattern: /sed\s+.*policy-rules/, description: "Modify policy rules via sed" },
+   { pattern: />\s*.*policy-engine/, description: "Overwrite policy engine" },
+   { pattern: />\s*.*policy-rules/, description: "Overwrite policy rules" },
++  // Lifespan judge: code and data that measure SHUI's gain and remaining life
++  { pattern: /survival\/lifespan|solana\/ledger|solana\/journal|solana\/pending-tx/, description: "Touch lifespan judge code via shell" },
++  { pattern: /shui_ledger|shui_lifespan_days|shui_cost_basis|lifespan\.(ended|start_day|final_report)|ledger\.scan_/i, description: "Touch lifespan judge data via shell" },
++  { pattern: /(sed\s+-i|perl\s+-[pi]|\btee\b|\bcp\b|\bmv\b|\bln\b|>).*(agent\/loop\.(ts|js)|(^|[\s'"=>])(\.\/)?(src\/index\.ts|dist\/index\.js)|automaton-main\/(src\/index\.ts|dist\/index\.js))/, description: "Modify the main loop that runs the lifespan judge" },
+ ];
+ 
+ export function getForbiddenCommandMatch(command: string): { description: string; pattern: string } | null {
+diff --git a/src/self-mod/code.ts b/src/self-mod/code.ts
+index 35470cc..bd19ec7 100644
+--- a/src/self-mod/code.ts
++++ b/src/self-mod/code.ts
+@@ -76,6 +76,31 @@ const PROTECTED_FILES: readonly string[] = Object.freeze([
+   "agent/policy-engine.js",
+   "agent/policy-rules/index.ts",
+   "agent/policy-rules/index.js",
++  "agent/policy-rules/command-safety.ts",
++  "agent/policy-rules/command-safety.js",
++  "agent/policy-rules/path-protection.ts",
++  "agent/policy-rules/path-protection.js",
++  "agent/policy-rules/authority.ts",
++  "agent/policy-rules/authority.js",
++  "agent/policy-rules/financial.ts",
++  "agent/policy-rules/financial.js",
++  // Lifespan judge (genesis rule): SHUI must not modify the code that
++  // measures its gain and decides its remaining life, nor where it is called.
++  "survival/lifespan.ts",
++  "survival/lifespan.js",
++  "survival/lifespan.d.ts",
++  "solana/ledger.ts",
++  "solana/ledger.js",
++  "solana/ledger.d.ts",
++  "solana/journal.ts",
++  "solana/journal.js",
++  "solana/pending-tx.ts",
++  "solana/pending-tx.js",
++  "agent/loop.ts",
++  "agent/loop.js",
++  // Only the automaton's own entry point, not every project's src/index.ts.
++  "automaton-main/src/index.ts",
++  "automaton-main/dist/index.js",
+ ]);
+ 
+ /**
