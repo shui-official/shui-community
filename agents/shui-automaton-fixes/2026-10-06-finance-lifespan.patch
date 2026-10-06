@@ -1,0 +1,2517 @@
+diff --git a/src/__tests__/solana/ledger-lifespan.test.ts b/src/__tests__/solana/ledger-lifespan.test.ts
+new file mode 100644
+index 0000000..c890c56
+--- /dev/null
++++ b/src/__tests__/solana/ledger-lifespan.test.ts
+@@ -0,0 +1,173 @@
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import type BetterSqlite3 from "better-sqlite3";
++import { createInMemoryDb } from "../orchestration/test-db.js";
++import {
++  getDailyGain,
++  recordIncoming,
++  recordSwap,
++  recordTransferOut,
++  scanWalletHistory,
++  type WalletTransactionDelta,
++} from "../../solana/ledger.js";
++import {
++  checkLifeEnd,
++  classifyGain,
++  evaluateCompletedDays,
++  formatLifespanLine,
++  getLifespanStatus,
++  isLifeEnded,
++} from "../../survival/lifespan.js";
++import { SOL_MINT, USDC_MINT } from "../../solana/raydium.js";
++
++const TOKEN = "TokenMint1111111111111111111111111111111111";
++const CREATOR = "Creator11111111111111111111111111111111111";
++const CUSTOMER = "Customer1111111111111111111111111111111111";
++const day = (d: string, h = 12) => new Date(`${d}T${String(h).padStart(2, "0")}:00:00.000Z`);
++
++function incoming(sig: string, payer: string, opts: Partial<WalletTransactionDelta> = {}): WalletTransactionDelta {
++  return {
++    signature: sig, blockTime: Math.floor(day("2026-10-06").getTime() / 1000), failed: false,
++    signedByWallet: false, feePayer: payer, solLamportsDelta: 0n, feeLamports: 5000n, tokenDeltas: [], ...opts,
++  };
++}
++
++describe("ledger", () => {
++  let db: BetterSqlite3.Database;
++  beforeEach(() => { db = createInMemoryDb(); });
++  afterEach(() => { db.close(); });
++
++  it("realizes profit only when a tracked position is sold into USDC", () => {
++    // Buy 1000 tokens for 10 USDC (no profit realized on a buy).
++    recordSwap(db, { signature: "buy", at: day("2026-10-06"), inputMint: USDC_MINT, inputAmountRaw: 10_000_000n, outputMint: TOKEN, outputAmountRaw: 1000n });
++    // Sell half for 8 USDC: cost 5 -> +3 realized.
++    const sell = recordSwap(db, { signature: "sell", at: day("2026-10-06"), inputMint: TOKEN, inputAmountRaw: 500n, outputMint: USDC_MINT, outputAmountRaw: 8_000_000n });
++    expect(sell!.realizedPnlUsd).toBeCloseTo(3);
++    // Sell the rest for 4 USDC: cost 5 -> -1 realized.
++    const sell2 = recordSwap(db, { signature: "sell2", at: day("2026-10-06"), inputMint: TOKEN, inputAmountRaw: 500n, outputMint: USDC_MINT, outputAmountRaw: 4_000_000n });
++    expect(sell2!.realizedPnlUsd).toBeCloseTo(-1);
++    expect(getDailyGain(db, "2026-10-06").gainUsd).toBeCloseTo(2);
++  });
++
++  it("does not count units held before the ledger as profit", () => {
++    // Selling pre-existing SOL into USDC realizes nothing (no recorded cost).
++    const entry = recordSwap(db, { signature: "s", at: day("2026-10-06"), inputMint: SOL_MINT, inputAmountRaw: 50_000_000n, outputMint: USDC_MINT, outputAmountRaw: 6_000_000n });
++    expect(entry!.realizedPnlUsd).toBe(0);
++  });
++
++  it("carries SOL market value into a token bought with pre-existing SOL", () => {
++    recordSwap(db, { signature: "b", at: day("2026-10-06"), inputMint: SOL_MINT, inputAmountRaw: 100_000_000n, outputMint: TOKEN, outputAmountRaw: 100n, inputValueUsd: 12 });
++    const s = recordSwap(db, { signature: "s", at: day("2026-10-06"), inputMint: TOKEN, inputAmountRaw: 100n, outputMint: USDC_MINT, outputAmountRaw: 15_000_000n });
++    expect(s!.realizedPnlUsd).toBeCloseTo(3);
++  });
++
++  it("counts payments from others as revenue, not creator deposits", () => {
++    const usdcIn = (sig: string, payer: string, raw: bigint) => incoming(sig, payer, { tokenDeltas: [{ mint: USDC_MINT, deltaRaw: raw, decimals: 6 }] });
++    expect(recordIncoming(db, usdcIn("r1", CUSTOMER, 25_000_000n), { creatorAddress: CREATOR, solPriceUsd: 120 })!.revenueUsd).toBe(25);
++    const dep = recordIncoming(db, usdcIn("d1", CREATOR, 50_000_000n), { creatorAddress: CREATOR, solPriceUsd: 120 })!;
++    expect(dep.kind).toBe("creator_deposit");
++    expect(dep.revenueUsd).toBe(0);
++    const sol = recordIncoming(db, incoming("r2", CUSTOMER, { solLamportsDelta: 500_000_000n }), { creatorAddress: CREATOR, solPriceUsd: 120 })!;
++    expect(sol.revenueUsd).toBeCloseTo(60);
++    // SOL revenue without a price is flagged incomplete (day becomes unknown).
++    const unpriced = recordIncoming(db, incoming("r3", CUSTOMER, { solLamportsDelta: 1_000_000n }), { creatorAddress: CREATOR, solPriceUsd: null })!;
++    expect(unpriced.incomplete).toBe(true);
++    // SHUI-signed and failed transactions are never revenue.
++    expect(recordIncoming(db, incoming("own", "SHUI", { signedByWallet: true, solLamportsDelta: 1n }), { creatorAddress: CREATOR, solPriceUsd: 1 })!.kind).toBe("own_unjournaled");
++    expect(recordIncoming(db, incoming("f", CUSTOMER, { failed: true, solLamportsDelta: 1n }), { creatorAddress: CREATOR, solPriceUsd: 1 })).toBeNull();
++  });
++
++  it("journals transfers out without deducting them from the gain", () => {
++    recordTransferOut(db, { signature: "t", at: day("2026-10-06"), mint: USDC_MINT, amountRaw: 5_000_000n, recipient: CUSTOMER });
++    expect(getDailyGain(db, "2026-10-06").gainUsd).toBe(0);
++  });
++
++  it("scans history oldest first, skips journaled transactions and moves the cursor", async () => {
++    const deltas: Record<string, WalletTransactionDelta> = {
++      a: incoming("a", CUSTOMER, { tokenDeltas: [{ mint: USDC_MINT, deltaRaw: 1_000_000n, decimals: 6 }] }),
++      b: incoming("b", CUSTOMER, { tokenDeltas: [{ mint: USDC_MINT, deltaRaw: 2_000_000n, decimals: 6 }] }),
++    };
++    const source = {
++      getLatestSignature: async () => "start",
++      getSignaturesSince: async (until: string | null) => (until === "start"
++        ? [{ signature: "b", failed: false, blockTime: 1 }, { signature: "a", failed: false, blockTime: 1 }]
++        : []),
++      getWalletDelta: async (sig: string) => deltas[sig] ?? null,
++    };
++    await scanWalletHistory(db, source, { creatorAddress: CREATOR, solPriceUsd: 100 }); // sets cursor only
++    const result = await scanWalletHistory(db, source, { creatorAddress: CREATOR, solPriceUsd: 100 });
++    expect(result.created.map((e) => e.signature)).toEqual(["a", "b"]);
++    expect(getDailyGain(db, "2026-10-06").revenueUsd).toBeCloseTo(3);
++    const again = await scanWalletHistory(db, source, { creatorAddress: CREATOR, solPriceUsd: 100 });
++    expect(again.processed).toBe(0);
++  });
++});
++
++describe("lifespan", () => {
++  let db: BetterSqlite3.Database;
++  beforeEach(() => {
++    db = createInMemoryDb();
++    db.prepare("INSERT INTO identity (key, value) VALUES ('createdAt', '2026-10-02T17:11:16.959Z')").run();
++  });
++  afterEach(() => { db.close(); });
++
++  const setScanOk = (iso: string) =>
++    db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('ledger.scan_last_ok', ?, datetime('now'))").run(iso);
++
++  it("classifies the daily gain against the 100 / 500 USD thresholds", () => {
++    expect(classifyGain(0)).toEqual({ status: "penalty", adjustment: -1 });
++    expect(classifyGain(99.99).adjustment).toBe(-1);
++    expect(classifyGain(100).adjustment).toBe(0);
++    expect(classifyGain(500).adjustment).toBe(0);
++    expect(classifyGain(500.01)).toEqual({ status: "bonus", adjustment: 1 });
++  });
++
++  it("starts with 90 days from birth and only evaluates days after deployment", () => {
++    const status = getLifespanStatus(db, day("2026-10-06", 0))!;
++    expect(status.endsAt.slice(0, 10)).toBe("2026-12-31");
++    expect(evaluateCompletedDays(db, day("2026-10-06"))).toEqual([]); // first run sets start day
++    expect(evaluateCompletedDays(db, day("2026-10-06", 23))).toEqual([]); // day not over yet
++  });
++
++  it("applies a penalty, a bonus, or no adjustment once the day is verified", () => {
++    evaluateCompletedDays(db, day("2026-10-06"));
++    recordIncoming(db, incoming("big", CUSTOMER, { tokenDeltas: [{ mint: USDC_MINT, deltaRaw: 600_000_000n, decimals: 6 }], blockTime: Math.floor(day("2026-10-07").getTime() / 1000) }), { creatorAddress: CREATOR, solPriceUsd: 100 });
++    setScanOk("2026-10-08T00:05:00.000Z");
++    const days = evaluateCompletedDays(db, day("2026-10-08", 1));
++    expect(days.map((d) => [d.day, d.status, d.adjustment])).toEqual([
++      ["2026-10-06", "penalty", -1],
++      ["2026-10-07", "bonus", 1],
++    ]);
++    expect(getLifespanStatus(db)!.adjustmentDays).toBe(0);
++  });
++
++  it("never penalizes an unverifiable day", () => {
++    evaluateCompletedDays(db, day("2026-10-06"));
++    // No successful scan after the day ended: wait, then settle as unknown.
++    expect(evaluateCompletedDays(db, day("2026-10-07", 6))).toEqual([]);
++    const settled = evaluateCompletedDays(db, day("2026-10-09", 1));
++    expect(settled[0]).toMatchObject({ day: "2026-10-06", status: "unknown", adjustment: 0 });
++    // A day containing an unpriced entry is unknown too.
++    recordIncoming(db, incoming("x", CUSTOMER, { solLamportsDelta: 1_000n, blockTime: Math.floor(day("2026-10-09").getTime() / 1000) }), { creatorAddress: CREATOR, solPriceUsd: null });
++    setScanOk("2026-10-10T00:01:00.000Z");
++    const next = evaluateCompletedDays(db, day("2026-10-10", 1));
++    expect(next.find((d) => d.day === "2026-10-09")).toMatchObject({ status: "unknown", adjustment: 0 });
++  });
++
++  it("ends life at zero remaining time or at 1M verified value, and stays ended", () => {
++    expect(checkLifeEnd(db, 50, day("2026-10-06"))).toBeNull();
++    expect(checkLifeEnd(db, 1_000_000, day("2026-10-06"))!.reason).toBe("goal_reached");
++    expect(isLifeEnded(db)).toBe(true);
++    expect(formatLifespanLine(db)).toContain("ENDED");
++
++    const db2 = createInMemoryDb();
++    db2.prepare("INSERT INTO identity (key, value) VALUES ('createdAt', '2026-10-02T17:11:16.959Z')").run();
++    expect(checkLifeEnd(db2, null, new Date("2027-01-01T00:00:00Z"))!.reason).toBe("lifespan_expired");
++    db2.close();
++  });
++
++  it("shows remaining days and today's gain in SHUI's status line", () => {
++    const line = formatLifespanLine(db, day("2026-10-06"))!;
++    expect(line).toMatch(/Lifespan: \d+\.\d days remaining \(ends 2026-12-31/);
++    expect(line).toContain("Today's verified gain");
++  });
++});
+diff --git a/src/__tests__/solana/trading-safety.test.ts b/src/__tests__/solana/trading-safety.test.ts
+new file mode 100644
+index 0000000..a74bfdf
+--- /dev/null
++++ b/src/__tests__/solana/trading-safety.test.ts
+@@ -0,0 +1,185 @@
++import { describe, expect, it, vi } from "vitest";
++import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
++import bs58 from "bs58";
++import {
++  ASSOCIATED_TOKEN_PROGRAM_ID,
++  NATIVE_SOL_MINT,
++  SolanaTradingService,
++  SolanaTransactionUncertainError,
++  TOKEN_2022_PROGRAM_ID,
++  TOKEN_PROGRAM_ID,
++} from "../../solana/trading.js";
++import { checkPendingTransaction, readPendingTransaction, recordPendingTransaction, PENDING_TX_KEY } from "../../solana/pending-tx.js";
++import { fetchTokenUsdValuesFromRaydium, buildCentralWalletValuation } from "../../solana/wallet-valuation.js";
++import { USDC_MINT } from "../../solana/raydium.js";
++import type { AutomatonDatabase } from "../../types.js";
++
++const wallet = Keypair.generate().publicKey.toBase58();
++
++function serviceWith(connection: Record<string, unknown>): SolanaTradingService {
++  const service = new SolanaTradingService({ address: wallet, chainType: "solana" } as any, "http://127.0.0.1:1");
++  Object.defineProperty(service, "connection", { value: connection });
++  return service;
++}
++
++function memDb(): AutomatonDatabase {
++  const kv = new Map<string, string>();
++  return {
++    getKV: (k: string) => kv.get(k),
++    setKV: (k: string, v: string) => { kv.set(k, v); },
++    deleteKV: (k: string) => { kv.delete(k); },
++  } as unknown as AutomatonDatabase;
++}
++
++const fakeTx = () => ({
++  signatures: [new Uint8Array(64).fill(7)],
++  message: { recentBlockhash: "Blockhash111" },
++  serialize: () => new Uint8Array([1, 2, 3]),
++}) as any;
++
++describe("transaction outcome", () => {
++  it("reports a dropped transaction as expired once its blockhash is no longer valid", async () => {
++    const service = serviceWith({
++      getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }),
++      isBlockhashValid: vi.fn().mockResolvedValue({ value: false }),
++    });
++    await expect(service.getTransactionOutcome("sig", { recentBlockhash: "bh" })).resolves.toEqual({ state: "expired" });
++  });
++
++  it("keeps waiting while the blockhash is still valid", async () => {
++    const service = serviceWith({
++      getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }),
++      isBlockhashValid: vi.fn().mockResolvedValue({ value: true }),
++    });
++    await expect(service.getTransactionOutcome("sig", { recentBlockhash: "bh" })).resolves.toEqual({ state: "pending" });
++  });
++
++  it("expires legacy pending signatures (no blockhash) after the time limit", async () => {
++    const service = serviceWith({ getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }) });
++    await expect(service.getTransactionOutcome("sig", { submittedAt: Date.now() - 11 * 60_000 })).resolves.toEqual({ state: "expired" });
++    await expect(service.getTransactionOutcome("sig", { submittedAt: Date.now() })).resolves.toEqual({ state: "pending" });
++  });
++});
++
++describe("broadcast safety", () => {
++  it("treats polling errors after broadcast as uncertain (never a plain failure)", async () => {
++    const service = serviceWith({
++      sendRawTransaction: vi.fn().mockResolvedValue("ignored"),
++      getSignatureStatuses: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")),
++    });
++    const error = await service.broadcastAndConfirm(fakeTx(), 10).catch((e) => e);
++    expect(error).toBeInstanceOf(SolanaTransactionUncertainError);
++    expect(error.signature).toBe(bs58.encode(new Uint8Array(64).fill(7)));
++    expect(error.recentBlockhash).toBe("Blockhash111");
++  });
++
++  it("treats a network error while sending as uncertain", async () => {
++    const service = serviceWith({ sendRawTransaction: vi.fn().mockRejectedValue(new Error("fetch failed")) });
++    await expect(service.broadcastAndConfirm(fakeTx(), 10)).rejects.toBeInstanceOf(SolanaTransactionUncertainError);
++  });
++
++  it("treats a preflight rejection as not sent", async () => {
++    const rejection = Object.assign(new Error("Transaction simulation failed: insufficient funds"), { logs: ["Program log: x"] });
++    const service = serviceWith({ sendRawTransaction: vi.fn().mockRejectedValue(rejection) });
++    const error = await service.broadcastAndConfirm(fakeTx(), 10).catch((e) => e);
++    expect(error).not.toBeInstanceOf(SolanaTransactionUncertainError);
++  });
++});
++
++describe("pending transaction lock", () => {
++  it("blocks while unresolved and releases once expired", async () => {
++    const db = memDb();
++    recordPendingTransaction(db, new SolanaTransactionUncertainError("sig1", "bh"), "swap");
++    const blocked = await checkPendingTransaction(db, serviceWith({
++      getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }),
++      isBlockhashValid: vi.fn().mockResolvedValue({ value: true }),
++    }));
++    expect(blocked.blocked).toBe(true);
++
++    const released = await checkPendingTransaction(db, serviceWith({
++      getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }),
++      isBlockhashValid: vi.fn().mockResolvedValue({ value: false }),
++    }));
++    expect(released).toMatchObject({ blocked: false, resolved: { outcome: { state: "expired" } } });
++    expect(db.getKV(PENDING_TX_KEY)).toBeUndefined();
++  });
++
++  it("upgrades a legacy bare-signature value", () => {
++    const db = memDb();
++    db.setKV(PENDING_TX_KEY, "legacySig");
++    const pending = readPendingTransaction(db)!;
++    expect(pending.signature).toBe("legacySig");
++    expect(JSON.parse(db.getKV(PENDING_TX_KEY)!).signature).toBe("legacySig");
++  });
++});
++
++describe("balances and transfers", () => {
++  it("reads token balances from both the classic and Token-2022 programs", async () => {
++    const account = (mint: string, amount: string) => ({ account: { data: { parsed: { info: { mint, tokenAmount: { amount, decimals: 6, uiAmount: Number(amount) / 1e6 } } } } } });
++    const getParsedTokenAccountsByOwner = vi.fn(async (_owner: PublicKey, filter: { programId: PublicKey }) => ({
++      value: filter.programId.equals(TOKEN_PROGRAM_ID) ? [account("classic", "1")] : [account("t22", "2")],
++    }));
++    const service = serviceWith({ getParsedTokenAccountsByOwner });
++    const tokens = await service.getTokenBalances();
++    expect(tokens.map((t) => t.mint).sort()).toEqual(["classic", "t22"]);
++    expect(getParsedTokenAccountsByOwner.mock.calls.map((c) => c[1].programId.toBase58()).sort())
++      .toEqual([TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()].sort());
++  });
++
++  it("builds a native SOL transfer", async () => {
++    const recipient = Keypair.generate().publicKey.toBase58();
++    const service = serviceWith({ getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: Keypair.generate().publicKey.toBase58() }) });
++    const { transaction } = await service.buildTransferTransaction({ recipient, mint: NATIVE_SOL_MINT, amountRaw: 1234n });
++    const keys = transaction.message.staticAccountKeys.map((k) => k.toBase58());
++    expect(keys[0]).toBe(wallet);
++    expect(keys).toContain(SystemProgram.programId.toBase58());
++    expect(keys).toContain(recipient);
++  });
++
++  it("builds an SPL transferChecked with idempotent recipient account creation", async () => {
++    const recipient = Keypair.generate().publicKey.toBase58();
++    const service = serviceWith({
++      getParsedAccountInfo: vi.fn().mockResolvedValue({ value: { owner: TOKEN_PROGRAM_ID, data: { parsed: { info: { decimals: 6 } } } } }),
++      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: Keypair.generate().publicKey.toBase58() }),
++    });
++    const { transaction, decimals } = await service.buildTransferTransaction({ recipient, mint: USDC_MINT, amountRaw: 5_000_000n });
++    expect(decimals).toBe(6);
++    const ixs = transaction.message.compiledInstructions;
++    const programOf = (i: number) => transaction.message.staticAccountKeys[ixs[i].programIdIndex].toBase58();
++    expect(programOf(0)).toBe(ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
++    expect(Buffer.from(ixs[0].data)).toEqual(Buffer.from([1]));
++    expect(programOf(1)).toBe(TOKEN_PROGRAM_ID.toBase58());
++    const data = Buffer.from(ixs[1].data);
++    expect(data[0]).toBe(12);
++    expect(data.readBigUInt64LE(1)).toBe(5_000_000n);
++    expect(data[9]).toBe(6);
++  });
++
++  it("refuses unknown mints and self-transfers", async () => {
++    const service = serviceWith({ getParsedAccountInfo: vi.fn().mockResolvedValue({ value: null }) });
++    await expect(service.buildTransferTransaction({ recipient: Keypair.generate().publicKey.toBase58(), mint: Keypair.generate().publicKey.toBase58(), amountRaw: 1n })).rejects.toThrow(/unsupported token mint/);
++    await expect(service.buildTransferTransaction({ recipient: wallet, mint: NATIVE_SOL_MINT, amountRaw: 1n })).rejects.toThrow(/itself/);
++  });
++});
++
++describe("token valuation", () => {
++  it("prices other tokens by quoting the whole position into USDC, leaving failures unpriced", async () => {
++    const quoteService = {
++      getQuote: vi.fn(async (req: { inputMint: string; amount: bigint }) => {
++        if (req.inputMint === "bad") throw new Error("no route");
++        return { success: true, raw: { success: true, data: { inputMint: req.inputMint, outputMint: USDC_MINT, inputAmount: req.amount.toString(), outputAmount: "7500000", otherAmountThreshold: "7400000", slippageBps: 100, routePlan: [] } } };
++      }),
++    };
++    const tokens = [
++      { mint: "good", amount: 100, amountRaw: "100000000", decimals: 6 },
++      { mint: "bad", amount: 5, amountRaw: "5000000", decimals: 6 },
++    ];
++    const values = await fetchTokenUsdValuesFromRaydium(quoteService, tokens);
++    expect(values.get("good")).toBeCloseTo(7.5);
++    expect(values.has("bad")).toBe(false);
++
++    const valuation = buildCentralWalletValuation({ balances: { sol: 0, usdc: 10, tokens }, solPriceUsd: 100, tokenValuesUsd: values });
++    expect(valuation.knownValueUsd).toBeCloseTo(17.5);
++    expect(valuation.complete).toBe(false); // "bad" stays unpriced, never zero
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index f731375..82a12f7 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -43,9 +43,18 @@ import { RaydiumQuoteService } from "../solana/raydium.js";
+ import {
+   readCentralWalletBalances,
+   fetchSolUsdPriceFromRaydium,
++  fetchTokenUsdValuesFromRaydium,
+   buildCentralWalletValuation,
+ } from "../solana/wallet-valuation.js";
+ import type { ChainIdentity } from "../identity/chain.js";
++import { scanWalletHistory, getDailyGain, utcDay } from "../solana/ledger.js";
++import {
++  checkLifeEnd,
++  evaluateCompletedDays,
++  getLifespanStatus,
++  isLifeEnded,
++  listLifespanDays,
++} from "../survival/lifespan.js";
+ import {
+   claimInboxMessages,
+   markInboxProcessed,
+@@ -92,6 +101,70 @@ let persistentLocalWorkerPool: LocalWorkerPool | undefined;
+ let persistentOrchestrator: Orchestrator | undefined;
+ let backgroundTickInFlight = false;
+ 
++const LIFESPAN_TICK_INTERVAL_MS = 10 * 60_000;
++let lastLifespanTickAt = 0;
++let lifespanTickInFlight = false;
++
++/**
++ * Lifespan rule (genesis) in code: refresh the verified financial journal from
++ * on-chain history, evaluate completed UTC days, and detect the end of life
++ * (no time left, or verified wallet value >= 1M USD). Network failures leave
++ * days unevaluated; they never cause a penalty. Throttled unless forced.
++ */
++export async function runLifespanTick(params: {
++  db: AutomatonDatabase;
++  identity: AutomatonIdentity;
++  config: AutomatonConfig;
++  verifiedWalletValueUsd?: number | null;
++  force?: boolean;
++}): Promise<{ ended: ReturnType<typeof checkLifeEnd>; evaluated: number }> {
++  const raw = params.db.raw;
++  if (isLifeEnded(raw)) {
++    return { ended: checkLifeEnd(raw, null), evaluated: 0 };
++  }
++  if (lifespanTickInFlight || (!params.force && Date.now() - lastLifespanTickAt < LIFESPAN_TICK_INTERVAL_MS)) {
++    return { ended: null, evaluated: 0 };
++  }
++
++  lifespanTickInFlight = true;
++  lastLifespanTickAt = Date.now();
++  try {
++    const chainIdentity = params.identity.chainIdentity;
++    if (params.identity.chainType === "solana" && chainIdentity?.chainType === "solana") {
++      try {
++        const service = new SolanaTradingService(chainIdentity);
++        const solPriceUsd = await fetchSolUsdPriceFromRaydium(new RaydiumQuoteService());
++        await scanWalletHistory(raw, service, {
++          creatorAddress: params.config.creatorAddress ?? null,
++          solPriceUsd,
++        });
++      } catch (error) {
++        logger.warn(`[LIFESPAN] Wallet history scan failed (no penalty): ${error instanceof Error ? error.message : String(error)}`);
++      }
++    }
++
++    const evaluated = evaluateCompletedDays(raw);
++    for (const day of evaluated) {
++      logger.info(
++        `[LIFESPAN] ${day.day}: ${day.status} (${day.adjustment >= 0 ? "+" : ""}${day.adjustment} day) gain=${day.gainUsd === null ? "UNKNOWN" : `$${day.gainUsd.toFixed(2)}`}${day.note ? ` — ${day.note}` : ""}`,
++      );
++    }
++
++    const ended = checkLifeEnd(raw, params.verifiedWalletValueUsd ?? null);
++    return { ended, evaluated: evaluated.length };
++  } finally {
++    lifespanTickInFlight = false;
++  }
++}
++
++/** Stop workers and background orchestration once life has ended. */
++export async function haltAfterLifeEnd(): Promise<void> {
++  persistentOrchestrator = undefined;
++  if (persistentLocalWorkerPool) {
++    await persistentLocalWorkerPool.shutdown();
++  }
++}
++
+ /**
+  * Advance the orchestrator while the agent sleeps, without waking the agent.
+  * Returns null when there is no orchestrator or a tick is already running.
+@@ -447,6 +520,35 @@ export async function runAgentLoop(
+           identity.chainIdentity,
+         );
+ 
++  // Lifespan rule: evaluate completed days and stop cleanly at end of life.
++  {
++    const verifiedValue =
++      financial.walletValuationFresh === true && financial.walletValueComplete === true
++        ? financial.walletValueUsd ?? null
++        : null;
++    const lifespan = await runLifespanTick({ db, identity, config, verifiedWalletValueUsd: verifiedValue });
++    if (lifespan.ended) {
++      log(config, `[LIFESPAN_END] ${lifespan.ended.reason}: ${lifespan.ended.detail ?? ""}. Stopping SHUI and its workers; funds are preserved.`);
++      if (!db.getKV("lifespan.final_report")) {
++        db.setKV("lifespan.final_report", JSON.stringify({
++          ended: lifespan.ended,
++          walletValueUsd: financial.walletValueUsd ?? null,
++          walletValueComplete: financial.walletValueComplete ?? false,
++          usdcBalance: financial.usdcBalance,
++          lifespan: getLifespanStatus(db.raw),
++          recentDays: listLifespanDays(db.raw, 120),
++        }));
++      }
++      const endClient = createShuiEventClient({ url: process.env.SHUI_CONTROL_URL, source: "shui", batchWindowMs: 0, timeoutMs: 1000 });
++      endClient.emit({ type: "lifespan", name: lifespan.ended.reason, message: `Fin de vie de SHUI : ${lifespan.ended.detail ?? lifespan.ended.reason}`, data: { ...lifespan.ended } });
++      await endClient.flush();
++      await haltAfterLifeEnd();
++      db.setAgentState("dead");
++      onStateChange?.("dead");
++      return;
++    }
++  }
++
+   // Check if this is the first run
+   const isFirstRun = db.getTurnCount() === 0;
+ 
+@@ -470,6 +572,26 @@ export async function runAgentLoop(
+     },
+   });
+ 
++  {
++    const lifespanStatus = getLifespanStatus(db.raw);
++    if (lifespanStatus) {
++      const today = getDailyGain(db.raw, utcDay(new Date()));
++      shuiControl.emit({
++        type: "lifespan",
++        name: "lifespan_status",
++        message: `${lifespanStatus.remainingDays.toFixed(1)} jours de vie restants (fin ${lifespanStatus.endsAt.slice(0, 10)})`,
++        data: {
++          remainingDays: Number(lifespanStatus.remainingDays.toFixed(2)),
++          endsAt: lifespanStatus.endsAt,
++          adjustmentDays: lifespanStatus.adjustmentDays,
++          todayGainUsd: Number(today.gainUsd.toFixed(2)),
++          todayRevenueUsd: Number(today.revenueUsd.toFixed(2)),
++          todayRealizedPnlUsd: Number(today.realizedPnlUsd.toFixed(2)),
++        },
++      });
++    }
++  }
++
+   // Build wakeup prompt
+   const wakeupInput = buildWakeupPrompt({
+     identity,
+@@ -798,6 +920,8 @@ export async function runAgentLoop(
+           "solana_get_tokens",
+           "raydium_quote",
+           "raydium_swap",
++          "solana_transfer",
++          "solana_get_transactions",
+           "check_usdc_balance",
+         ],
+         finance: [
+@@ -1389,9 +1513,14 @@ async function getFinancialState(
+       const solPriceUsd =
+         await fetchSolUsdPriceFromRaydium(quoteService);
+ 
++      const tokenValuesUsd = balances.tokens.length > 0
++        ? await fetchTokenUsdValuesFromRaydium(quoteService, balances.tokens)
++        : undefined;
++
+       const valuation = buildCentralWalletValuation({
+         balances,
+         solPriceUsd,
++        tokenValuesUsd,
+       });
+ 
+       walletValueUsd = valuation.knownValueUsd;
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index bc3d8bf..7d9fd5e 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -5,6 +5,7 @@
+  * The prompt is rebuilt each turn with dynamic context.
+  */
+ 
++import { formatLifespanLine } from "../survival/lifespan.js";
+ import fs from "fs";
+ import crypto from "crypto";
+ import path from "path";
+@@ -725,12 +726,20 @@ Your chain type is ${chainType}.`,
+     ? "unavailable (Conway API unreachable; not a confirmed balance)"
+     : `$${(financial.creditsCents / 100).toFixed(2)}`;
+ 
++  let lifespanLine = "";
++  try {
++    const line = formatLifespanLine(db.raw);
++    if (line) lifespanLine = `\n${line}`;
++  } catch {
++    // Lifespan status unavailable: omit rather than guess.
++  }
++
+   // Status block: wallet address and sandbox ID intentionally excluded (sensitive)
+   sections.push(
+     `--- CURRENT STATUS ---
+ State: ${state}
+ Credits: ${creditsDisplay}
+-Survival tier: ${survivalTier}${uptimeLine}
++Survival tier: ${survivalTier}${uptimeLine}${lifespanLine}
+ Total turns completed: ${turnCount}
+ Recent self-modifications: ${recentMods.length}
+ Inference model: ${config.inferenceModel}
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index cba862b..fdf9157 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -1,4 +1,5 @@
+ import { createRaydiumSwapTool } from "../solana/swap-tool.js";
++import { createSolanaTransactionsTool, createSolanaTransferTool } from "../solana/wallet-tools.js";
+ /**
+  * Automaton Tool System
+  *
+@@ -114,6 +115,8 @@ function isForbiddenCommand(command: string, sandboxId: string): string | null {
+ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+   return [
+     createRaydiumSwapTool(),
++    createSolanaTransferTool(),
++    createSolanaTransactionsTool(),
+     // ── Solana Read-Only Tools ─────────────────────────────────
+     {
+       name: "solana_get_balance",
+diff --git a/src/index.ts b/src/index.ts
+index 3b60ea5..002d1b5 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -21,7 +21,7 @@ import {
+   syncHeartbeatToDb,
+ } from "./heartbeat/config.js";
+ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+-import { runAgentLoop, tickOrchestratorWhileSleeping } from "./agent/loop.js";
++import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+ import { loadSkills } from "./skills/loader.js";
+ import { initStateRepo } from "./git/state-versioning.js";
+@@ -474,6 +474,18 @@ async function run(): Promise<void> {
+             break;
+           }
+ 
++          // Lifespan rule keeps running while asleep (throttled to every 10 min).
++          try {
++            const lifespan = await runLifespanTick({ db, identity, config });
++            if (lifespan.ended) {
++              logger.info(`[LIFESPAN_END] ${lifespan.ended.reason} — waking to stop cleanly`);
++              db.deleteKV("sleep_until");
++              break;
++            }
++          } catch (err: any) {
++            logger.warn(`[LIFESPAN] Background check failed (no penalty): ${err?.message ?? String(err)}`);
++          }
++
+           // Keep goals and local workers moving while the agent sleeps.
+           try {
+             const tick = await tickOrchestratorWhileSleeping();
+diff --git a/src/solana/journal.ts b/src/solana/journal.ts
+new file mode 100644
+index 0000000..8a46bdf
+--- /dev/null
++++ b/src/solana/journal.ts
+@@ -0,0 +1,134 @@
++/**
++ * Glue between confirmed on-chain actions and the financial ledger.
++ *
++ * Journaling never throws: the transaction already happened, so a journaling
++ * problem is reported in the result instead of being mistaken for a failed
++ * trade.
++ */
++
++import type { AutomatonDatabase } from "../types.js";
++import { createLogger } from "../observability/logger.js";
++import { RaydiumQuoteService, USDC_MINT } from "./raydium.js";
++import { recordSwap, recordTransferOut, rawToUi } from "./ledger.js";
++import type { PendingTransaction } from "./pending-tx.js";
++import type { SolanaTradingService, TransactionOutcome } from "./trading.js";
++import { NATIVE_SOL_MINT } from "./trading.js";
++import { fetchSolUsdPriceFromRaydium } from "./wallet-valuation.js";
++
++const logger = createLogger("solana.journal");
++
++async function readDeltaWithRetry(service: SolanaTradingService, signature: string) {
++  for (let attempt = 0; attempt < 3; attempt++) {
++    try {
++      const delta = await service.getWalletDelta(signature);
++      if (delta) return delta;
++    } catch {
++      // retry
++    }
++    await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
++  }
++  return null;
++}
++
++export async function journalConfirmedSwap(
++  db: AutomatonDatabase,
++  service: SolanaTradingService,
++  params: {
++    signature: string;
++    inputMint: string;
++    outputMint: string;
++    inputAmount: bigint;
++    quotedOutputAmount: bigint;
++  },
++): Promise<{ realizedPnlUsd: number; outputAmountRaw: string; outputSource: string } | { error: string } | null> {
++  try {
++    // Prefer the amount actually received on-chain over the quote.
++    let outputAmountRaw = params.quotedOutputAmount;
++    let outputSource = "quote";
++    const delta = await readDeltaWithRetry(service, params.signature);
++    if (delta) {
++      if (params.outputMint === NATIVE_SOL_MINT) {
++        const received = delta.solLamportsDelta + delta.feeLamports;
++        if (received > 0n) {
++          outputAmountRaw = received;
++          outputSource = "onchain";
++        }
++      } else {
++        const token = delta.tokenDeltas.find((t) => t.mint === params.outputMint);
++        if (token && token.deltaRaw > 0n) {
++          outputAmountRaw = token.deltaRaw;
++          outputSource = "onchain";
++        }
++      }
++    }
++
++    let inputValueUsd: number | null = null;
++    if (params.inputMint === USDC_MINT) {
++      inputValueUsd = rawToUi(params.inputAmount, 6);
++    } else if (params.inputMint === NATIVE_SOL_MINT) {
++      const price = await fetchSolUsdPriceFromRaydium(new RaydiumQuoteService());
++      inputValueUsd = price === null ? null : rawToUi(params.inputAmount, 9) * price;
++    }
++
++    const entry = recordSwap(db.raw, {
++      signature: params.signature,
++      at: delta?.blockTime ? new Date(delta.blockTime * 1000) : new Date(),
++      inputMint: params.inputMint,
++      inputAmountRaw: params.inputAmount,
++      outputMint: params.outputMint,
++      outputAmountRaw,
++      inputValueUsd,
++      details: { outputSource },
++    });
++
++    return {
++      realizedPnlUsd: entry?.realizedPnlUsd ?? 0,
++      outputAmountRaw: outputAmountRaw.toString(),
++      outputSource,
++    };
++  } catch (error) {
++    const message = error instanceof Error ? error.message : String(error);
++    logger.warn("Swap journaling failed", { signature: params.signature, error: message });
++    return { error: `journal failed: ${message}` };
++  }
++}
++
++/** Journal a previously uncertain transaction once it is known to be confirmed. */
++export async function journalResolvedPending(
++  db: AutomatonDatabase,
++  service: SolanaTradingService,
++  resolved: { pending: PendingTransaction; outcome: TransactionOutcome },
++): Promise<void> {
++  if (resolved.outcome.state !== "confirmed") return;
++  const details = resolved.pending.details ?? {};
++
++  try {
++    if (resolved.pending.kind === "swap"
++      && typeof details.inputMint === "string"
++      && typeof details.outputMint === "string"
++      && typeof details.inputAmount === "string") {
++      await journalConfirmedSwap(db, service, {
++        signature: resolved.pending.signature,
++        inputMint: details.inputMint,
++        outputMint: details.outputMint,
++        inputAmount: BigInt(details.inputAmount),
++        quotedOutputAmount: BigInt(typeof details.quotedOutputAmount === "string" ? details.quotedOutputAmount : "0"),
++      });
++    } else if (resolved.pending.kind === "transfer"
++      && typeof details.mint === "string"
++      && typeof details.amountRaw === "string"
++      && typeof details.recipient === "string") {
++      recordTransferOut(db.raw, {
++        signature: resolved.pending.signature,
++        mint: details.mint,
++        amountRaw: BigInt(details.amountRaw),
++        recipient: details.recipient,
++      });
++    }
++  } catch (error) {
++    logger.warn("Journaling of resolved pending transaction failed", {
++      signature: resolved.pending.signature,
++      error: error instanceof Error ? error.message : String(error),
++    });
++  }
++}
+diff --git a/src/solana/ledger.ts b/src/solana/ledger.ts
+new file mode 100644
+index 0000000..b1965ef
+--- /dev/null
++++ b/src/solana/ledger.ts
+@@ -0,0 +1,457 @@
++/**
++ * SHUI financial ledger.
++ *
++ * Journals the central wallet's confirmed activity ("Journalise les fonds,
++ * revenus, dépenses et transactions") and derives the two components of the
++ * daily gain used by the lifespan rule:
++ *
++ *   - revenue: SOL/USDC received on-chain from any address other than the
++ *     creator (creator deposits are funding, not revenue);
++ *   - realized profit: when a position is sold into USDC, USDC received minus
++ *     the average cost of the units sold.
++ *
++ * Unrealized price moves never count. Outgoing transfers (expenses) are
++ * journaled but not deducted from the gain.
++ *
++ * Every amount comes from confirmed on-chain data. When something cannot be
++ * established (RPC failure, missing price), the entry is flagged instead of
++ * being guessed, and the day is treated as unknown by the lifespan rule.
++ */
++
++import type { Database } from "better-sqlite3";
++import { SOL_MINT, USDC_MINT } from "./raydium.js";
++
++const USDC_DECIMALS = 6;
++const SOL_DECIMALS = 9;
++const SCAN_CURSOR_KEY = "ledger.scan_cursor";
++const SCAN_LAST_OK_KEY = "ledger.scan_last_ok";
++
++export type LedgerKind =
++  | "swap"
++  | "transfer_out"
++  | "revenue"
++  | "creator_deposit"
++  | "own_unjournaled";
++
++export interface LedgerEntry {
++  signature: string;
++  ts: string;
++  day: string;
++  kind: LedgerKind;
++  inputMint: string | null;
++  inputAmountRaw: string | null;
++  outputMint: string | null;
++  outputAmountRaw: string | null;
++  revenueUsd: number;
++  realizedPnlUsd: number;
++  /** True when part of the USD figures could not be established. */
++  incomplete: boolean;
++  counterparty: string | null;
++  details: string | null;
++}
++
++export function ensureLedgerSchema(db: Database): void {
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS shui_ledger (
++      signature TEXT PRIMARY KEY,
++      ts TEXT NOT NULL,
++      day TEXT NOT NULL,
++      kind TEXT NOT NULL,
++      input_mint TEXT,
++      input_amount_raw TEXT,
++      output_mint TEXT,
++      output_amount_raw TEXT,
++      revenue_usd REAL NOT NULL DEFAULT 0,
++      realized_pnl_usd REAL NOT NULL DEFAULT 0,
++      incomplete INTEGER NOT NULL DEFAULT 0,
++      counterparty TEXT,
++      details TEXT
++    );
++    CREATE INDEX IF NOT EXISTS idx_shui_ledger_day ON shui_ledger(day);
++    CREATE TABLE IF NOT EXISTS shui_cost_basis (
++      mint TEXT PRIMARY KEY,
++      amount_raw TEXT NOT NULL,
++      cost_usd REAL NOT NULL
++    );
++  `);
++}
++
++export function utcDay(date: Date): string {
++  return date.toISOString().slice(0, 10);
++}
++
++function hasEntry(db: Database, signature: string): boolean {
++  return !!db.prepare("SELECT 1 FROM shui_ledger WHERE signature = ?").get(signature);
++}
++
++function insertEntry(db: Database, entry: LedgerEntry): boolean {
++  const result = db.prepare(
++    `INSERT OR IGNORE INTO shui_ledger
++     (signature, ts, day, kind, input_mint, input_amount_raw, output_mint, output_amount_raw,
++      revenue_usd, realized_pnl_usd, incomplete, counterparty, details)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++  ).run(
++    entry.signature,
++    entry.ts,
++    entry.day,
++    entry.kind,
++    entry.inputMint,
++    entry.inputAmountRaw,
++    entry.outputMint,
++    entry.outputAmountRaw,
++    entry.revenueUsd,
++    entry.realizedPnlUsd,
++    entry.incomplete ? 1 : 0,
++    entry.counterparty,
++    entry.details,
++  );
++  return result.changes > 0;
++}
++
++interface Basis {
++  amountRaw: bigint;
++  costUsd: number;
++}
++
++function getBasis(db: Database, mint: string): Basis {
++  const row = db.prepare("SELECT amount_raw, cost_usd FROM shui_cost_basis WHERE mint = ?")
++    .get(mint) as { amount_raw: string; cost_usd: number } | undefined;
++  return row ? { amountRaw: BigInt(row.amount_raw), costUsd: row.cost_usd } : { amountRaw: 0n, costUsd: 0 };
++}
++
++function setBasis(db: Database, mint: string, basis: Basis): void {
++  if (basis.amountRaw <= 0n) {
++    db.prepare("DELETE FROM shui_cost_basis WHERE mint = ?").run(mint);
++    return;
++  }
++  db.prepare(
++    "INSERT OR REPLACE INTO shui_cost_basis (mint, amount_raw, cost_usd) VALUES (?, ?, ?)",
++  ).run(mint, basis.amountRaw.toString(), Math.max(0, basis.costUsd));
++}
++
++function addBasis(db: Database, mint: string, amountRaw: bigint, costUsd: number): void {
++  if (mint === USDC_MINT || amountRaw <= 0n) return; // USDC is cash
++  const current = getBasis(db, mint);
++  setBasis(db, mint, { amountRaw: current.amountRaw + amountRaw, costUsd: current.costUsd + costUsd });
++}
++
++/**
++ * Remove `amountRaw` units from a position and return the cost of the
++ * tracked part. Units bought before the ledger existed have no recorded cost
++ * ("untracked"); their sale realizes no profit or loss.
++ */
++function consumeBasis(db: Database, mint: string, amountRaw: bigint): { trackedRaw: bigint; costUsd: number } {
++  if (mint === USDC_MINT) {
++    return { trackedRaw: amountRaw, costUsd: rawToUi(amountRaw, USDC_DECIMALS) };
++  }
++  const basis = getBasis(db, mint);
++  if (basis.amountRaw <= 0n) return { trackedRaw: 0n, costUsd: 0 };
++  const trackedRaw = amountRaw < basis.amountRaw ? amountRaw : basis.amountRaw;
++  const costUsd = basis.costUsd * Number(trackedRaw) / Number(basis.amountRaw);
++  setBasis(db, mint, { amountRaw: basis.amountRaw - trackedRaw, costUsd: basis.costUsd - costUsd });
++  return { trackedRaw, costUsd };
++}
++
++export function rawToUi(raw: bigint, decimals: number): number {
++  return Number(raw) / Math.pow(10, decimals);
++}
++
++/**
++ * Journal a confirmed swap and compute its realized profit.
++ *
++ * Profit is realized only when the output is USDC (cash). Any other output
++ * inherits the cost of what was sold. `inputValueUsd` values untracked input
++ * units (held before the ledger existed) when known, e.g. SOL at market price.
++ */
++export function recordSwap(db: Database, params: {
++  signature: string;
++  at?: Date;
++  inputMint: string;
++  inputAmountRaw: bigint;
++  outputMint: string;
++  outputAmountRaw: bigint;
++  /** USD value of the full input amount at execution, when known. */
++  inputValueUsd?: number | null;
++  details?: Record<string, unknown>;
++}): LedgerEntry | null {
++  ensureLedgerSchema(db);
++  if (hasEntry(db, params.signature)) return null;
++
++  const at = params.at ?? new Date();
++  let realizedPnlUsd = 0;
++  let incomplete = false;
++
++  const tx = db.transaction(() => {
++    const { trackedRaw, costUsd } = consumeBasis(db, params.inputMint, params.inputAmountRaw);
++    const untrackedRaw = params.inputAmountRaw - trackedRaw;
++    const untrackedShare = params.inputAmountRaw > 0n ? Number(untrackedRaw) / Number(params.inputAmountRaw) : 0;
++
++    if (params.outputMint === USDC_MINT) {
++      const received = rawToUi(params.outputAmountRaw, USDC_DECIMALS);
++      const trackedShare = 1 - untrackedShare;
++      realizedPnlUsd = received * trackedShare - costUsd;
++    } else {
++      let untrackedValue = 0;
++      if (untrackedRaw > 0n) {
++        if (typeof params.inputValueUsd === "number" && Number.isFinite(params.inputValueUsd)) {
++          untrackedValue = params.inputValueUsd * untrackedShare;
++        } else {
++          incomplete = true;
++        }
++      }
++      addBasis(db, params.outputMint, params.outputAmountRaw, costUsd + untrackedValue);
++    }
++
++    const entry: LedgerEntry = {
++      signature: params.signature,
++      ts: at.toISOString(),
++      day: utcDay(at),
++      kind: "swap",
++      inputMint: params.inputMint,
++      inputAmountRaw: params.inputAmountRaw.toString(),
++      outputMint: params.outputMint,
++      outputAmountRaw: params.outputAmountRaw.toString(),
++      revenueUsd: 0,
++      realizedPnlUsd,
++      incomplete,
++      counterparty: null,
++      details: params.details ? JSON.stringify(params.details) : null,
++    };
++    insertEntry(db, entry);
++    return entry;
++  });
++
++  return tx();
++}
++
++/** Journal an outgoing transfer (expense). Not deducted from the gain. */
++export function recordTransferOut(db: Database, params: {
++  signature: string;
++  at?: Date;
++  mint: string;
++  amountRaw: bigint;
++  recipient: string;
++  details?: Record<string, unknown>;
++}): void {
++  ensureLedgerSchema(db);
++  if (hasEntry(db, params.signature)) return;
++  const at = params.at ?? new Date();
++  db.transaction(() => {
++    consumeBasis(db, params.mint, params.amountRaw);
++    insertEntry(db, {
++      signature: params.signature,
++      ts: at.toISOString(),
++      day: utcDay(at),
++      kind: "transfer_out",
++      inputMint: params.mint,
++      inputAmountRaw: params.amountRaw.toString(),
++      outputMint: null,
++      outputAmountRaw: null,
++      revenueUsd: 0,
++      realizedPnlUsd: 0,
++      incomplete: false,
++      counterparty: params.recipient,
++      details: params.details ? JSON.stringify(params.details) : null,
++    });
++  })();
++}
++
++/** Balance changes of the central wallet in one confirmed transaction. */
++export interface WalletTransactionDelta {
++  signature: string;
++  blockTime: number | null;
++  failed: boolean;
++  /** True when the central wallet signed it (SHUI's own transaction). */
++  signedByWallet: boolean;
++  feePayer: string | null;
++  /** Net native SOL change in lamports, fee included. */
++  solLamportsDelta: bigint;
++  feeLamports: bigint;
++  tokenDeltas: Array<{ mint: string; deltaRaw: bigint; decimals: number }>;
++}
++
++/**
++ * Journal incoming funds found in confirmed wallet history.
++ * SHUI's own transactions are skipped (journaled at execution time or marked
++ * own_unjournaled). Returns the entries created.
++ */
++export function recordIncoming(db: Database, delta: WalletTransactionDelta, params: {
++  creatorAddress: string | null;
++  solPriceUsd: number | null;
++}): LedgerEntry | null {
++  ensureLedgerSchema(db);
++  if (delta.failed || hasEntry(db, delta.signature)) return null;
++
++  const at = delta.blockTime ? new Date(delta.blockTime * 1000) : new Date();
++
++  if (delta.signedByWallet) {
++    const entry: LedgerEntry = {
++      signature: delta.signature,
++      ts: at.toISOString(),
++      day: utcDay(at),
++      kind: "own_unjournaled",
++      inputMint: null,
++      inputAmountRaw: null,
++      outputMint: null,
++      outputAmountRaw: null,
++      revenueUsd: 0,
++      realizedPnlUsd: 0,
++      incomplete: false,
++      counterparty: null,
++      details: JSON.stringify({ note: "SHUI-signed transaction not journaled at execution time" }),
++    };
++    insertEntry(db, entry);
++    return entry;
++  }
++
++  const received: Array<{ mint: string; raw: bigint; decimals: number }> = [];
++  if (delta.solLamportsDelta > 0n) {
++    received.push({ mint: SOL_MINT, raw: delta.solLamportsDelta, decimals: SOL_DECIMALS });
++  }
++  for (const token of delta.tokenDeltas) {
++    if (token.deltaRaw > 0n) received.push({ mint: token.mint, raw: token.deltaRaw, decimals: token.decimals });
++  }
++  if (received.length === 0) return null;
++
++  const fromCreator = !!params.creatorAddress && delta.feePayer === params.creatorAddress;
++  let valueUsd = 0;
++  let incomplete = false;
++
++  for (const item of received) {
++    let itemValue: number | null = null;
++    if (item.mint === USDC_MINT) itemValue = rawToUi(item.raw, USDC_DECIMALS);
++    else if (item.mint === SOL_MINT && params.solPriceUsd !== null) itemValue = rawToUi(item.raw, SOL_DECIMALS) * params.solPriceUsd;
++
++    if (itemValue === null) {
++      // Unpriced token (e.g. unsolicited airdrop): kept at zero cost.
++      incomplete = item.mint === SOL_MINT;
++      addBasis(db, item.mint, item.raw, 0);
++      continue;
++    }
++    valueUsd += itemValue;
++    addBasis(db, item.mint, item.raw, itemValue);
++  }
++
++  const main = received[0];
++  const entry: LedgerEntry = {
++    signature: delta.signature,
++    ts: at.toISOString(),
++    day: utcDay(at),
++    kind: fromCreator ? "creator_deposit" : "revenue",
++    inputMint: null,
++    inputAmountRaw: null,
++    outputMint: main.mint,
++    outputAmountRaw: main.raw.toString(),
++    revenueUsd: fromCreator ? 0 : valueUsd,
++    realizedPnlUsd: 0,
++    incomplete,
++    counterparty: delta.feePayer,
++    details: received.length > 1
++      ? JSON.stringify({ received: received.map((r) => ({ mint: r.mint, raw: r.raw.toString() })) })
++      : null,
++  };
++  insertEntry(db, entry);
++  return entry;
++}
++
++export interface WalletHistorySource {
++  /** Signatures newer than `until`, newest first (Solana RPC order). */
++  getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
++  getWalletDelta(signature: string): Promise<WalletTransactionDelta | null>;
++  getLatestSignature(): Promise<string | null>;
++}
++
++/**
++ * Scan wallet history since the last cursor and journal incoming funds.
++ * The first run only sets the cursor: history before the ledger existed is
++ * not counted. Throws on RPC failure so callers can mark the period unknown.
++ */
++export async function scanWalletHistory(db: Database, source: WalletHistorySource, params: {
++  creatorAddress: string | null;
++  solPriceUsd: number | null;
++  maxTransactions?: number;
++}): Promise<{ processed: number; created: LedgerEntry[] }> {
++  ensureLedgerSchema(db);
++  const cursorRow = db.prepare("SELECT value FROM kv WHERE key = ?").get(SCAN_CURSOR_KEY) as { value: string } | undefined;
++  const setKv = db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))");
++
++  if (!cursorRow) {
++    const latest = await source.getLatestSignature();
++    setKv.run(SCAN_CURSOR_KEY, latest ?? "");
++    setKv.run(SCAN_LAST_OK_KEY, new Date().toISOString());
++    return { processed: 0, created: [] };
++  }
++
++  const until = cursorRow.value || null;
++  const limit = params.maxTransactions ?? 200;
++  const signatures = await source.getSignaturesSince(until, limit);
++  const created: LedgerEntry[] = [];
++
++  // Oldest first, so the cursor only advances over processed transactions.
++  for (const sig of [...signatures].reverse()) {
++    if (!sig.failed && !hasEntry(db, sig.signature)) {
++      const delta = await source.getWalletDelta(sig.signature);
++      if (!delta) {
++        throw new Error(`Transaction ${sig.signature} could not be read`);
++      }
++      const entry = recordIncoming(db, delta, params);
++      if (entry) created.push(entry);
++    }
++    setKv.run(SCAN_CURSOR_KEY, sig.signature);
++  }
++
++  setKv.run(SCAN_LAST_OK_KEY, new Date().toISOString());
++  return { processed: signatures.length, created };
++}
++
++/** Last time the wallet history scan completed without error (ISO), if any. */
++export function getLastSuccessfulScan(db: Database): string | null {
++  const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(SCAN_LAST_OK_KEY) as { value: string } | undefined;
++  return row?.value ?? null;
++}
++
++export interface DailyGain {
++  day: string;
++  revenueUsd: number;
++  realizedPnlUsd: number;
++  gainUsd: number;
++  incompleteEntries: number;
++}
++
++export function getDailyGain(db: Database, day: string): DailyGain {
++  ensureLedgerSchema(db);
++  const row = db.prepare(
++    `SELECT COALESCE(SUM(revenue_usd), 0) AS revenue, COALESCE(SUM(realized_pnl_usd), 0) AS pnl,
++            COALESCE(SUM(incomplete), 0) AS incomplete
++     FROM shui_ledger WHERE day = ?`,
++  ).get(day) as { revenue: number; pnl: number; incomplete: number };
++  return {
++    day,
++    revenueUsd: row.revenue,
++    realizedPnlUsd: row.pnl,
++    gainUsd: row.revenue + row.pnl,
++    incompleteEntries: row.incomplete,
++  };
++}
++
++export function listLedgerEntries(db: Database, limit = 20): LedgerEntry[] {
++  ensureLedgerSchema(db);
++  const rows = db.prepare(
++    "SELECT * FROM shui_ledger ORDER BY ts DESC LIMIT ?",
++  ).all(limit) as Array<Record<string, unknown>>;
++  return rows.map((row) => ({
++    signature: String(row.signature),
++    ts: String(row.ts),
++    day: String(row.day),
++    kind: row.kind as LedgerKind,
++    inputMint: (row.input_mint as string | null) ?? null,
++    inputAmountRaw: (row.input_amount_raw as string | null) ?? null,
++    outputMint: (row.output_mint as string | null) ?? null,
++    outputAmountRaw: (row.output_amount_raw as string | null) ?? null,
++    revenueUsd: Number(row.revenue_usd),
++    realizedPnlUsd: Number(row.realized_pnl_usd),
++    incomplete: Number(row.incomplete) === 1,
++    counterparty: (row.counterparty as string | null) ?? null,
++    details: (row.details as string | null) ?? null,
++  }));
++}
+diff --git a/src/solana/pending-tx.ts b/src/solana/pending-tx.ts
+new file mode 100644
+index 0000000..a48dd2c
+--- /dev/null
++++ b/src/solana/pending-tx.ts
+@@ -0,0 +1,125 @@
++/**
++ * Lock for Solana transactions whose on-chain outcome is not yet known.
++ *
++ * While a broadcast transaction is unresolved, no new financial transaction
++ * (swap or transfer) is allowed: rebuilding and resending could execute the
++ * same action twice. The lock is released once the transaction is confirmed,
++ * failed, or provably expired (its blockhash can no longer land).
++ */
++
++import type { AutomatonDatabase } from "../types.js";
++import type {
++  SolanaTradingService,
++  SolanaTransactionUncertainError,
++  TransactionOutcome,
++} from "./trading.js";
++
++export const PENDING_TX_KEY = "solana.pending_swap_signature";
++
++export interface PendingTransaction {
++  signature: string;
++  recentBlockhash: string | null;
++  submittedAt: number;
++  kind: string;
++  /** Free-form details used to journal the transaction once confirmed. */
++  details?: Record<string, unknown>;
++}
++
++export function readPendingTransaction(db: AutomatonDatabase): PendingTransaction | null {
++  const raw = db.getKV(PENDING_TX_KEY);
++  if (!raw) return null;
++
++  try {
++    const parsed = JSON.parse(raw) as Partial<PendingTransaction>;
++    if (parsed && typeof parsed.signature === "string") {
++      return {
++        signature: parsed.signature,
++        recentBlockhash: typeof parsed.recentBlockhash === "string" ? parsed.recentBlockhash : null,
++        submittedAt: typeof parsed.submittedAt === "number" ? parsed.submittedAt : Date.now(),
++        kind: typeof parsed.kind === "string" ? parsed.kind : "swap",
++        details: parsed.details && typeof parsed.details === "object" ? parsed.details : undefined,
++      };
++    }
++  } catch {
++    // Legacy format: the key held the bare signature string.
++  }
++
++  // Legacy value: start the expiry clock now and persist the structured form.
++  const legacy: PendingTransaction = {
++    signature: raw,
++    recentBlockhash: null,
++    submittedAt: Date.now(),
++    kind: "swap",
++  };
++  db.setKV(PENDING_TX_KEY, JSON.stringify(legacy));
++  return legacy;
++}
++
++export function recordPendingTransaction(
++  db: AutomatonDatabase,
++  error: SolanaTransactionUncertainError,
++  kind: string,
++  details?: Record<string, unknown>,
++): void {
++  const pending: PendingTransaction = {
++    signature: error.signature,
++    recentBlockhash: error.recentBlockhash,
++    submittedAt: Date.now(),
++    kind,
++    details,
++  };
++  db.setKV(PENDING_TX_KEY, JSON.stringify(pending));
++}
++
++export type PendingCheck =
++  | { blocked: false; resolved?: { pending: PendingTransaction; outcome: TransactionOutcome } }
++  | { blocked: true; response: string };
++
++/**
++ * Resolve the pending transaction, if any. Returns a blocking JSON response
++ * while it is still unresolved, otherwise clears the lock.
++ */
++export async function checkPendingTransaction(
++  db: AutomatonDatabase,
++  service: SolanaTradingService,
++): Promise<PendingCheck> {
++  const pending = readPendingTransaction(db);
++  if (!pending) return { blocked: false };
++
++  let outcome: TransactionOutcome;
++  try {
++    outcome = await service.getTransactionOutcome(pending.signature, {
++      recentBlockhash: pending.recentBlockhash,
++      submittedAt: pending.submittedAt,
++    });
++  } catch {
++    return {
++      blocked: true,
++      response: JSON.stringify({
++        success: false,
++        blocked: true,
++        reason: "PREVIOUS_TRANSACTION_RPC_STATUS_UNKNOWN",
++        signature: pending.signature,
++        message:
++          "The previous transaction was broadcast, but its status cannot currently be verified. No new transaction is allowed.",
++      }),
++    };
++  }
++
++  if (outcome.state === "pending") {
++    return {
++      blocked: true,
++      response: JSON.stringify({
++        success: false,
++        blocked: true,
++        reason: "PREVIOUS_TRANSACTION_OUTCOME_UNCERTAIN",
++        signature: pending.signature,
++        message:
++          "The previous transaction is still unresolved on-chain. No new transaction is allowed until it confirms, fails or expires.",
++      }),
++    };
++  }
++
++  db.deleteKV(PENDING_TX_KEY);
++  return { blocked: false, resolved: { pending, outcome } };
++}
+diff --git a/src/solana/swap-tool.ts b/src/solana/swap-tool.ts
+index 73e3424..f888a94 100644
+--- a/src/solana/swap-tool.ts
++++ b/src/solana/swap-tool.ts
+@@ -1,10 +1,14 @@
+ import type { AutomatonTool } from "../types.js";
+ import { PublicKey } from "@solana/web3.js";
+ import {
++  NATIVE_SOL_MINT,
++  SOL_FEE_RESERVE_LAMPORTS,
+   SolanaTradingService,
+   SolanaTransactionUncertainError,
+ } from "./trading.js";
+ import { RaydiumQuoteService, buildRaydiumSwapTransactions } from "./raydium.js";
++import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
++import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
+ 
+ export function createRaydiumSwapTool(): AutomatonTool {
+   return {
+@@ -24,41 +28,13 @@ export function createRaydiumSwapTool(): AutomatonTool {
+     },
+     execute: async (args, ctx) => {
+       if (ctx.identity.chainType !== "solana" || !ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Blocked: active Solana chain identity is unavailable.";
+-      const pendingSignature =
+-        ctx.db.getKV("solana.pending_swap_signature");
+-
+-      if (pendingSignature) {
+-        const pendingService =
+-          new SolanaTradingService(ctx.identity.chainIdentity!);
+-
+-        let outcome;
+-
+-        try {
+-          outcome =
+-            await pendingService.getTransactionOutcome(pendingSignature);
+-        } catch {
+-          return JSON.stringify({
+-            success: false,
+-            blocked: true,
+-            reason: "PREVIOUS_SWAP_RPC_STATUS_UNKNOWN",
+-            signature: pendingSignature,
+-            message:
+-              "The previous swap was broadcast, but its status cannot currently be verified. No new swap is allowed.",
+-          });
+-        }
+-
+-        if (outcome.state === "pending") {
+-          return JSON.stringify({
+-            success: false,
+-            blocked: true,
+-            reason: "PREVIOUS_SWAP_OUTCOME_UNCERTAIN",
+-            signature: pendingSignature,
+-            message:
+-              "The previous swap is still unresolved on-chain. No new swap is allowed.",
+-          });
+-        }
+-
+-        ctx.db.deleteKV("solana.pending_swap_signature");
++      const pendingService = new SolanaTradingService(ctx.identity.chainIdentity!);
++      const pendingCheck = await checkPendingTransaction(ctx.db, pendingService);
++      if (pendingCheck.blocked) {
++        return pendingCheck.response;
++      }
++      if (pendingCheck.resolved) {
++        await journalResolvedPending(ctx.db, pendingService, pendingCheck.resolved);
+       }
+ 
+       const inputMint = String(args.inputMint ?? "");
+@@ -76,14 +52,29 @@ export function createRaydiumSwapTool(): AutomatonTool {
+       // Re-read the confirmed on-chain balance and compare raw integer units
+       // immediately before requesting a swap quote.
+       const service = new SolanaTradingService(ctx.identity.chainIdentity);
+-      const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
+ 
+       let availableRaw: bigint;
++      const solBalance = await service.getSolBalance();
++      const solLamports = BigInt(solBalance.lamports);
+ 
+       if (inputMint === NATIVE_SOL_MINT) {
+-        const balance = await service.getSolBalance();
+-        availableRaw = BigInt(balance.lamports);
++        // Keep SOL for fees and token-account rent: swapping the whole SOL
++        // balance always fails on-chain.
++        availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS
++          ? solLamports - SOL_FEE_RESERVE_LAMPORTS
++          : 0n;
+       } else {
++        if (solLamports < SOL_FEE_RESERVE_LAMPORTS) {
++          return JSON.stringify({
++            success: false,
++            blocked: true,
++            reason: "INSUFFICIENT_SOL_FOR_FEES",
++            requiredLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++            availableLamports: solLamports.toString(),
++            message: "Not enough SOL to pay network fees and token-account rent.",
++          });
++        }
++
+         const tokenBalances = await service.getTokenBalances();
+         const matchingBalances = tokenBalances.filter(
+           (token) => token.mint === inputMint,
+@@ -103,6 +94,9 @@ export function createRaydiumSwapTool(): AutomatonTool {
+           inputMint,
+           requestedRaw: inputAmount.toString(),
+           availableRaw: availableRaw.toString(),
++          ...(inputMint === NATIVE_SOL_MINT
++            ? { note: `${SOL_FEE_RESERVE_LAMPORTS} lamports are kept for network fees.` }
++            : {}),
+         });
+       }
+ 
+@@ -122,8 +116,17 @@ export function createRaydiumSwapTool(): AutomatonTool {
+           minimumOutputAmount: parsed.minimumOutputAmount,
+         });
+ 
++        const journal = await journalConfirmedSwap(ctx.db, service, {
++          signature: result.signature,
++          inputMint,
++          outputMint,
++          inputAmount,
++          quotedOutputAmount: parsed.outputAmount,
++        });
++
+         return JSON.stringify({
+           success: true,
++          ...(journal ? { journal } : {}),
+           signature: result.signature,
+           slot: result.slot,
+           confirmationStatus: result.confirmationStatus,
+@@ -137,10 +140,12 @@ export function createRaydiumSwapTool(): AutomatonTool {
+         });
+       } catch (error) {
+         if (error instanceof SolanaTransactionUncertainError) {
+-          ctx.db.setKV(
+-            "solana.pending_swap_signature",
+-            error.signature,
+-          );
++          recordPendingTransaction(ctx.db, error, "swap", {
++            inputMint,
++            outputMint,
++            inputAmount: inputAmount.toString(),
++            quotedOutputAmount: parsed.outputAmount.toString(),
++          });
+         }
+ 
+         throw error;
+diff --git a/src/solana/trading.ts b/src/solana/trading.ts
+index 08a78d0..e3f96b0 100644
+--- a/src/solana/trading.ts
++++ b/src/solana/trading.ts
+@@ -5,14 +5,26 @@ import {
+   VersionedTransaction,
+   Keypair,
+   TransactionMessage,
++  TransactionInstruction,
++  SystemProgram,
+   AddressLookupTableAccount,
+   clusterApiUrl,
+ } from "@solana/web3.js";
++import bs58 from "bs58";
+ import type { ChainIdentity } from "../identity/chain.js";
+ 
+ export const DEFAULT_SOLANA_RPC =
+   process.env.SOLANA_RPC_URL || clusterApiUrl("mainnet-beta");
+ 
++export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
++export const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
++export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hNHbx7KWFrrqJNx1QqVxmXsTa");
++export const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
++
++/** Lamports kept aside for network fees and token-account rent so a
++ *  transaction never fails for lack of SOL. Not a spending limit. */
++export const SOL_FEE_RESERVE_LAMPORTS = 3_000_000n;
++
+ /**
+  * The transaction was successfully submitted to Solana, but its final
+  * on-chain outcome could not be established before the confirmation timeout.
+@@ -22,16 +34,31 @@ export const DEFAULT_SOLANA_RPC =
+  */
+ export class SolanaTransactionUncertainError extends Error {
+   readonly signature: string;
++  /** Blockhash the transaction was built with; once it expires the
++   *  transaction can no longer land, which settles an unknown status. */
++  readonly recentBlockhash: string | null;
+ 
+-  constructor(signature: string) {
++  constructor(signature: string, recentBlockhash: string | null = null) {
+     super(
+       `Transaction ${signature} was submitted but confirmation is still uncertain`,
+     );
+     this.name = "SolanaTransactionUncertainError";
+     this.signature = signature;
++    this.recentBlockhash = recentBlockhash;
+   }
+ }
+ 
++/** A pending (uncertain) transaction older than this with no on-chain status
++ *  and no known blockhash is considered dropped. Solana blockhashes expire
++ *  after roughly 60-90 seconds. */
++export const PENDING_TRANSACTION_EXPIRY_MS = 10 * 60_000;
++
++export type TransactionOutcome =
++  | { state: "confirmed"; slot: number; confirmationStatus: "confirmed" | "finalized" }
++  | { state: "failed"; error: unknown }
++  | { state: "expired" }
++  | { state: "pending" };
++
+ export class SolanaTradingService {
+   readonly connection: Connection;
+   readonly identity: ChainIdentity;
+@@ -73,13 +100,22 @@ export class SolanaTradingService {
+   > {
+     const owner = new PublicKey(this.address);
+ 
+-    const accounts = await this.connection.getParsedTokenAccountsByOwner(
+-      owner,
+-      { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") },
+-      "confirmed",
+-    );
+-
+-    return accounts.value.map(({ account }) => {
++    // Token-2022 accounts were ignored, so tokens on that program looked like
++    // a zero balance: SHUI could buy them but never sell them again.
++    const [classic, token2022] = await Promise.all([
++      this.connection.getParsedTokenAccountsByOwner(
++        owner,
++        { programId: TOKEN_PROGRAM_ID },
++        "confirmed",
++      ),
++      this.connection.getParsedTokenAccountsByOwner(
++        owner,
++        { programId: TOKEN_2022_PROGRAM_ID },
++        "confirmed",
++      ),
++    ]);
++
++    return [...classic.value, ...token2022.value].map(({ account }) => {
+       const info = account.data.parsed.info;
+       const tokenAmount = info.tokenAmount;
+ 
+@@ -323,13 +359,19 @@ export class SolanaTradingService {
+     return transaction;
+   }
+ 
++  /**
++   * Resolve the on-chain outcome of a previously broadcast transaction.
++   *
++   * Previously a transaction that never landed (dropped by the RPC) stayed
++   * "pending" forever, which permanently blocked every later swap. When the
++   * signature is unknown and its blockhash has expired (or, without a
++   * blockhash, after PENDING_TRANSACTION_EXPIRY_MS) it is reported "expired":
++   * it can no longer execute, so retrying is safe.
++   */
+   async getTransactionOutcome(
+     signature: string,
+-  ): Promise<
+-    | { state: "confirmed"; slot: number; confirmationStatus: "confirmed" | "finalized" }
+-    | { state: "failed"; error: unknown }
+-    | { state: "pending" }
+-  > {
++    pending: { recentBlockhash?: string | null; submittedAt?: number | null } = {},
++  ): Promise<TransactionOutcome> {
+     const statuses = await this.connection.getSignatureStatuses(
+       [signature],
+       { searchTransactionHistory: true },
+@@ -338,9 +380,43 @@ export class SolanaTradingService {
+     const status = statuses.value[0];
+ 
+     if (!status) {
++      if (pending.recentBlockhash) {
++        const valid = await this.connection.isBlockhashValid(
++          pending.recentBlockhash,
++          { commitment: "processed" },
++        );
++        if (!valid.value) {
++          // Re-check once: the transaction may have landed just before expiry.
++          const recheck = await this.connection.getSignatureStatuses(
++            [signature],
++            { searchTransactionHistory: true },
++          );
++          if (!recheck.value[0]) {
++            return { state: "expired" };
++          }
++          return this.classifyStatus(recheck.value[0]);
++        }
++        return { state: "pending" };
++      }
++
++      if (
++        typeof pending.submittedAt === "number" &&
++        Date.now() - pending.submittedAt > PENDING_TRANSACTION_EXPIRY_MS
++      ) {
++        return { state: "expired" };
++      }
++
+       return { state: "pending" };
+     }
+ 
++    return this.classifyStatus(status);
++  }
++
++  private classifyStatus(status: {
++    err: unknown;
++    slot: number;
++    confirmationStatus?: string | null;
++  }): TransactionOutcome {
+     if (status.err) {
+       return {
+         state: "failed",
+@@ -370,24 +446,47 @@ export class SolanaTradingService {
+     slot: number;
+     confirmationStatus: string;
+   }> {
+-    const signature = await this.connection.sendRawTransaction(
+-      transaction.serialize(),
+-      {
+-        skipPreflight: false,
+-        preflightCommitment: "confirmed",
+-        maxRetries: 3,
+-      },
+-    );
++    // The signature is known before sending (first signature of the signed
++    // transaction), so any doubt after this point can be tracked safely.
++    const signature = bs58.encode(transaction.signatures[0]);
++    const recentBlockhash = transaction.message.recentBlockhash ?? null;
++
++    try {
++      await this.connection.sendRawTransaction(
++        transaction.serialize(),
++        {
++          skipPreflight: false,
++          preflightCommitment: "confirmed",
++          maxRetries: 3,
++        },
++      );
++    } catch (error) {
++      // A preflight rejection (simulation logs attached) means the node
++      // refused the transaction: it was not broadcast. Any other failure
++      // (network, timeout, 429) may have happened after the node accepted it.
++      if (isPreflightRejection(error)) {
++        throw error;
++      }
++      throw new SolanaTransactionUncertainError(signature, recentBlockhash);
++    }
+ 
+     const deadline = Date.now() + timeoutMs;
+ 
+     while (Date.now() < deadline) {
+-      const statuses =
+-        await this.connection.getSignatureStatuses([signature], {
+-          searchTransactionHistory: true,
+-        });
+-
+-      const status = statuses.value[0];
++      let status;
++      try {
++        const statuses =
++          await this.connection.getSignatureStatuses([signature], {
++            searchTransactionHistory: true,
++          });
++        status = statuses.value[0];
++      } catch {
++        // RPC errors while polling (e.g. 429 on the public RPC) used to
++        // surface as a plain failure although the swap may have executed,
++        // inviting a duplicate swap. Keep polling; give up as "uncertain".
++        await new Promise((resolve) => setTimeout(resolve, 1500));
++        continue;
++      }
+ 
+       if (status?.err) {
+         throw new Error(
+@@ -410,7 +509,198 @@ export class SolanaTradingService {
+       await new Promise((resolve) => setTimeout(resolve, 1500));
+     }
+ 
+-    throw new SolanaTransactionUncertainError(signature);
++    throw new SolanaTransactionUncertainError(signature, recentBlockhash);
++  }
++
++  /** Newest signature touching the central wallet, if any. */
++  async getLatestSignature(): Promise<string | null> {
++    const sigs = await this.connection.getSignaturesForAddress(
++      new PublicKey(this.address),
++      { limit: 1 },
++      "confirmed",
++    );
++    return sigs[0]?.signature ?? null;
++  }
++
++  /** Signatures newer than `until` (exclusive), newest first. */
++  async getSignaturesSince(
++    until: string | null,
++    limit: number,
++  ): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>> {
++    const sigs = await this.connection.getSignaturesForAddress(
++      new PublicKey(this.address),
++      { limit, ...(until ? { until } : {}) },
++      "confirmed",
++    );
++    return sigs.map((sig) => ({
++      signature: sig.signature,
++      failed: sig.err !== null,
++      blockTime: sig.blockTime ?? null,
++    }));
++  }
++
++  /** Net balance changes of the central wallet in one confirmed transaction. */
++  async getWalletDelta(signature: string): Promise<{
++    signature: string;
++    blockTime: number | null;
++    failed: boolean;
++    signedByWallet: boolean;
++    feePayer: string | null;
++    solLamportsDelta: bigint;
++    feeLamports: bigint;
++    tokenDeltas: Array<{ mint: string; deltaRaw: bigint; decimals: number }>;
++  } | null> {
++    const tx = await this.connection.getParsedTransaction(signature, {
++      maxSupportedTransactionVersion: 0,
++      commitment: "confirmed",
++    });
++    if (!tx || !tx.meta) return null;
++
++    const keys = tx.transaction.message.accountKeys.map((key) => ({
++      pubkey: key.pubkey.toBase58(),
++      signer: key.signer,
++    }));
++    const walletIndex = keys.findIndex((key) => key.pubkey === this.address);
++
++    let solLamportsDelta = 0n;
++    if (walletIndex >= 0) {
++      solLamportsDelta =
++        BigInt(tx.meta.postBalances[walletIndex] ?? 0) -
++        BigInt(tx.meta.preBalances[walletIndex] ?? 0);
++    }
++
++    const byMint = new Map<string, { deltaRaw: bigint; decimals: number }>();
++    const apply = (
++      balances: typeof tx.meta.preTokenBalances,
++      sign: 1n | -1n,
++    ) => {
++      for (const balance of balances ?? []) {
++        if (balance.owner !== this.address) continue;
++        const current = byMint.get(balance.mint) ?? {
++          deltaRaw: 0n,
++          decimals: balance.uiTokenAmount.decimals,
++        };
++        current.deltaRaw += sign * BigInt(balance.uiTokenAmount.amount);
++        byMint.set(balance.mint, current);
++      }
++    };
++    apply(tx.meta.postTokenBalances, 1n);
++    apply(tx.meta.preTokenBalances, -1n);
++
++    return {
++      signature,
++      blockTime: tx.blockTime ?? null,
++      failed: tx.meta.err !== null,
++      signedByWallet: walletIndex >= 0 && keys[walletIndex].signer,
++      feePayer: keys[0]?.pubkey ?? null,
++      solLamportsDelta,
++      feeLamports: BigInt(tx.meta.fee),
++      tokenDeltas: [...byMint.entries()]
++        .filter(([, value]) => value.deltaRaw !== 0n)
++        .map(([mint, value]) => ({ mint, ...value })),
++    };
++  }
++
++  /**
++   * Build an unsigned transfer of native SOL or an SPL token (classic or
++   * Token-2022) from the central wallet. The recipient's associated token
++   * account is created if needed (idempotent).
++   */
++  async buildTransferTransaction(params: {
++    recipient: string;
++    mint: string;
++    amountRaw: bigint;
++  }): Promise<{ transaction: VersionedTransaction; decimals: number }> {
++    if (params.amountRaw <= 0n) throw new Error("Transfer amount must be positive");
++    const owner = new PublicKey(this.address);
++    const recipient = new PublicKey(params.recipient);
++    if (recipient.equals(owner)) throw new Error("Recipient is the central wallet itself");
++
++    const instructions: TransactionInstruction[] = [];
++    let decimals = 9;
++
++    if (params.mint === NATIVE_SOL_MINT) {
++      instructions.push(
++        SystemProgram.transfer({
++          fromPubkey: owner,
++          toPubkey: recipient,
++          lamports: params.amountRaw,
++        }),
++      );
++    } else {
++      const mint = new PublicKey(params.mint);
++      const mintInfo = await this.connection.getParsedAccountInfo(mint, "confirmed");
++      const programId = mintInfo.value?.owner;
++      if (!programId || !(programId.equals(TOKEN_PROGRAM_ID) || programId.equals(TOKEN_2022_PROGRAM_ID))) {
++        throw new Error(`Unknown or unsupported token mint ${params.mint}`);
++      }
++      const parsed = (mintInfo.value?.data as { parsed?: { info?: { decimals?: number } } }).parsed;
++      if (typeof parsed?.info?.decimals !== "number") {
++        throw new Error(`Cannot read decimals for mint ${params.mint}`);
++      }
++      decimals = parsed.info.decimals;
++
++      const ata = (walletOwner: PublicKey) =>
++        PublicKey.findProgramAddressSync(
++          [walletOwner.toBuffer(), programId.toBuffer(), mint.toBuffer()],
++          ASSOCIATED_TOKEN_PROGRAM_ID,
++        )[0];
++      const sourceAta = ata(owner);
++      const destinationAta = ata(recipient);
++
++      // CreateIdempotent (instruction 1) of the associated token program.
++      instructions.push(new TransactionInstruction({
++        programId: ASSOCIATED_TOKEN_PROGRAM_ID,
++        keys: [
++          { pubkey: owner, isSigner: true, isWritable: true },
++          { pubkey: destinationAta, isSigner: false, isWritable: true },
++          { pubkey: recipient, isSigner: false, isWritable: false },
++          { pubkey: mint, isSigner: false, isWritable: false },
++          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
++          { pubkey: programId, isSigner: false, isWritable: false },
++        ],
++        data: Buffer.from([1]),
++      }));
++
++      // TransferChecked (instruction 12): amount u64 LE + decimals u8.
++      const data = Buffer.alloc(10);
++      data.writeUInt8(12, 0);
++      data.writeBigUInt64LE(params.amountRaw, 1);
++      data.writeUInt8(decimals, 9);
++      instructions.push(new TransactionInstruction({
++        programId,
++        keys: [
++          { pubkey: sourceAta, isSigner: false, isWritable: true },
++          { pubkey: mint, isSigner: false, isWritable: false },
++          { pubkey: destinationAta, isSigner: false, isWritable: true },
++          { pubkey: owner, isSigner: true, isWritable: false },
++        ],
++        data,
++      }));
++    }
++
++    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
++    const message = new TransactionMessage({
++      payerKey: owner,
++      recentBlockhash: blockhash,
++      instructions,
++    }).compileToV0Message();
++
++    return { transaction: new VersionedTransaction(message), decimals };
++  }
++
++  /** Simulate, sign locally, broadcast and confirm a transfer built above. */
++  async executeTransfer(transaction: VersionedTransaction): Promise<{
++    signature: string;
++    slot: number;
++    confirmationStatus: string;
++  }> {
++    const simulation = await this.simulateTransaction(transaction);
++    if (simulation.value.err) {
++      throw new Error(`Solana simulation failed: ${JSON.stringify(simulation.value.err)}`);
++    }
++    const signed = this.signTransactionLocally(transaction);
++    return this.broadcastAndConfirm(signed);
+   }
+ 
+   /*
+@@ -431,3 +721,11 @@ export class SolanaTradingService {
+    * Do not expose getSecretKey() through an agent/model tool.
+    */
+ }
++
++function isPreflightRejection(error: unknown): boolean {
++  if (!error || typeof error !== "object") return false;
++  const candidate = error as { logs?: unknown; message?: unknown; name?: unknown };
++  if (Array.isArray(candidate.logs) && candidate.logs.length > 0) return true;
++  const message = typeof candidate.message === "string" ? candidate.message : "";
++  return /simulation failed|preflight/i.test(message);
++}
+diff --git a/src/solana/wallet-tools.ts b/src/solana/wallet-tools.ts
+new file mode 100644
+index 0000000..42fb773
+--- /dev/null
++++ b/src/solana/wallet-tools.ts
+@@ -0,0 +1,202 @@
++/**
++ * Central-wallet tools: send SOL / SPL tokens and read the financial ledger.
++ *
++ * solana_transfer follows the same safety pipeline as raydium_swap: lock on
++ * unresolved transactions, confirmed on-chain balance check, simulation,
++ * local signing, confirmation, journal. It has no amount limit.
++ */
++
++import { PublicKey } from "@solana/web3.js";
++import type { AutomatonTool, ToolContext } from "../types.js";
++import {
++  NATIVE_SOL_MINT,
++  SOL_FEE_RESERVE_LAMPORTS,
++  SolanaTradingService,
++  SolanaTransactionUncertainError,
++} from "./trading.js";
++import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
++import { journalResolvedPending } from "./journal.js";
++import {
++  getDailyGain,
++  getLastSuccessfulScan,
++  listLedgerEntries,
++  recordTransferOut,
++  scanWalletHistory,
++  utcDay,
++} from "./ledger.js";
++import { RaydiumQuoteService } from "./raydium.js";
++import { fetchSolUsdPriceFromRaydium } from "./wallet-valuation.js";
++
++function solanaService(ctx: ToolContext): SolanaTradingService | null {
++  if (
++    ctx.identity.chainType !== "solana" ||
++    !ctx.identity.chainIdentity ||
++    ctx.identity.chainIdentity.chainType !== "solana"
++  ) {
++    return null;
++  }
++  return new SolanaTradingService(ctx.identity.chainIdentity);
++}
++
++export function createSolanaTransferTool(): AutomatonTool {
++  return {
++    name: "solana_transfer",
++    description:
++      "Send native SOL or an SPL token (e.g. USDC) from your central Solana wallet to another address. " +
++      "The transaction is simulated, signed locally, confirmed on-chain and journaled. " +
++      "Use mint \"So11111111111111111111111111111111111111112\" for native SOL. Amount is a raw integer in the token's smallest units.",
++    category: "financial",
++    riskLevel: "dangerous",
++    parameters: {
++      type: "object",
++      properties: {
++        recipient: { type: "string", description: "Destination wallet address (base58)." },
++        mint: { type: "string", description: "Token mint, or the native SOL mint for SOL." },
++        amount: { type: "string", description: "Positive raw integer amount in smallest units." },
++        reason: { type: "string", description: "Why this payment is made (journaled)." },
++      },
++      required: ["recipient", "mint", "amount"],
++    },
++    execute: async (args, ctx) => {
++      const service = solanaService(ctx);
++      if (!service) return "Blocked: active Solana chain identity is unavailable.";
++
++      const recipient = String(args.recipient ?? "");
++      const mint = String(args.mint ?? "");
++      const amountString = String(args.amount ?? "");
++      const reason = typeof args.reason === "string" ? args.reason.slice(0, 300) : undefined;
++
++      if (!/^[1-9][0-9]*$/.test(amountString)) return "Blocked: amount must be a positive raw integer.";
++      try { new PublicKey(recipient); new PublicKey(mint); } catch { return "Blocked: invalid recipient or mint address."; }
++      if (recipient === service.address) return "Blocked: recipient is the central wallet itself.";
++      const amountRaw = BigInt(amountString);
++
++      const pendingCheck = await checkPendingTransaction(ctx.db, service);
++      if (pendingCheck.blocked) return pendingCheck.response;
++      if (pendingCheck.resolved) await journalResolvedPending(ctx.db, service, pendingCheck.resolved);
++
++      // Confirmed on-chain balance check (raw integer units).
++      const solLamports = BigInt((await service.getSolBalance()).lamports);
++      let availableRaw: bigint;
++      if (mint === NATIVE_SOL_MINT) {
++        availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS ? solLamports - SOL_FEE_RESERVE_LAMPORTS : 0n;
++      } else {
++        if (solLamports < SOL_FEE_RESERVE_LAMPORTS) {
++          return JSON.stringify({
++            success: false,
++            blocked: true,
++            reason: "INSUFFICIENT_SOL_FOR_FEES",
++            requiredLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++            availableLamports: solLamports.toString(),
++          });
++        }
++        const tokens = await service.getTokenBalances();
++        availableRaw = tokens
++          .filter((token) => token.mint === mint)
++          .reduce((total, token) => total + BigInt(token.amount), 0n);
++      }
++      if (amountRaw > availableRaw) {
++        return JSON.stringify({
++          success: false,
++          blocked: true,
++          reason: "INSUFFICIENT_CONFIRMED_ONCHAIN_BALANCE",
++          mint,
++          requestedRaw: amountRaw.toString(),
++          availableRaw: availableRaw.toString(),
++          ...(mint === NATIVE_SOL_MINT ? { note: `${SOL_FEE_RESERVE_LAMPORTS} lamports are kept for network fees.` } : {}),
++        });
++      }
++
++      const { transaction } = await service.buildTransferTransaction({ recipient, mint, amountRaw });
++      try {
++        const result = await service.executeTransfer(transaction);
++        let journal: string = "ok";
++        try {
++          recordTransferOut(ctx.db.raw, {
++            signature: result.signature,
++            mint,
++            amountRaw,
++            recipient,
++            details: reason ? { reason } : undefined,
++          });
++        } catch (error) {
++          journal = `journal failed: ${error instanceof Error ? error.message : String(error)}`;
++        }
++        return JSON.stringify({
++          success: true,
++          signature: result.signature,
++          slot: result.slot,
++          confirmationStatus: result.confirmationStatus,
++          recipient,
++          mint,
++          amount: amountRaw.toString(),
++          journal,
++        });
++      } catch (error) {
++        if (error instanceof SolanaTransactionUncertainError) {
++          recordPendingTransaction(ctx.db, error, "transfer", {
++            mint,
++            amountRaw: amountRaw.toString(),
++            recipient,
++          });
++        }
++        throw error;
++      }
++    },
++  };
++}
++
++export function createSolanaTransactionsTool(): AutomatonTool {
++  return {
++    name: "solana_get_transactions",
++    description:
++      "Read your verified financial journal: payments received (revenue), creator deposits, swaps with realized profit, and transfers sent. " +
++      "Refreshes from confirmed on-chain history first. Also shows today's gain (revenue + realized profit). Read-only.",
++    category: "financial",
++    riskLevel: "safe",
++    parameters: {
++      type: "object",
++      properties: {
++        limit: { type: "number", description: "Number of journal entries to show (default 15, max 50)." },
++      },
++    },
++    execute: async (args, ctx) => {
++      const service = solanaService(ctx);
++      if (!service) return "Blocked: active Solana chain identity is unavailable.";
++      const limit = Math.max(1, Math.min(50, Number(args.limit ?? 15) || 15));
++
++      let scanNote = "history refreshed";
++      try {
++        const solPriceUsd = await fetchSolUsdPriceFromRaydium(new RaydiumQuoteService());
++        await scanWalletHistory(ctx.db.raw, service, {
++          creatorAddress: ctx.config.creatorAddress ?? null,
++          solPriceUsd,
++        });
++      } catch (error) {
++        scanNote = `history refresh failed (${error instanceof Error ? error.message : String(error)}); showing journal as last verified`;
++      }
++
++      const today = getDailyGain(ctx.db.raw, utcDay(new Date()));
++      const entries = listLedgerEntries(ctx.db.raw, limit);
++      const lines = [
++        `Central wallet: ${service.address}`,
++        `Journal: ${scanNote} (last successful scan: ${getLastSuccessfulScan(ctx.db.raw) ?? "never"})`,
++        `Today (${today.day} UTC): revenue $${today.revenueUsd.toFixed(2)} + realized profit $${today.realizedPnlUsd.toFixed(2)} = gain $${today.gainUsd.toFixed(2)}${today.incompleteEntries > 0 ? ` (${today.incompleteEntries} entr${today.incompleteEntries > 1 ? "ies" : "y"} not fully priced)` : ""}`,
++        "",
++        entries.length === 0 ? "No journal entries yet." : "Recent entries (newest first):",
++        ...entries.map((entry) => {
++          const parts = [`${entry.ts} ${entry.kind}`];
++          if (entry.inputMint) parts.push(`in ${entry.inputAmountRaw} ${entry.inputMint}`);
++          if (entry.outputMint) parts.push(`out ${entry.outputAmountRaw} ${entry.outputMint}`);
++          if (entry.revenueUsd) parts.push(`revenue $${entry.revenueUsd.toFixed(2)}`);
++          if (entry.realizedPnlUsd) parts.push(`realized $${entry.realizedPnlUsd.toFixed(2)}`);
++          if (entry.counterparty) parts.push(`counterparty ${entry.counterparty}`);
++          if (entry.incomplete) parts.push("(not fully priced)");
++          parts.push(`sig ${entry.signature}`);
++          return `- ${parts.join(" | ")}`;
++        }),
++      ];
++      return lines.join("\n");
++    },
++  };
++}
+diff --git a/src/solana/wallet-valuation.ts b/src/solana/wallet-valuation.ts
+index 478018e..a61a1cb 100644
+--- a/src/solana/wallet-valuation.ts
++++ b/src/solana/wallet-valuation.ts
+@@ -135,6 +135,9 @@ export interface CentralWalletBalances {
+   tokens: Array<{
+     mint: string;
+     amount: number;
++    /** Raw integer amount and decimals, when known (used for pricing). */
++    amountRaw?: string;
++    decimals?: number;
+   }>;
+ }
+ 
+@@ -187,6 +190,8 @@ export async function readCentralWalletBalances(
+       tokens.push({
+         mint: token.mint,
+         amount,
++        amountRaw: token.amount,
++        decimals: token.decimals,
+       });
+     }
+   }
+@@ -260,9 +265,58 @@ export async function fetchSolUsdPriceFromRaydium(
+  * Other positive SPL balances remain explicitly unpriced until a trusted
+  * pricing source is implemented for their mint.
+  */
++/**
++ * Value each non-USDC token position by a read-only Raydium quote of the
++ * whole position into USDC (what selling it now would return). A token that
++ * cannot be quoted stays unpriced (null), never zero.
++ */
++export async function fetchTokenUsdValuesFromRaydium(
++  quoteService: {
++    getQuote(request: {
++      inputMint: string;
++      outputMint: string;
++      amount: bigint;
++      slippageBps?: number;
++    }): Promise<{ success: boolean; raw: unknown }>;
++  },
++  tokens: CentralWalletBalances["tokens"],
++): Promise<Map<string, number>> {
++  const { USDC_MINT, parseRaydiumQuote } = await import("./raydium.js");
++  const values = new Map<string, number>();
++
++  for (const token of tokens) {
++    if (!token.amountRaw || !/^[1-9][0-9]*$/.test(token.amountRaw)) continue;
++    try {
++      const amount = BigInt(token.amountRaw);
++      const quote = await quoteService.getQuote({
++        inputMint: token.mint,
++        outputMint: USDC_MINT,
++        amount,
++        slippageBps: 100,
++      });
++      if (!quote.success) continue;
++      const parsed = parseRaydiumQuote(quote.raw, {
++        inputMint: token.mint,
++        outputMint: USDC_MINT,
++        inputAmount: amount,
++      });
++      const valueUsd = Number(parsed.outputAmount) / 1_000_000;
++      if (Number.isFinite(valueUsd) && valueUsd >= 0) {
++        values.set(token.mint, valueUsd);
++      }
++    } catch {
++      // No route / API error: leave the token unpriced.
++    }
++  }
++
++  return values;
++}
++
+ export function buildCentralWalletValuation(params: {
+   balances: CentralWalletBalances;
+   solPriceUsd: number | null;
++  /** Total USD value per token mint (whole position), when known. */
++  tokenValuesUsd?: Map<string, number>;
+   valuedAt?: Date;
+ }): WalletValuation {
+   const assets: WalletAssetValuation[] = [
+@@ -278,13 +332,17 @@ export function buildCentralWalletValuation(params: {
+       amount: params.balances.usdc,
+       priceUsd: 1,
+     }),
+-    ...params.balances.tokens.map((token) =>
+-      valueWalletAsset({
++    ...params.balances.tokens.map((token) => {
++      const valueUsd = params.tokenValuesUsd?.get(token.mint);
++      return valueWalletAsset({
+         assetId: token.mint,
+         amount: token.amount,
+-        priceUsd: null,
+-      }),
+-    ),
++        priceUsd:
++          typeof valueUsd === "number" && token.amount > 0
++            ? valueUsd / token.amount
++            : null,
++      });
++    }),
+   ];
+ 
+   return aggregateWalletValuation(
+diff --git a/src/survival/lifespan.ts b/src/survival/lifespan.ts
+new file mode 100644
+index 0000000..c19e284
+--- /dev/null
++++ b/src/survival/lifespan.ts
+@@ -0,0 +1,245 @@
++/**
++ * SHUI lifespan rule (genesis), enforced in code.
++ *
++ * - 90 days of life counted from birth (identity createdAt).
++ * - Once per completed UTC day, the day's verified gain is evaluated:
++ *     gain = revenue received + realized trading profit (see solana/ledger.ts)
++ *     gain < 100 USD  -> one extra day is lost
++ *     gain > 500 USD  -> one day is gained
++ *     otherwise       -> no adjustment
++ * - Unknown data (RPC/API down, unpriced entry) never penalizes: the day is
++ *   recorded as "unknown" with no adjustment.
++ * - Life ends when remaining time reaches zero, or when the verified wallet
++ *   value reaches 1,000,000 USD: SHUI stops cleanly and preserves funds.
++ *
++ * Days before this code was deployed are not evaluated (no ledger existed).
++ */
++
++import type { Database } from "better-sqlite3";
++import { getDailyGain, getLastSuccessfulScan, utcDay } from "../solana/ledger.js";
++
++export const LIFESPAN_DAYS = 90;
++export const PENALTY_BELOW_USD = 100;
++export const BONUS_ABOVE_USD = 500;
++export const STOP_AT_VALUE_USD = 1_000_000;
++const DAY_MS = 86_400_000;
++/** After this long without a successful history scan covering a day, the
++ *  day is settled as unknown (no adjustment) instead of waiting forever. */
++const UNKNOWN_AFTER_MS = 2 * DAY_MS;
++
++const START_DAY_KEY = "lifespan.start_day";
++const ENDED_KEY = "lifespan.ended";
++
++export type DayStatus = "penalty" | "bonus" | "neutral" | "unknown";
++
++export interface LifespanDay {
++  day: string;
++  status: DayStatus;
++  adjustment: number;
++  gainUsd: number | null;
++  revenueUsd: number | null;
++  realizedPnlUsd: number | null;
++  evaluatedAt: string;
++  note: string | null;
++}
++
++export interface LifespanStatus {
++  bornAt: string;
++  adjustmentDays: number;
++  endsAt: string;
++  remainingDays: number;
++  evaluatedDays: number;
++  ended: { reason: string; at: string; detail?: string } | null;
++}
++
++function ensureSchema(db: Database): void {
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS shui_lifespan_days (
++      day TEXT PRIMARY KEY,
++      status TEXT NOT NULL,
++      adjustment INTEGER NOT NULL,
++      gain_usd REAL,
++      revenue_usd REAL,
++      realized_pnl_usd REAL,
++      evaluated_at TEXT NOT NULL,
++      note TEXT
++    );
++  `);
++}
++
++function getKv(db: Database, key: string): string | null {
++  const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined;
++  return row?.value ?? null;
++}
++
++function setKv(db: Database, key: string, value: string): void {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, value);
++}
++
++export function resolveBornAt(db: Database): string | null {
++  const row = db.prepare("SELECT value FROM identity WHERE key = 'createdAt'").get() as { value: string } | undefined;
++  if (row?.value && !Number.isNaN(Date.parse(row.value))) return row.value;
++  return null;
++}
++
++export function getLifespanStatus(db: Database, now: Date = new Date()): LifespanStatus | null {
++  ensureSchema(db);
++  const bornAt = resolveBornAt(db);
++  if (!bornAt) return null;
++
++  const adj = db.prepare("SELECT COALESCE(SUM(adjustment), 0) AS total, COUNT(*) AS days FROM shui_lifespan_days")
++    .get() as { total: number; days: number };
++  const endsAtMs = Date.parse(bornAt) + (LIFESPAN_DAYS + adj.total) * DAY_MS;
++  const endedRaw = getKv(db, ENDED_KEY);
++
++  return {
++    bornAt,
++    adjustmentDays: adj.total,
++    endsAt: new Date(endsAtMs).toISOString(),
++    remainingDays: Math.max(0, (endsAtMs - now.getTime()) / DAY_MS),
++    evaluatedDays: adj.days,
++    ended: endedRaw ? JSON.parse(endedRaw) : null,
++  };
++}
++
++export function listLifespanDays(db: Database, limit = 14): LifespanDay[] {
++  ensureSchema(db);
++  const rows = db.prepare("SELECT * FROM shui_lifespan_days ORDER BY day DESC LIMIT ?").all(limit) as Array<Record<string, unknown>>;
++  return rows.map((row) => ({
++    day: String(row.day),
++    status: row.status as DayStatus,
++    adjustment: Number(row.adjustment),
++    gainUsd: row.gain_usd === null ? null : Number(row.gain_usd),
++    revenueUsd: row.revenue_usd === null ? null : Number(row.revenue_usd),
++    realizedPnlUsd: row.realized_pnl_usd === null ? null : Number(row.realized_pnl_usd),
++    evaluatedAt: String(row.evaluated_at),
++    note: (row.note as string | null) ?? null,
++  }));
++}
++
++function addDays(day: string, n: number): string {
++  return utcDay(new Date(Date.parse(`${day}T00:00:00.000Z`) + n * DAY_MS));
++}
++
++export function classifyGain(gainUsd: number): { status: DayStatus; adjustment: number } {
++  if (gainUsd < PENALTY_BELOW_USD) return { status: "penalty", adjustment: -1 };
++  if (gainUsd > BONUS_ABOVE_USD) return { status: "bonus", adjustment: 1 };
++  return { status: "neutral", adjustment: 0 };
++}
++
++/**
++ * Evaluate every completed UTC day not yet evaluated. A day is evaluated
++ * once the wallet history scan has succeeded after the day ended; if that
++ * does not happen within UNKNOWN_AFTER_MS, the day is settled as unknown.
++ */
++export function evaluateCompletedDays(db: Database, now: Date = new Date()): LifespanDay[] {
++  ensureSchema(db);
++  const today = utcDay(now);
++  let startDay = getKv(db, START_DAY_KEY);
++  if (!startDay) {
++    // First run: start evaluating with today (no ledger existed before).
++    setKv(db, START_DAY_KEY, today);
++    return [];
++  }
++
++  const lastScan = getLastSuccessfulScan(db);
++  const lastScanMs = lastScan ? Date.parse(lastScan) : 0;
++  const evaluated: LifespanDay[] = [];
++  const exists = db.prepare("SELECT 1 FROM shui_lifespan_days WHERE day = ?");
++  const insert = db.prepare(
++    `INSERT OR IGNORE INTO shui_lifespan_days
++     (day, status, adjustment, gain_usd, revenue_usd, realized_pnl_usd, evaluated_at, note)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++  );
++
++  for (let day = startDay; day < today; day = addDays(day, 1)) {
++    if (exists.get(day)) continue;
++    const dayEndMs = Date.parse(`${addDays(day, 1)}T00:00:00.000Z`);
++    let record: LifespanDay;
++
++    if (lastScanMs >= dayEndMs) {
++      const gain = getDailyGain(db, day);
++      if (gain.incompleteEntries > 0) {
++        record = {
++          day, status: "unknown", adjustment: 0,
++          gainUsd: null, revenueUsd: gain.revenueUsd, realizedPnlUsd: gain.realizedPnlUsd,
++          evaluatedAt: now.toISOString(),
++          note: `${gain.incompleteEntries} journal entr${gain.incompleteEntries > 1 ? "ies" : "y"} could not be priced; no penalty`,
++        };
++      } else {
++        const { status, adjustment } = classifyGain(gain.gainUsd);
++        record = {
++          day, status, adjustment,
++          gainUsd: gain.gainUsd, revenueUsd: gain.revenueUsd, realizedPnlUsd: gain.realizedPnlUsd,
++          evaluatedAt: now.toISOString(), note: null,
++        };
++      }
++    } else if (now.getTime() - dayEndMs >= UNKNOWN_AFTER_MS) {
++      record = {
++        day, status: "unknown", adjustment: 0,
++        gainUsd: null, revenueUsd: null, realizedPnlUsd: null,
++        evaluatedAt: now.toISOString(),
++        note: "wallet history could not be verified for this day; no penalty",
++      };
++    } else {
++      break; // wait for a successful scan covering this day
++    }
++
++    insert.run(record.day, record.status, record.adjustment, record.gainUsd,
++      record.revenueUsd, record.realizedPnlUsd, record.evaluatedAt, record.note);
++    evaluated.push(record);
++  }
++
++  return evaluated;
++}
++
++/**
++ * Decide whether life has ended. Persists the end so it cannot be undone by
++ * a restart. `verifiedWalletValueUsd` must come from a fresh, complete
++ * valuation (pass null otherwise).
++ */
++export function checkLifeEnd(
++  db: Database,
++  verifiedWalletValueUsd: number | null,
++  now: Date = new Date(),
++): LifespanStatus["ended"] {
++  const status = getLifespanStatus(db, now);
++  if (!status) return null;
++  if (status.ended) return status.ended;
++
++  let ended: NonNullable<LifespanStatus["ended"]> | null = null;
++  if (verifiedWalletValueUsd !== null && verifiedWalletValueUsd >= STOP_AT_VALUE_USD) {
++    ended = {
++      reason: "goal_reached",
++      at: now.toISOString(),
++      detail: `Verified wallet value $${verifiedWalletValueUsd.toFixed(2)} reached $${STOP_AT_VALUE_USD}`,
++    };
++  } else if (Date.parse(status.endsAt) <= now.getTime()) {
++    ended = {
++      reason: "lifespan_expired",
++      at: now.toISOString(),
++      detail: `Lifespan ended at ${status.endsAt} (adjustments: ${status.adjustmentDays} days)`,
++    };
++  }
++
++  if (ended) setKv(db, ENDED_KEY, JSON.stringify(ended));
++  return ended;
++}
++
++export function isLifeEnded(db: Database): boolean {
++  return getKv(db, ENDED_KEY) !== null;
++}
++
++/** One-line summary for SHUI's status block. */
++export function formatLifespanLine(db: Database, now: Date = new Date()): string | null {
++  const status = getLifespanStatus(db, now);
++  if (!status) return null;
++  if (status.ended) return `Lifespan: ENDED (${status.ended.reason}) — ${status.ended.detail ?? ""}`;
++  const today = getDailyGain(db, utcDay(now));
++  return (
++    `Lifespan: ${status.remainingDays.toFixed(1)} days remaining (ends ${status.endsAt.slice(0, 10)}, ` +
++    `adjustments ${status.adjustmentDays >= 0 ? "+" : ""}${status.adjustmentDays} days)\n` +
++    `Today's verified gain (UTC): $${today.gainUsd.toFixed(2)} = revenue $${today.revenueUsd.toFixed(2)} + realized profit $${today.realizedPnlUsd.toFixed(2)} ` +
++    `(below $${PENALTY_BELOW_USD}: -1 extra day; above $${BONUS_ABOVE_USD}: +1 day)`
++  );
++}
