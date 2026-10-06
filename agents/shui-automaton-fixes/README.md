@@ -91,4 +91,5 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 - Tâches des objectifs échoués ou terminés annulées automatiquement. Les workers concernés sont arrêtés.
 - Un `config.json` de projet est autorisé dans le dossier de la tâche. Les écritures refusées ne comptent plus comme travail conservé.
 - Le journal affiche le détail des avertissements et des erreurs.
+- Les appels d'outils écrits en texte par qwen3-coder (`<function=…>`) sont récupérés. Consignes shell : `python3`, pas de `source`, serveurs en arrière-plan.
 - Tests : 30 échecs, les mêmes qu'avant le patch (fichiers `/etc/shui-agent/*` absents de l'environnement de test). Tous les tests de l'orchestration et des workers passent.

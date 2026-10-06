@@ -167,10 +167,10 @@ index 7572e71..10b2a54 100644
    it("includes survival tier", () => {
 diff --git a/src/__tests__/orchestration/shui-live-fixes.test.ts b/src/__tests__/orchestration/shui-live-fixes.test.ts
 new file mode 100644
-index 0000000..c999d1a
+index 0000000..660ee7e
 --- /dev/null
 +++ b/src/__tests__/orchestration/shui-live-fixes.test.ts
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,194 @@
 +import type BetterSqlite3 from "better-sqlite3";
 +import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 +import { ulid } from "ulid";
@@ -351,6 +351,20 @@ index 0000000..c999d1a
 +    expect(isProtectedForWorker("/ws/goal/app.py", "/ws/goal", isProtected)).toBe(false);
 +  });
 +});
++
++describe("tool calls written as text (qwen3-coder)", () => {
++  it("recovers <function=...> blocks into tool calls", async () => {
++    const { parseTextToolCalls } = await import("../../agent/harnesses/base-harness.js");
++    const calls = parseTextToolCalls(
++      "I'll look first.\n<function=list_dir>\n<parameter=path>\n/home/automaton\n</parameter>\n</function>\n" +
++      "<function=exec><parameter=command>ls -la</parameter><parameter=timeout_ms>5000</parameter></function>",
++    );
++    expect(calls.map((c) => c.function.name)).toEqual(["list_dir", "exec"]);
++    expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: "/home/automaton" });
++    expect(JSON.parse(calls[1].function.arguments)).toEqual({ command: "ls -la", timeout_ms: 5000 });
++    expect(parseTextToolCalls("plain answer, no tools")).toEqual([]);
++  });
++});
 diff --git a/src/__tests__/orchestration/worker-attempts.test.ts b/src/__tests__/orchestration/worker-attempts.test.ts
 index aa4334c..29a5233 100644
 --- a/src/__tests__/orchestration/worker-attempts.test.ts
@@ -375,10 +389,25 @@ index aa4334c..29a5233 100644
    });
  });
 diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
-index 50369ea..2f98c9d 100644
+index 50369ea..87fda52 100644
 --- a/src/agent/harnesses/base-harness.ts
 +++ b/src/agent/harnesses/base-harness.ts
-@@ -204,7 +204,10 @@ export abstract class BaseHarness implements AgentHarness {
+@@ -160,6 +160,14 @@ export abstract class BaseHarness implements AgentHarness {
+         `[${this.id}] Turn ${this.context.budget.turnsUsed}/${this.context.budget.maxTurns} — task: ${this.task.title.slice(0, 60)}`,
+       );
+ 
++      if ((!response.toolCalls || response.toolCalls.length === 0) && response.content) {
++        const recovered = parseTextToolCalls(response.content);
++        if (recovered.length > 0) {
++          logger.info(`[${this.id}] Recovered ${recovered.length} tool call(s) written as text`);
++          response = { ...response, toolCalls: recovered };
++        }
++      }
++
+       if (response.toolCalls && response.toolCalls.length > 0) {
+         this.messages.push({
+           role: "assistant",
+@@ -204,7 +212,10 @@ export abstract class BaseHarness implements AgentHarness {
                }
                logger.info(`[${this.id}] ${tool.name} → ${output.slice(0, 120)}`);
  
@@ -390,6 +419,49 @@ index 50369ea..2f98c9d 100644
                  try {
                    const parsedArgs = typeof toolCall.function.arguments === "string"
                      ? JSON.parse(toolCall.function.arguments)
+@@ -346,3 +357,42 @@ export function extractProgressFiles(output: string): string[] {
+   const list = (end >= 0 ? rest.slice(0, end) : rest).replace(/ \(\+\d+ more\)$/, "");
+   return list.split(", ").map((file) => file.trim()).filter(Boolean);
+ }
++
++/**
++ * qwen3-coder sometimes writes its native tool-call syntax as plain text
++ * (`<function=list_dir><parameter=path>/x</parameter></function>`) when the
++ * server-side parser misses it; the worker then ended on a "text-only
++ * response" at turn 1. Recover such calls into regular tool calls.
++ */
++export function parseTextToolCalls(content: string): Array<{
++  id: string;
++  type: "function";
++  function: { name: string; arguments: string };
++}> {
++  const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
++  const fnPattern = /<function=([A-Za-z0-9_.-]+)>([\s\S]*?)(?:<\/function>|$)/g;
++  let match: RegExpExecArray | null;
++  while ((match = fnPattern.exec(content)) !== null) {
++    const args: Record<string, unknown> = {};
++    const paramPattern = /<parameter=([A-Za-z0-9_.-]+)>\n?([\s\S]*?)\n?<\/parameter>/g;
++    let param: RegExpExecArray | null;
++    while ((param = paramPattern.exec(match[2])) !== null) {
++      const raw = param[2];
++      let value: unknown = raw;
++      if (/^\s*(-?\d+(\.\d+)?|true|false|null|[[{][\s\S]*[\]}])\s*$/.test(raw)) {
++        try {
++          value = JSON.parse(raw);
++        } catch {
++          value = raw;
++        }
++      }
++      args[param[1]] = value;
++    }
++    calls.push({
++      id: `text-call-${Date.now().toString(36)}-${calls.length}`,
++      type: "function",
++      function: { name: match[1], arguments: JSON.stringify(args) },
++    });
++  }
++  return calls;
++}
 diff --git a/src/agent/harnesses/coding-harness.ts b/src/agent/harnesses/coding-harness.ts
 index 6f8f2d7..a42936f 100644
 --- a/src/agent/harnesses/coding-harness.ts
@@ -671,10 +743,10 @@ index 730538b..aef5fc0 100644
      execCb(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
 diff --git a/src/agent/harnesses/worker-environment.ts b/src/agent/harnesses/worker-environment.ts
 new file mode 100644
-index 0000000..caa95e0
+index 0000000..d2742e9
 --- /dev/null
 +++ b/src/agent/harnesses/worker-environment.ts
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,47 @@
 +import path from "node:path";
 +
 +/**
@@ -693,7 +765,11 @@ index 0000000..caa95e0
 +- Create and modify your project files with write_file (and read_file).
 +  edit_own_file is not for task files.
 +- No root access. Python: \`python3 -m venv .venv && .venv/bin/pip install <pkg>\`
-+  inside your project folder. Node: \`npm install\` locally, never \`npm -g\`.
++  inside your project folder, then run \`.venv/bin/python app.py\`. System pip is
++  blocked (externally-managed-environment). Node: \`npm install\` locally, never \`npm -g\`.
++- Commands run in /bin/sh with a 30 s limit: use \`python3\` (there is no \`python\`),
++  no \`source\` (call .venv/bin/... directly), and start servers in the background
++  (\`nohup .venv/bin/python app.py > app.log 2>&1 &\`) on a port that is free.
 +- There is no \`solana\` CLI. For live market data use web_fetch, for example
 +  a Raydium quote: https://transaction-v1.raydium.io/compute/swap-base-in?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=10000000&slippageBps=50&txVersion=V0
 +  Services you write should call such APIs at runtime the same way.
