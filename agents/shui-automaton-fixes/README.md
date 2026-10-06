@@ -188,3 +188,15 @@ Patch : `2026-10-06-trading-tools.patch`. Il s'applique après `2026-10-06-chat-
 - 20 nouveaux tests ; `tsc` ne signale aucune erreur.
 - Suite complète : 1736 tests réussis. Les 27 échecs sont exactement ceux d'avant, dus à l'absence de `/etc/shui-agent` dans l'environnement de test.
 - Les API Raydium et Jupiter ne sont pas joignables depuis l'environnement de test. La vérification se fait donc sur le VPS, en dry run.
+
+---
+
+# Limites de requêtes des API de marché — 2026-10-06
+
+Patch : `2026-10-06-rate-limit-fix.patch`, à appliquer après `2026-10-06-trading-tools.patch`.
+
+Raydium, Jupiter et GeckoTerminal répondent en texte (« Rate limit exceeded ») quand ils limitent le nombre de requêtes. Le code lisait cette réponse comme du JSON et plantait sur « Unexpected token 'R' ». Désormais :
+- une limite de requêtes (HTTP 429) ou une erreur serveur (5xx) est réessayée deux fois, après 1,5 s puis 4 s ;
+- si la limite persiste, SHUI reçoit un message clair : « … is rate-limiting requests … Wait a minute before retrying. »
+
+Le dry run Raydium USDC → SOL a été vérifié sur le VPS (17:11:19) : la transaction passerait, avec 6 001 lamports de frais. Le bug `REQ_INPUT_ACCOUT_ERROR` est donc corrigé.
