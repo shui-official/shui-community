@@ -120,3 +120,39 @@ SHUI envoie au Control Center les événements `memory_write`, `wallet`, `trade`
 - Services : mode debug, écoute sur 0.0.0.0 et dépendances non installées sont refusés au déploiement.
 - Garde-fou : faux paiements dans les CSV/JSON, URL de paiement inventées et annonces de revenu absentes du journal vérifié sont refusés.
 - Workers : écriture limitée au dossier de la tâche, commandes exécutées dans ce dossier, moins de fausses boucles, rôle `critic` sans délégation, `read_file` plus tolérant, journal avec les URL lues.
+
+---
+
+# Chat créateur (page « Chat SHUI » du Control Center) — 2026-10-06
+
+Patch : `2026-10-06-creator-chat.patch`, plus le dossier `control-center/`.
+
+## Pourquoi la page était « NON CONNECTÉ »
+Le Control Center lit `state.db` en lecture seule. Il ne peut donc pas écrire dans `inbox_messages`, et aucun transport n'existait.
+
+## Comment ça marche maintenant
+Le chemin d'un message est le suivant :
+1. La page envoie le message au backend du Control Center (`POST /api/chat`).
+2. Le backend le transmet à SHUI, sur `http://127.0.0.1:3334/chat`, avec un jeton.
+3. SHUI l'enregistre dans `inbox_messages` sous l'expéditeur `creator:control-center`, puis crée un `wake_event`.
+4. SHUI se réveille en 30 s maximum et lit le message comme un message authentifié de son créateur.
+5. Le tour suivant de SHUI devient sa réponse : son texte et les outils qu'il a lancés.
+6. La réponse est enregistrée, puis affichée par la page (`GET /api/chat`).
+
+Points de sécurité et de comportement :
+- `state.db` reste en lecture seule pour le Control Center.
+- L'endpoint n'écoute que sur 127.0.0.1. Il exige un jeton aléatoire de 64 caractères.
+- Les services publiés tournent sous l'utilisateur `shui-svc` et n'ont pas accès au jeton. Ils ne peuvent donc pas se faire passer pour le créateur.
+- Sans jeton configuré, l'endpoint est désactivé.
+- Le message du créateur a la même autorité qu'avant (niveau `agent`). Aucune permission ni règle financière n'est changée.
+
+Le patch contient aussi deux corrections pour les workers :
+- Leurs commandes passent par `bash`. Avant, `/bin/sh` renvoyait « Bad substitution ».
+- Quand un chemin est refusé, le message indique maintenant le bon dossier projet. Avant, le worker inventait `/home/automaton/workspace/<goal>`.
+
+## Installation
+1. Côté SHUI : appliquer le patch, compiler, puis lancer `sudo bash setup-chat.sh ubuntu` une seule fois. Le script crée le jeton sans l'afficher.
+2. Côté Control Center : copier `control-center/shui-chat-transport.ts` dans `backend/src/`. Brancher ensuite `chat.ts` sur ce module :
+   - `GET /api/chat` doit renvoyer `connected`/`transport` depuis `shuiChatStatus()` et les messages depuis `listShuiChat()` ;
+   - `POST /api/chat` doit appeler `sendCreatorMessage(content)`.
+   Ne jamais renvoyer le jeton au navigateur.
