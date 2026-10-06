@@ -1,0 +1,56 @@
+diff --git a/src/__tests__/trading-tools.test.ts b/src/__tests__/trading-tools.test.ts
+index 2c55baf..b5f7c3d 100644
+--- a/src/__tests__/trading-tools.test.ts
++++ b/src/__tests__/trading-tools.test.ts
+@@ -229,3 +229,15 @@ describe("jupiter api key", () => {
+     expect(jupiterHeaders()["x-api-key"]).toBe("k");
+   });
+ });
++
++describe("order_create semantics", () => {
++  it("refuses a stop-loss that does not sell the watched token", async () => {
++    const { createOrderTools } = await import("../solana/orders.js");
++    const tool = createOrderTools().find((t) => t.name === "order_create")!;
++    const db = freshDb();
++    const bad = await tool.execute({ kind: "stop_loss", inputMint: USDC_MINT, outputMint: SOL_MINT, amount: "all", watchMint: SOL_MINT, triggerPriceUsd: 100 }, { db } as any);
++    expect(bad).toMatch(/inputMint must equal watchMint/);
++    const badBuy = await tool.execute({ kind: "buy_below", inputMint: USDC_MINT, outputMint: BONK, amount: "1000000", watchMint: SOL_MINT, triggerPriceUsd: 100 }, { db } as any);
++    expect(badBuy).toMatch(/outputMint must equal watchMint/);
++  });
++});
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index df235c8..7990997 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -56,6 +56,10 @@ const CONWAY_ONLY_TOOLS = new Set([
+ const WORKER_EXCLUDED_TOOLS = new Set([
+   "edit_own_file",
+   "message_creator",
++  // Orders outlive a worker's task: positions are owned by SHUI's main loop
++  // (a research worker left a "test" order on the whole USDC balance).
++  "order_create",
++  "order_cancel",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index b55bac0..a4defa8 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -254,6 +254,16 @@ export function createOrderTools(): AutomatonTool[] {
+         const outputMint = String(args.outputMint ?? "");
+         const watchMint = String(args.watchMint ?? "");
+         if (![inputMint, outputMint, watchMint].every(validMint) || inputMint === outputMint) return "Blocked: invalid mints.";
++        // A stop-loss or take-profit sells the watched token; a buy_below buys it.
++        // A worker created "stop_loss all USDC -> SOL when SOL < $100", which
++        // buys SOL as it falls: the opposite of a stop-loss.
++        if ((kind === "stop_loss" || kind === "take_profit") && inputMint !== watchMint) {
++          return `Blocked: a ${kind} sells the token it watches, so inputMint must equal watchMint (${watchMint}). ` +
++            "To buy a token when its price falls, use kind=buy_below with outputMint = watchMint.";
++        }
++        if (kind === "buy_below" && outputMint !== watchMint) {
++          return "Blocked: buy_below buys the token it watches, so outputMint must equal watchMint.";
++        }
+         const amount = String(args.amount ?? "");
+         if (amount === "all" ? inputMint === NATIVE_SOL_MINT : !/^[1-9][0-9]*$/.test(amount)) {
+           return 'Blocked: amount must be a positive raw integer, or "all" for a non-SOL input.';

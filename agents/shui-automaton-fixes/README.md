@@ -231,3 +231,12 @@ Changements de `shui-cleanup.py` (ménage manuel) :
 - les services qui répondent restent en ligne ;
 - ceux qui ne répondent pas sont arrêtés puis archivés ;
 - les dossiers de services jamais publiés sont archivés.
+
+---
+
+# Correctif des ordres automatiques — 2026-10-06
+
+Patch : `2026-10-06-orders-fix.patch`, à appliquer après `2026-10-06-janitor.patch`.
+
+- Un `stop_loss` ou un `take_profit` doit vendre le token qu'il surveille (`inputMint` = `watchMint`). Un `buy_below` doit acheter ce token (`outputMint` = `watchMint`). Un worker avait créé « stop_loss : tout l'USDC → SOL quand le SOL passe sous 100 $ », un ordre qui achète du SOL quand il baisse, soit l'inverse d'un stop-loss.
+- `order_create` et `order_cancel` sont réservés à la boucle principale. Un worker ne vit que le temps d'une tâche, alors qu'un ordre reste actif après elle. Les workers gardent `order_list` et les swaps.
