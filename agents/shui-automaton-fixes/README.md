@@ -103,3 +103,12 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 ## Patch `2026-10-06-prompt-value-machine-facts.patch` (prompt, approuvé par le créateur)
 - Ajoute aux règles de SHUI : *« Plans, documents and simulated services are not value: only verified revenue or realized trading profit counts. »*
 - Ajoute les faits sur la machine : pas de root, pas de Docker, pas de CLI `solana`, venv Python, ports non exposés, tout token SPL possible, 0,01 SOL réservé.
+
+## Patch `2026-10-06-services-payments.patch` + `services/` (F + G, approuvés par le créateur)
+- Outils `service_deploy`, `service_stop`, `service_status` et `service_logs`. Un service placé dans `/srv/shui/services/<nom>/run.sh` :
+  - tourne sous l'utilisateur `shui-svc`, dans un bac à sable systemd sans accès à `/home`, donc sans accès au wallet ;
+  - redémarre seul et survit aux redémarrages du serveur ;
+  - est publié en HTTPS par Caddy sur `https://<nom>.<ip>.sslip.io`.
+- Outils `payment_request` et `payment_check` : liens Solana Pay en USDC vers le wallet central, puis vérification du paiement on-chain. Les USDC reçus comptent comme revenu.
+- `web_fetch` aussi pour SHUI.
+- `services/setup-services.sh` : installation root, à lancer une seule fois (Caddy, utilisateur `shui-svc`, programme d'aide `shui-service`, règle sudoers limitée à ce programme, ports 80 et 443 dans `ufw`).

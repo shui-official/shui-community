@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# shui-service — the only command SHUI (user automaton) may run as root.
+# It publishes services from /srv/shui/services/<name>/run.sh: each one runs
+# as the unprivileged user shui-svc in a systemd sandbox WITHOUT access to
+# /home (the wallet key stays out of reach) and is exposed over HTTPS by Caddy.
+set -euo pipefail
+
+ROOT=/srv/shui/services
+CONF=/etc/shui-agent/services.conf
+SITES=/etc/caddy/shui-sites
+PORT_MIN=8100
+PORT_MAX=8199
+
+HOST_SUFFIX=""
+[[ -r "$CONF" ]] && . "$CONF"
+[[ -n "$HOST_SUFFIX" ]] || { echo "error: HOST_SUFFIX missing in $CONF" >&2; exit 2; }
+
+die() { echo "error: $*" >&2; exit 1; }
+valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]{1,30}$ ]] || die "invalid service name"; }
+valid_port() { [[ "$1" =~ ^[0-9]{4}$ ]] && (( $1 >= PORT_MIN && $1 <= PORT_MAX )) || die "port must be $PORT_MIN-$PORT_MAX"; }
+unit_of() { echo "shui-svc-$1.service"; }
+url_of() { echo "https://$1.$HOST_SUFFIX"; }
+port_of() { sed -n 's/^Environment=PORT=\([0-9]*\).*/\1/p' "/etc/systemd/system/$(unit_of "$1")" 2>/dev/null || true; }
+
+cmd_deploy() {
+  local name=$1 port=$2 dir="$ROOT/$1"
+  valid_name "$name"; valid_port "$port"
+  [[ -d "$dir" && ! -L "$dir" ]] || die "$dir does not exist"
+  [[ "$(realpath "$dir")" == "$dir" ]] || die "$dir must not be a symlink"
+  [[ -f "$dir/run.sh" && ! -L "$dir/run.sh" && -x "$dir/run.sh" ]] || die "$dir/run.sh must be an executable regular file"
+  for unit in /etc/systemd/system/shui-svc-*.service; do
+    [[ -e "$unit" ]] || continue
+    [[ "$unit" == "/etc/systemd/system/$(unit_of "$name")" ]] && continue
+    grep -q "^Environment=PORT=$port\b" "$unit" && die "port $port is already used by $(basename "$unit")"
+  done
+
+  cat > "/etc/systemd/system/$(unit_of "$name")" <<UNIT
+[Unit]
+Description=SHUI public service $name
+After=network-online.target
+
+[Service]
+User=shui-svc
+Group=shui-svc
+WorkingDirectory=$dir
+Environment=PORT=$port
+Environment=HOST=127.0.0.1
+ExecStart=$dir/run.sh
+Restart=on-failure
+RestartSec=5
+StateDirectory=shui-svc/$name
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  printf '%s.%s {\n\treverse_proxy 127.0.0.1:%s\n}\n' "$name" "$HOST_SUFFIX" "$port" > "$SITES/$name.caddy"
+  systemctl daemon-reload
+  systemctl enable "$(unit_of "$name")" >/dev/null 2>&1
+  systemctl restart "$(unit_of "$name")"
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || { rm -f "$SITES/$name.caddy"; die "caddy configuration invalid"; }
+  systemctl reload caddy
+  sleep 4
+  echo "service: $name"
+  echo "state: $(systemctl is-active "$(unit_of "$name")" || true)"
+  echo "port: $port (local 127.0.0.1)"
+  echo "url: $(url_of "$name")"
+  echo "data directory for the service: /var/lib/shui-svc/$name (env STATE_DIRECTORY)"
+  echo "note: the first HTTPS request can take ~30 s while the certificate is issued"
+}
+
+cmd_stop() {
+  local name=$1; valid_name "$name"
+  systemctl disable --now "$(unit_of "$name")" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$(unit_of "$name")" "$SITES/$name.caddy"
+  systemctl daemon-reload
+  systemctl reload caddy
+  echo "stopped: $name (files kept in $ROOT/$name)"
+}
+
+cmd_status() {
+  local name=$1; valid_name "$name"
+  [[ -e "/etc/systemd/system/$(unit_of "$name")" ]] || { echo "$name: not deployed"; return; }
+  echo "$name: $(systemctl is-active "$(unit_of "$name")" || true) port=$(port_of "$name") url=$(url_of "$name")"
+}
+
+cmd_list() {
+  local found=0
+  for unit in /etc/systemd/system/shui-svc-*.service; do
+    [[ -e "$unit" ]] || continue
+    found=1
+    local name; name=$(basename "$unit" .service); name=${name#shui-svc-}
+    cmd_status "$name"
+  done
+  (( found )) || echo "no published service"
+}
+
+cmd_logs() {
+  local name=$1 lines=${2:-80}; valid_name "$name"
+  [[ "$lines" =~ ^[0-9]{1,3}$ ]] || die "invalid line count"
+  journalctl -u "$(unit_of "$name")" -n "$lines" --no-pager -o cat
+}
+
+case "${1:-}" in
+  deploy) [[ $# -eq 3 ]] || die "usage: deploy <name> <port>"; cmd_deploy "$2" "$3" ;;
+  stop)   [[ $# -eq 2 ]] || die "usage: stop <name>"; cmd_stop "$2" ;;
+  status) [[ $# -eq 2 ]] || die "usage: status <name>"; cmd_status "$2" ;;
+  list)   cmd_list ;;
+  logs)   [[ $# -ge 2 && $# -le 3 ]] || die "usage: logs <name> [lines]"; cmd_logs "$2" "${3:-80}" ;;
+  *) die "usage: shui-service deploy|stop|status|list|logs" ;;
+esac
