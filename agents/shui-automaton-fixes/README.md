@@ -115,3 +115,8 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 
 ## Patch `2026-10-06-dashboard-bridge.patch`
 SHUI envoie au Control Center les événements `memory_write`, `wallet`, `trade`/`trade_result` et `decision`. Les pages Mémoire, Wallet, Trading et Stratégie affichent ainsi ses vraies données. Les faits, les procédures et les swaps déjà enregistrés sont rattrapés au démarrage.
+
+## Patch `2026-10-06-safe-services-no-fake-revenue.patch`
+- Services : mode debug, écoute sur 0.0.0.0 et dépendances non installées sont refusés au déploiement.
+- Garde-fou : faux paiements dans les CSV/JSON, URL de paiement inventées et annonces de revenu absentes du journal vérifié sont refusés.
+- Workers : écriture limitée au dossier de la tâche, commandes exécutées dans ce dossier, moins de fausses boucles, rôle `critic` sans délégation, `read_file` plus tolérant, journal avec les URL lues.

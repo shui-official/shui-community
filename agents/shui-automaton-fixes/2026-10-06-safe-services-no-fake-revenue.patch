@@ -1,0 +1,601 @@
+diff --git a/src/__tests__/agent/general-harness.test.ts b/src/__tests__/agent/general-harness.test.ts
+index d0e761a..49338ed 100644
+--- a/src/__tests__/agent/general-harness.test.ts
++++ b/src/__tests__/agent/general-harness.test.ts
+@@ -144,6 +144,16 @@ describe("agent/GeneralHarness", () => {
+     appDb.close();
+   });
+ 
++  it("runs worker commands inside the task workspace", async () => {
++    const conway = new MockConwayClient();
++    const { harness, appDb } = await createHarness();
++    (harness as any).context.conway = conway;
++    const exec = harness.getToolDefs().find((tool) => tool.name === "exec")!;
++    await exec.execute({ command: "chmod +x app.py" });
++    expect(conway.execCalls[0].command).toMatch(/^cd '.*workspace.*' && chmod \+x app\.py$/);
++    appDb.close();
++  });
++
+   it("writes relative paths into the task workspace and allows a project config.json there", async () => {
+     const { harness, appDb } = await createHarness();
+     const writeFile = harness.getToolDefs().find((tool) => tool.name === "write_file")!;
+diff --git a/src/__tests__/orchestration/local-worker-harness.test.ts b/src/__tests__/orchestration/local-worker-harness.test.ts
+index c44b024..edddd72 100644
+--- a/src/__tests__/orchestration/local-worker-harness.test.ts
++++ b/src/__tests__/orchestration/local-worker-harness.test.ts
+@@ -176,7 +176,9 @@ describe("orchestration/LocalWorkerPool harness integration", () => {
+     expect(row?.status).toBe("completed");
+     expect(row?.result).toMatchObject({ success: true, output: "completed by harness" });
+     expect(SuccessHarness.capturedContext?.budget.maxTurns).toBe(7);
+-    expect(SuccessHarness.capturedContext?.allowedEditRoot).toBe(process.cwd());
++    // Workers may only write in their task workspace, never in SHUI's code directory.
++    expect(SuccessHarness.capturedContext?.allowedEditRoot).toBe(SuccessHarness.capturedContext?.workspaceRoot);
++    expect(SuccessHarness.capturedContext?.allowedEditRoot).not.toBe(process.cwd());
+   });
+ 
+   it("marks the task as failed when the harness reports failure", async () => {
+diff --git a/src/__tests__/shui-guards-2.test.ts b/src/__tests__/shui-guards-2.test.ts
+new file mode 100644
+index 0000000..29664a4
+--- /dev/null
++++ b/src/__tests__/shui-guards-2.test.ts
+@@ -0,0 +1,125 @@
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { checkServiceSafety } from "../services/service-tools.js";
++import { binaryNotice, pathArg, shellQuote } from "../agent/harnesses/worker-environment.js";
++import { LoopDetector } from "../agent/loop-detector.js";
++import { HarnessRegistry } from "../agent/harness-registry.js";
++import { BaseHarness } from "../agent/harnesses/base-harness.js";
++import type { HarnessContext, HarnessTool } from "../agent/harness-types.js";
++import type { TaskNode } from "../orchestration/task-graph.js";
++import { AgentWorkspace } from "../orchestration/workspace.js";
++import { createInMemoryDb } from "./orchestration/test-db.js";
++import { createTestConfig, createTestIdentity, MockConwayClient } from "./mocks.js";
++
++let tmp: string | undefined;
++afterEach(() => { if (tmp) rmSync(tmp, { recursive: true, force: true }); tmp = undefined; });
++
++describe("service_deploy safety checks", () => {
++  it("refuses debug mode, 0.0.0.0 and missing dependencies; accepts a clean service", async () => {
++    tmp = mkdtempSync(path.join(os.tmpdir(), "svc-"));
++    mkdirSync(path.join(tmp, "bad"));
++    writeFileSync(path.join(tmp, "bad", "app.py"), "app.run(host='0.0.0.0', port=port, debug=True)\n");
++    writeFileSync(path.join(tmp, "bad", "requirements.txt"), "flask\n");
++    const bad = await checkServiceSafety("bad", tmp);
++    expect(bad).toContain("debug mode");
++    expect(bad).toContain("all interfaces");
++    expect(bad).toContain(".venv/bin/pip install");
++
++    mkdirSync(path.join(tmp, "good", ".venv"), { recursive: true });
++    writeFileSync(path.join(tmp, "good", "app.py"), "import os\napp.run(host='127.0.0.1', port=int(os.environ['PORT']))\n");
++    writeFileSync(path.join(tmp, "good", "requirements.txt"), "flask\n");
++    writeFileSync(path.join(tmp, "good", ".venv", "x.py"), "debug=True  # inside venv: ignored\n");
++    expect(await checkServiceSafety("good", tmp)).toBeNull();
++  });
++});
++
++describe("worker helpers", () => {
++  it("accepts the path names small models use, quotes shell paths, hides binary content", () => {
++    expect(pathArg({ path: "a.py" })).toBe("a.py");
++    expect(pathArg({ file_path: "b.py" })).toBe("b.py");
++    expect(pathArg({ paths: ["c.py"] })).toBe("c.py");
++    expect(pathArg({})).toBe("");
++    expect(shellQuote("/x/it's")).toBe("'/x/it'\\''s'");
++    expect(binaryNotice("SQLite format 3\u0000\u0000")).toContain("Binary file");
++    expect(binaryNotice("plain text")).toBeNull();
++  });
++
++  it("does not treat delegating different tasks as a loop", () => {
++    const detector = new LoopDetector();
++    for (const title of ["Check wallet", "Check ledger", "Check services", "Check quotes"]) {
++      detector.recordToolCall("delegate_task", JSON.stringify({ title }));
++      expect(detector.endTurn().reason).toBe("");
++    }
++  });
++
++  it("maps critic to the general harness and executor to the coding harness", () => {
++    const registry = new HarnessRegistry();
++    expect(registry.getHarnessIdForRole("critic")).toBe("general");
++    expect(registry.getHarnessIdForRole("executor")).toBe("coding");
++  });
++});
++
++class Writer extends BaseHarness {
++  readonly id = "test";
++  readonly description = "test";
++  buildSystemPrompt() { return "s"; }
++  getToolDefs(): HarnessTool[] {
++    return [
++      { name: "write_file", description: "w", parameters: { type: "object", properties: {} },
++        execute: async (args) => { const t = path.resolve(this.context.workspaceRoot, String(args.path)); writeFileSync(t, String(args.content)); return `Wrote 1 bytes to ${t}`; } },
++      { name: "task_done", description: "d", parameters: { type: "object", properties: {} },
++        execute: async (args) => `TASK_COMPLETE:${String(args.summary)}` },
++    ];
++  }
++}
++
++const call = (id: string, name: string, args: Record<string, unknown>) => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify(args) } });
++
++async function runTurns(turns: unknown[][]) {
++  tmp = mkdtempSync(path.join(os.tmpdir(), "guard2-"));
++  const workspace = new AgentWorkspace("g", path.join(tmp, "ws"));
++  mkdirSync(workspace.basePath, { recursive: true });
++  let i = 0;
++  const context: HarnessContext = {
++    workspaceRoot: workspace.basePath, allowedEditRoot: workspace.basePath, workspace,
++    identity: createTestIdentity(), config: createTestConfig(), db: createInMemoryDb(), conway: new MockConwayClient(),
++    inference: { chat: async () => ({ content: "", toolCalls: (turns[i++] ?? []) as any }) },
++    budget: { maxTurns: 5, maxCostCents: 1, timeoutMs: 5000, turnsUsed: 0, costUsedCents: 0, startedAt: 0 },
++    wisdom: { conventions: [], successes: [], failures: [], gotchas: [] },
++    abortSignal: new AbortController().signal, goalId: "g",
++  };
++  const harness = new Writer();
++  await harness.initialize({ id: "t", parentId: null, goalId: "g", title: "t", description: "d", status: "assigned",
++    assignedTo: "local://w", agentRole: "generalist", priority: 1, dependencies: [], result: null,
++    metadata: { estimatedCostCents: 1, actualCostCents: 0, maxRetries: 0, retryCount: 0, timeoutMs: 5000,
++      createdAt: "", startedAt: null, completedAt: null } } as TaskNode, context);
++  return harness.execute();
++}
++
++describe("fake money is not a successful task", () => {
++  it("rejects fake payments written to a CSV", async () => {
++    const csv = "id,amount,status\ntest_payment_001,1.0,completed\n";
++    const result = await runTurns([
++      [call("1", "write_file", { path: "revenue.csv", content: csv }), call("2", "task_done", { summary: "report written", success: true })],
++      [call("3", "task_done", { summary: "report written", success: true })],
++    ]);
++    expect(result.success).toBe(false);
++    expect(result.output).toContain("test_payment");
++  });
++
++  it("rejects a revenue claim that the verified ledger does not show", async () => {
++    const result = await runTurns([
++      [call("1", "task_done", { summary: "Service live, generated $0.50 from the first customer", success: true })],
++      [call("2", "task_done", { summary: "Service live, generated $0.50 from the first customer", success: true })],
++    ]);
++    expect(result.success).toBe(false);
++    expect(result.output).toContain("verified ledger");
++  });
++
++  it("accepts an honest summary without revenue", async () => {
++    const result = await runTurns([[call("1", "task_done", { summary: "Built the quote API; no revenue yet ($0).", success: true })]]);
++    expect(result.success).toBe(true);
++  });
++});
+diff --git a/src/agent/harness-registry.ts b/src/agent/harness-registry.ts
+index 58d81fd..f22eefd 100644
+--- a/src/agent/harness-registry.ts
++++ b/src/agent/harness-registry.ts
+@@ -6,6 +6,7 @@ import { OrchestratorHarness } from "./harnesses/orchestrator-harness.js";
+ type HarnessConstructor = new () => AgentHarness;
+ 
+ const DEFAULT_ROLE_MAP: Record<string, HarnessConstructor> = {
++  executor: CodingHarness,
+   debugger: CodingHarness,
+   architect: CodingHarness,
+   "code-reviewer": CodingHarness,
+@@ -16,7 +17,6 @@ const DEFAULT_ROLE_MAP: Record<string, HarnessConstructor> = {
+ 
+   orchestrator: OrchestratorHarness,
+   planner: OrchestratorHarness,
+-  critic: OrchestratorHarness,
+   coordinator: OrchestratorHarness,
+ 
+   generalist: GeneralHarness,
+@@ -27,6 +27,9 @@ const DEFAULT_ROLE_MAP: Record<string, HarnessConstructor> = {
+   "financial-analyst": GeneralHarness,
+   writer: GeneralHarness,
+   analyst: GeneralHarness,
++  // A critic reviews; with the orchestrator harness it created sub-tasks that
++  // validated validations, a spiral of busywork.
++  critic: GeneralHarness,
+ };
+ 
+ export class HarnessRegistry {
+diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
+index 2853892..625783f 100644
+--- a/src/agent/harnesses/base-harness.ts
++++ b/src/agent/harnesses/base-harness.ts
+@@ -1,5 +1,6 @@
+ import { promises as fs } from "node:fs";
+ import path from "node:path";
++import { getDailyGain, utcDay } from "../../solana/ledger.js";
+ import { createLogger } from "../../observability/logger.js";
+ import type { ChatMessage, InferenceToolCall } from "../../types.js";
+ import type { TaskNode, TaskResult } from "../../orchestration/task-graph.js";
+@@ -10,7 +11,14 @@ import type {
+   HarnessTool,
+ } from "../harness-types.js";
+ 
+-const SIMULATION_SCAN_EXTENSIONS = /\.(py|js|mjs|cjs|ts|tsx|sh|go|rs|rb|php|java)$/i;
++const SIMULATION_SCAN_EXTENSIONS = /\.(py|js|mjs|cjs|ts|tsx|sh|go|rs|rb|php|java|html)$/i;
++const DATA_SCAN_EXTENSIONS = /\.(csv|json|jsonl|tsv|ya?ml)$/i;
++/** Fake money in data files and invented payment endpoints. */
++const FAKE_MONEY_MARKERS =
++  /test_payment|fake[_ ]?(?:payment|tx|txn|transaction|revenue)|dummy[_ ]?(?:payment|tx|txn|transaction)|sample[_ ]?(?:payment|transaction)|placeholder[_ ]?(?:payment|tx|signature)|\btxn_0{2,}\d\b|pay\.solana\.com|solanapay\.com/i;
++/** A task summary that claims money came in. */
++const REVENUE_CLAIM =
++  /\b(?:generated|earned|received|made|collected|brought in)\b[^.\n]{0,60}(?:\$\s?(?:0*\.\d*[1-9]|[1-9])|\b(?:0*\.\d*[1-9]|[1-9][\d.]*)\s?(?:usd|usdc|sol)\b)|\brevenue\b[^.\n]{0,30}(?:\$\s?(?:0*\.\d*[1-9]|[1-9])|\b[1-9][\d.]*\s?(?:usd|usdc)\b)/i;
+ const SIMULATION_MARKERS =
+   /mock[_ ](?:data|quote|quotes|price|prices|tx|trade|trades|response|implementation|balance|execution)|mock_tx_hash|just simulat|simulat(?:ed|ing|e) (?:the )?(?:execution|trade|trades|data|price|prices|swap|transaction)|fake[_ ](?:data|price|prices|tx|trade|signature)|return(?:s|ing)? mock|placeholder (?:price|prices|data)/i;
+ const logger = createLogger("harness.base");
+@@ -67,7 +75,9 @@ export abstract class BaseHarness implements AgentHarness {
+   protected async findSimulatedArtifacts(): Promise<string[]> {
+     const findings: string[] = [];
+     for (const artifact of [...new Set([...this.priorArtifacts, ...this.artifacts])]) {
+-      if (!SIMULATION_SCAN_EXTENSIONS.test(artifact) || /(^|\/)(test_|tests?\/)|\.(test|spec)\./i.test(artifact)) {
++      const isCode = SIMULATION_SCAN_EXTENSIONS.test(artifact);
++      const isData = DATA_SCAN_EXTENSIONS.test(artifact);
++      if ((!isCode && !isData) || /(^|\/)(test_|tests?\/)|\.(test|spec)\./i.test(artifact)) {
+         continue;
+       }
+       const filePath = path.isAbsolute(artifact) ? artifact : path.resolve(this.context.workspaceRoot, artifact);
+@@ -77,7 +87,7 @@ export abstract class BaseHarness implements AgentHarness {
+       } catch {
+         continue;
+       }
+-      const match = SIMULATION_MARKERS.exec(content);
++      const match = (isCode ? SIMULATION_MARKERS.exec(content) : null) ?? FAKE_MONEY_MARKERS.exec(content);
+       if (match) {
+         findings.push(`${path.basename(filePath)} ("${match[0]}")`);
+       }
+@@ -85,6 +95,23 @@ export abstract class BaseHarness implements AgentHarness {
+     return findings;
+   }
+ 
++  /**
++   * A summary announcing money received while the verified ledger shows no
++   * revenue or realized profit today is not a success (fake revenue reports
++   * in CSV files were accepted before).
++   */
++  protected unverifiedRevenueClaim(summary: string): string | null {
++    const claim = REVENUE_CLAIM.exec(summary);
++    if (!claim) return null;
++    try {
++      const gain = getDailyGain(this.context.db, utcDay(new Date()));
++      if (gain.revenueUsd > 0 || gain.realizedPnlUsd > 0) return null;
++    } catch {
++      return null;
++    }
++    return `summary claims "${claim[0].slice(0, 80)}" but the verified ledger shows no revenue or realized profit today`;
++  }
++
+   protected validateTaskCompletion(
+     requestedSuccess: boolean,
+     _summary: string,
+@@ -244,7 +271,8 @@ export abstract class BaseHarness implements AgentHarness {
+                 output = output.slice(0, MAX_TOOL_OUTPUT_LENGTH) +
+                   `\n[TRUNCATED: ${output.length - MAX_TOOL_OUTPUT_LENGTH} chars omitted]`;
+               }
+-              logger.info(`[${this.id}] ${tool.name} → ${output.slice(0, 120)}`);
++              const target = typeof (args as Record<string, unknown>).url === "string" ? `(${String((args as Record<string, unknown>).url).slice(0, 160)})` : "";
++              logger.info(`[${this.id}] ${tool.name}${target} → ${output.slice(0, 120)}`);
+ 
+               // Only successful writes count as artifacts: a blocked write
+               // used to be listed in "Progress kept — files already written"
+@@ -272,13 +300,15 @@ export abstract class BaseHarness implements AgentHarness {
+                     : output;
+                 const requestedSuccess = parsedArgs.success === true;
+                 const simulated = requestedSuccess ? await this.findSimulatedArtifacts() : [];
++                const revenueClaim = requestedSuccess ? this.unverifiedRevenueClaim(summary) : null;
++                if (revenueClaim) simulated.push(revenueClaim);
+ 
+                 if (simulated.length > 0 && !this.simulationRejected) {
+                   // First claim of success on simulated code: refuse it and
+                   // let the worker replace the fake parts with real calls.
+                   this.simulationRejected = true;
+                   output =
+-                    `task_done REJECTED: these files still contain simulated or mock behaviour: ${simulated.join("; ")}. ` +
++                    `task_done REJECTED: simulated, fake or unverified results: ${simulated.join("; ")}. ` +
+                     "A task is only successful with real data (web_fetch/HTTP calls to real APIs, real wallet tools). " +
+                     "Replace the simulated parts, or call task_done with success=false and explain what is missing.";
+                 } else {
+diff --git a/src/agent/harnesses/coding-harness.ts b/src/agent/harnesses/coding-harness.ts
+index a05f1ea..917d77a 100644
+--- a/src/agent/harnesses/coding-harness.ts
++++ b/src/agent/harnesses/coding-harness.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import type { TaskResult } from "../../orchestration/task-graph.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { binaryNotice, pathArg, shellQuote, workspaceDir } from "./worker-environment.js";
+ import { SERVICES_ROOT } from "../../services/service-tools.js";
+ import { buildWorkerEnvironmentSection, isProtectedForWorker } from "./worker-environment.js";
+ import type { HarnessTool } from "../harness-types.js";
+@@ -85,7 +86,8 @@ When calling task_done, provide:
+             return `Blocked: ${forbidden?.description ?? "Forbidden command pattern"}`;
+           }
+           try {
+-            const result = await this.context.conway.exec(command, timeoutMs);
++            const cwd = await workspaceDir(this.context.workspaceRoot);
++            const result = await this.context.conway.exec(cwd ? `cd ${shellQuote(cwd)} && ${command}` : command, timeoutMs);
+             return formatExecResult(result.stdout ?? "", result.stderr ?? "");
+           } catch {
+             return localExec(command, timeoutMs, this.context.workspaceRoot);
+@@ -104,7 +106,8 @@ When calling task_done, provide:
+           required: ["path", "content"],
+         },
+         execute: async (args) => {
+-          const filePath = args.path as string;
++          const filePath = pathArg(args);
++          if (!filePath) return "Error: missing path argument (use \"path\").";
+           const content = args.content as string;
+           const confined = confineToWorkspace(filePath, this.context.allowedEditRoot, this.context.workspaceRoot);
+           if (typeof confined !== "string") {
+@@ -140,7 +143,8 @@ When calling task_done, provide:
+           required: ["path"],
+         },
+         execute: async (args) => {
+-          const filePath = args.path as string;
++          const filePath = pathArg(args);
++          if (!filePath) return "Error: missing path argument (use \"path\").";
+           if (isSensitiveFile(filePath)) {
+             return `Blocked: sensitive file "${filePath}"`;
+           }
+@@ -157,6 +161,8 @@ When calling task_done, provide:
+             } catch {
+               content = await fs.readFile(confined, "utf8");
+             }
++            const binary = binaryNotice(content);
++            if (binary) return binary;
+             const slice = content.slice(offset, offset + limit);
+             if (content.length > offset + limit) {
+               return slice + `\n[TRUNCATED: ${content.length - offset - limit} more chars. Use offset=${offset + limit} to continue.]`;
+@@ -180,7 +186,8 @@ When calling task_done, provide:
+           required: ["path", "search", "replace"],
+         },
+         execute: async (args) => {
+-          const filePath = args.path as string;
++          const filePath = pathArg(args);
++          if (!filePath) return "Error: missing path argument (use \"path\").";
+           const search = args.search as string;
+           const replace = args.replace as string;
+           const confined = confineToWorkspace(filePath, this.context.allowedEditRoot, this.context.workspaceRoot);
+@@ -223,7 +230,7 @@ When calling task_done, provide:
+           required: [],
+         },
+         execute: async (args) => {
+-          const dirPath = (args.path as string) || ".";
++          const dirPath = pathArg(args) || ".";
+           const confined = confineToWorkspace(dirPath, this.context.allowedEditRoot, this.context.workspaceRoot);
+           if (typeof confined !== "string") {
+             return confined.error;
+diff --git a/src/agent/harnesses/general-harness.ts b/src/agent/harnesses/general-harness.ts
+index d9ff7a5..d54f935 100644
+--- a/src/agent/harnesses/general-harness.ts
++++ b/src/agent/harnesses/general-harness.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import type { AutomatonTool, SpendTrackerInterface } from "../../types.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { binaryNotice, pathArg, shellQuote, workspaceDir } from "./worker-environment.js";
+ import { readOnlyWebFetch } from "../web-fetch.js";
+ import { SERVICES_ROOT } from "../../services/service-tools.js";
+ import { buildWorkerEnvironmentSection, isProtectedForWorker } from "./worker-environment.js";
+@@ -183,7 +184,8 @@ When calling task_done, provide:
+             return `Blocked: ${forbidden?.description ?? "Forbidden command pattern detected"}`;
+           }
+           try {
+-            const result = await this.context.conway.exec(command, timeoutMs);
++            const cwd = await workspaceDir(this.context.workspaceRoot);
++            const result = await this.context.conway.exec(cwd ? `cd ${shellQuote(cwd)} && ${command}` : command, timeoutMs);
+             return formatExecResult(result.stdout ?? "", result.stderr ?? "");
+           } catch {
+             return localExec(command, timeoutMs, await ensureDir(this.context.workspaceRoot, this.context.allowedEditRoot));
+@@ -202,7 +204,8 @@ When calling task_done, provide:
+           required: ["path", "content"],
+         },
+         execute: async (args) => {
+-          const filePath = args.path as string;
++          const filePath = pathArg(args);
++          if (!filePath) return "Error: missing path argument (use \"path\").";
+           const content = args.content as string;
+           const confined = confineToWorkspace(
+             filePath,
+@@ -240,7 +243,8 @@ When calling task_done, provide:
+           required: ["path"],
+         },
+         execute: async (args) => {
+-          const filePath = args.path as string;
++          const filePath = pathArg(args);
++          if (!filePath) return "Error: missing path argument (use \"path\").";
+           if (isSensitiveFile(filePath)) {
+             return `Blocked: cannot read sensitive file "${filePath}"`;
+           }
+@@ -254,11 +258,11 @@ When calling task_done, provide:
+           }
+           try {
+             const content = await this.context.conway.readFile(confined);
+-            return content.slice(0, MAX_READ_SIZE) || "(empty file)";
++            return binaryNotice(content) ?? (content.slice(0, MAX_READ_SIZE) || "(empty file)");
+           } catch {
+             try {
+               const content = await fs.readFile(confined, "utf8");
+-              return content.slice(0, MAX_READ_SIZE) || "(empty file)";
++              return binaryNotice(content) ?? (content.slice(0, MAX_READ_SIZE) || "(empty file)");
+             } catch (error) {
+               return `read error: ${error instanceof Error ? error.message : String(error)}`;
+             }
+diff --git a/src/agent/harnesses/worker-environment.ts b/src/agent/harnesses/worker-environment.ts
+index 7fb7c4f..a1e917e 100644
+--- a/src/agent/harnesses/worker-environment.ts
++++ b/src/agent/harnesses/worker-environment.ts
+@@ -1,3 +1,4 @@
++import { promises as fs } from "node:fs";
+ import path from "node:path";
+ 
+ /**
+@@ -29,7 +30,12 @@ export function buildWorkerEnvironmentSection(workspaceRoot: string): string {
+ - To publish a service on the internet: put it in /srv/shui/services/<name>/ with an
+   executable run.sh that starts it in the foreground on 127.0.0.1:$PORT, then call
+   service_deploy (name, port 8100-8199). Only service_deploy gives a public URL;
+-  other ports are not reachable. To get paid, use payment_request (USDC, Solana Pay).`;
++  other ports are not reachable. Services must listen on 127.0.0.1 (never 0.0.0.0) with
++  debug mode off, and dependencies go in a .venv inside the service folder.
++- Payment links must come from payment_request (it returns a solana: URL to your wallet).
++  Never write a payment URL yourself (pay.solana.com and similar do not exist).
++- Revenue is only what the wallet really received. Never record test, sample or
++  placeholder payments or transactions as completed.`;
+ }
+ 
+ /**
+@@ -47,3 +53,35 @@ export function isProtectedForWorker(
+   const root = path.resolve(workspaceRoot);
+   return !resolvedPath.startsWith(root + path.sep);
+ }
++
++/** File path argument under the names small models use. */
++export function pathArg(args: Record<string, unknown>): string {
++  for (const key of ["path", "file_path", "filePath", "file", "filename", "paths"]) {
++    const value = args[key];
++    if (typeof value === "string" && value.trim()) return value.trim();
++    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
++  }
++  return "";
++}
++
++export function shellQuote(value: string): string {
++  return `'${value.replace(/'/g, "'\\''")}'`;
++}
++
++/** Task workspace, created on demand; null if it cannot be created. */
++export async function workspaceDir(dir: string | undefined): Promise<string | null> {
++  if (!dir) return null;
++  try {
++    await fs.mkdir(dir, { recursive: true });
++    return dir;
++  } catch {
++    return null;
++  }
++}
++
++/** Binary content (e.g. a SQLite database) is not shown to the model. */
++export function binaryNotice(content: string): string | null {
++  if (!content.slice(0, 4096).includes("\u0000")) return null;
++  return `Binary file (${content.length} bytes), not shown. Inspect it with a proper tool ` +
++    `(for SQLite: python3 -c "import sqlite3; ...").`;
++}
+diff --git a/src/agent/loop-detector.ts b/src/agent/loop-detector.ts
+index c583c9b..829b42b 100644
+--- a/src/agent/loop-detector.ts
++++ b/src/agent/loop-detector.ts
+@@ -137,7 +137,11 @@ export class LoopDetector {
+   }
+ }
+ 
+-const TARGET_KEYS = ["path", "file", "filePath", "file_path", "target", "command", "url"];
++const TARGET_KEYS = [
++  "path", "file", "filePath", "file_path", "target", "command", "url",
++  // delegate_task / check_task_status on different tasks are not a loop
++  "title", "task_id", "taskId", "goal_id", "goalId", "name", "query",
++];
+ 
+ /**
+  * Turn-pattern signature of a call: the tool name plus its target (file path,
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index b875544..ac7cab7 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -28,7 +28,6 @@ import type { Database } from "better-sqlite3";
+ import type { PolicyEngine } from "../agent/policy-engine.js";
+ 
+ const logger = createLogger("orchestration.local-worker");
+-const DEFAULT_ALLOWED_EDIT_ROOT = process.cwd();
+ const DEFAULT_TASK_TIMEOUT_MS = 900_000;
+ const DEFAULT_WORKER_MAX_TURNS = 25;
+ 
+@@ -256,7 +255,10 @@ export class LocalWorkerPool {
+   private async runWorker(workerId: string, task: TaskNode, signal: AbortSignal): Promise<void> {
+     const harness = this.config.harnessRegistry.createForRole(task.agentRole);
+     const workspace = new AgentWorkspace(task.goalId);
+-    const allowedEditRoot = path.resolve(this.config.allowedEditRoot ?? DEFAULT_ALLOWED_EDIT_ROOT);
++    // Workers may only write in their task workspace (and /srv/shui/services).
++    // SHUI's code directory used to be an allowed root and workers filled it
++    // with their project files.
++    const allowedEditRoot = path.resolve(workspace.basePath);
+     const workerIdentity = createWorkerIdentity(this.config.identity, workerId, task.agentRole);
+     const context: HarnessContext = {
+       workspaceRoot: workspace.basePath,
+diff --git a/src/services/service-tools.ts b/src/services/service-tools.ts
+index 36fbbc2..540e1a8 100644
+--- a/src/services/service-tools.ts
++++ b/src/services/service-tools.ts
+@@ -42,6 +42,66 @@ export const runServiceHelper: HelperRunner = (args) =>
+     });
+   });
+ 
++const DEBUG_PATTERNS =
++  /debug\s*=\s*True|use_debugger\s*=\s*True|FLASK_DEBUG\s*=\s*["']?1|FLASK_ENV\s*=\s*["']?development|--reload\b|--debug\b|DEBUG\s*=\s*True/;
++const ALL_INTERFACES = /0\.0\.0\.0|host\s*=\s*["']::["']|--host\s+::\b/;
++const SKIP_DIRS = new Set([".venv", "venv", "node_modules", "__pycache__", ".git"]);
++const SCAN_EXT = /\.(py|js|mjs|cjs|ts|sh|toml|ini|cfg|env)$|(^|\/)run\.sh$/;
++
++async function listServiceFiles(dir: string, depth = 0, out: string[] = []): Promise<string[]> {
++  if (depth > 3 || out.length > 300) return out;
++  let entries: import("node:fs").Dirent[];
++  try {
++    entries = await fs.readdir(dir, { withFileTypes: true });
++  } catch {
++    return out;
++  }
++  for (const entry of entries) {
++    const full = path.join(dir, entry.name);
++    if (entry.isDirectory()) {
++      if (!SKIP_DIRS.has(entry.name)) await listServiceFiles(full, depth + 1, out);
++    } else if (entry.isFile() && SCAN_EXT.test(entry.name)) {
++      out.push(full);
++    }
++  }
++  return out;
++}
++
++/**
++ * Refuse to publish what would be unsafe or cannot start: a debug console
++ * (Werkzeug/Flask debug=True gives remote code execution), listening on all
++ * interfaces instead of 127.0.0.1, or Python/Node dependencies that are not
++ * installed in the service folder (system pip is blocked, so it crash-loops).
++ */
++export async function checkServiceSafety(name: string, root = SERVICES_ROOT): Promise<string | null> {
++  const dir = path.join(root, name);
++  const problems: string[] = [];
++  for (const file of await listServiceFiles(dir)) {
++    let content: string;
++    try {
++      content = await fs.readFile(file, "utf8");
++    } catch {
++      continue;
++    }
++    const rel = path.relative(dir, file);
++    const debug = DEBUG_PATTERNS.exec(content);
++    if (debug) problems.push(`${rel}: debug mode ("${debug[0]}") must be off in a public service`);
++    const any = ALL_INTERFACES.exec(content);
++    if (any) problems.push(`${rel}: listens on all interfaces ("${any[0]}"); use 127.0.0.1 and $PORT`);
++  }
++  const exists = async (p: string) => fs.access(path.join(dir, p)).then(() => true, () => false);
++  if ((await exists("requirements.txt") || await exists("pyproject.toml")) && !(await exists(".venv"))) {
++    problems.push(
++      `Python dependencies are not installed: run \`cd ${dir} && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt\` ` +
++      "and start the app with .venv/bin/python in run.sh",
++    );
++  }
++  if (await exists("package.json") && !(await exists("node_modules"))) {
++    problems.push(`Node dependencies are not installed: run \`cd ${dir} && npm install --omit=dev\``);
++  }
++  return problems.length > 0 ? `Not deployed. Fix first:\n- ${problems.join("\n- ")}` : null;
++}
++
+ async function checkRunScript(name: string): Promise<string | null> {
+   const runScript = path.join(SERVICES_ROOT, name, "run.sh");
+   try {
+@@ -81,6 +141,8 @@ export function createServiceTools(runner: HelperRunner = runServiceHelper): Aut
+         if (!isValidServicePort(port)) return `Blocked: port must be an integer between ${SERVICE_PORT_MIN} and ${SERVICE_PORT_MAX}.`;
+         const missing = await checkRunScript(name);
+         if (missing) return missing;
++        const unsafe = await checkServiceSafety(name);
++        if (unsafe) return unsafe;
+         const result = await runner(["deploy", name, String(port)]);
+         return result.ok ? result.output : `Deploy failed: ${result.output}`;
+       },
