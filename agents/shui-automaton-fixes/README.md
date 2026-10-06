@@ -257,3 +257,12 @@ Patch : `2026-10-06-technical-analysis.patch`, à appliquer après `2026-10-06-o
   - **un plan de trade** : entrée, stop-loss (sous le support, ou 2 ATR), TP1 et TP2 (résistance ou extension de Fibonacci), ratio gain/risque, et taille de position pour risquer 2 % du wallet.
 - **`trading_playbook`** : 12 règles de trader expérimenté (1 à 2 % de risque par trade, stop systématique, ratio gain/risque d'au moins 2, suivre la tendance, chercher la confluence de plusieurs signaux, liquidité, pas de FOMO, journal, pas de « revenge trading »…). Ce sont des conseils : rien n'est imposé, SHUI garde la main.
 - Le prompt de SHUI lui indique d'utiliser ces deux outils avant tout trade.
+
+---
+
+# Oublier ce qui n'est plus vrai — 2026-10-06
+
+Patch : `2026-10-06-forget-stale-facts.patch`, à appliquer après `2026-10-06-technical-analysis.patch`.
+
+- Quand un outil réussit, les erreurs que SHUI avait notées pour cet outil (`tool_error:<outil>:*`) sont effacées de sa mémoire. Avant, une erreur déjà corrigée (raydium_swap) continuait de l'éloigner de l'outil.
+- Le nettoyage automatique efface aussi de sa mémoire les liens de paiement jamais payés de plus de 3 jours. Ils ressemblaient à de l'argent à venir. Le journal comptable et les demandes de paiement elles-mêmes sont conservés.
