@@ -1,0 +1,131 @@
+diff --git a/src/__tests__/agent/loop-detector.test.ts b/src/__tests__/agent/loop-detector.test.ts
+index dde70f0..ed7e902 100644
+--- a/src/__tests__/agent/loop-detector.test.ts
++++ b/src/__tests__/agent/loop-detector.test.ts
+@@ -66,4 +66,26 @@ describe("agent/LoopDetector", () => {
+     detector.recordToolCall("list_models", '{}');
+     expect(detector.endTurn().reason).toContain("IDLE LOOP DETECTED");
+   });
++
++  it("does not flag writing different files on consecutive turns as a loop", () => {
++    const detector = new LoopDetector();
++    for (const file of ["app.py", "static/style.css", "templates/index.html", "vite.config.js", "README.md"]) {
++      detector.recordToolCall("write_file", JSON.stringify({ path: file, content: "x" }));
++      const result = detector.endTurn();
++      expect(result.blocked).toBe(false);
++      expect(result.reason).toBe("");
++    }
++  });
++
++  it("still flags rewriting the same file on consecutive turns", () => {
++    const detector = new LoopDetector();
++    for (let i = 0; i < 2; i++) {
++      detector.recordToolCall("write_file", JSON.stringify({ path: "app.py", content: `v${i}` }));
++      expect(detector.endTurn().reason).toBe("");
++    }
++    detector.recordToolCall("write_file", JSON.stringify({ path: "app.py", content: "v2" }));
++    expect(detector.endTurn().reason).toContain("repeated the tool pattern");
++    detector.recordToolCall("write_file", JSON.stringify({ path: "app.py", content: "v3" }));
++    expect(detector.endTurn().blocked).toBe(true);
++  });
+ });
+diff --git a/src/agent/loop-detector.ts b/src/agent/loop-detector.ts
+index 115cd42..c583c9b 100644
+--- a/src/agent/loop-detector.ts
++++ b/src/agent/loop-detector.ts
+@@ -31,7 +31,7 @@ export class LoopDetector {
+   recordToolCall(name: string, args: string): LoopCheckResult {
+     const argsHash = simpleHash(args);
+     this.callHistory.push({ name, argsHash });
+-    this.currentTurnTools.push(name);
++    this.currentTurnTools.push(callSignature(name, args));
+ 
+     if (!isIdleOnlyTool(name)) {
+       this.currentTurnIsIdleOnly = false;
+@@ -137,6 +137,33 @@ export class LoopDetector {
+   }
+ }
+ 
++const TARGET_KEYS = ["path", "file", "filePath", "file_path", "target", "command", "url"];
++
++/**
++ * Turn-pattern signature of a call: the tool name plus its target (file path,
++ * command or URL) when it has one. Small models make one call per turn, so
++ * matching on the name alone flagged legitimate progress such as writing
++ * app.py, then style.css, then index.html as a "write_file" loop and killed
++ * the worker. Rewriting the same file or rerunning the same command is still
++ * detected.
++ */
++function callSignature(name: string, args: string): string {
++  try {
++    const parsed = JSON.parse(args) as Record<string, unknown>;
++    if (parsed && typeof parsed === "object") {
++      for (const key of TARGET_KEYS) {
++        const value = parsed[key];
++        if (typeof value === "string" && value.trim()) {
++          return `${name}(${value.trim().slice(0, 120)})`;
++        }
++      }
++    }
++  } catch {
++    // Unparseable arguments: fall back to the tool name.
++  }
++  return name;
++}
++
+ function simpleHash(str: string): string {
+   let hash = 0;
+   for (let i = 0; i < str.length; i++) {
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index cc5673b..f731375 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -463,7 +463,11 @@ export async function runAgentLoop(
+     type: "wake",
+     name: "wake_up",
+     message: "SHUI wake cycle started",
+-    data: { state: db.getAgentState() },
++    data: {
++      state: db.getAgentState(),
++      model: inference.getDefaultModel(),
++      toolsAvailable: tools.length,
++    },
+   });
+ 
+   // Build wakeup prompt
+@@ -758,6 +762,11 @@ export async function runAgentLoop(
+         ? "low_compute"
+         : getSurvivalTier(financial.creditsCents);
+       log(config, `[THINK] Routing inference (tier: ${survivalTier}, model: ${inference.getDefaultModel()})...`);
++      shuiControl.emit({
++        type: "think",
++        message: "SHUI réfléchit",
++        data: { tier: survivalTier, model: inference.getDefaultModel() },
++      });
+ 
+       // Keep the full tool catalog available for execution, but expose only the
+       // core decision/action surface to the main LLM. Complex work is delegated
+@@ -1308,6 +1317,23 @@ export async function runAgentLoop(
+   }
+ 
+   log(config, `[LOOP END] Agent loop finished. State: ${db.getAgentState()}`);
++
++  // The Control Center derives "sleeping" from `idle` and its turn counter
++  // from `loop_end`; previously only wake/tool/tool_result were emitted.
++  const finalState = db.getAgentState();
++  if (finalState === "sleeping") {
++    shuiControl.emit({
++      type: "idle",
++      message: "SHUI se met en veille",
++      data: { sleepUntil: db.getKV("sleep_until") ?? null },
++    });
++  }
++  shuiControl.emit({
++    type: "loop_end",
++    message: `[LOOP END] cycle terminé (état : ${finalState})`,
++    data: { state: finalState },
++  });
++  await shuiControl.flush();
+ }
+ 
+ // ─── Helpers ───────────────────────────────────────────────────
