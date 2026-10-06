@@ -240,3 +240,20 @@ Patch : `2026-10-06-orders-fix.patch`, à appliquer après `2026-10-06-janitor.p
 
 - Un `stop_loss` ou un `take_profit` doit vendre le token qu'il surveille (`inputMint` = `watchMint`). Un `buy_below` doit acheter ce token (`outputMint` = `watchMint`). Un worker avait créé « stop_loss : tout l'USDC → SOL quand le SOL passe sous 100 $ », un ordre qui achète du SOL quand il baisse, soit l'inverse d'un stop-loss.
 - `order_create` et `order_cancel` sont réservés à la boucle principale. Un worker ne vit que le temps d'une tâche, alors qu'un ordre reste actif après elle. Les workers gardent `order_list` et les swaps.
+
+---
+
+# Analyse technique et règles de trading — 2026-10-06
+
+Patch : `2026-10-06-technical-analysis.patch`, à appliquer après `2026-10-06-orders-fix.patch`.
+
+- **`technical_analysis`** (mint, timeframe : 5m, 15m, 1h, 4h ou 1d) travaille sur de vraies bougies (le pool le plus liquide via DexScreener, les bougies via GeckoTerminal) et renvoie :
+  - **tendance** : EMA20, EMA50, SMA200 ;
+  - **momentum** : RSI14, MACD et ses croisements ;
+  - **volatilité** : ATR14, bandes de Bollinger ;
+  - **supports et résistances**, tirés des derniers sommets et creux ;
+  - **niveaux de Fibonacci** : retracements 0,236 à 0,786 et extensions 1,272, 1,618 et 2,618 du mouvement principal, avec la manière de les lire ;
+  - **un biais** (haussier, baissier ou neutre) avec ses raisons ;
+  - **un plan de trade** : entrée, stop-loss (sous le support, ou 2 ATR), TP1 et TP2 (résistance ou extension de Fibonacci), ratio gain/risque, et taille de position pour risquer 2 % du wallet.
+- **`trading_playbook`** : 12 règles de trader expérimenté (1 à 2 % de risque par trade, stop systématique, ratio gain/risque d'au moins 2, suivre la tendance, chercher la confluence de plusieurs signaux, liquidité, pas de FOMO, journal, pas de « revenge trading »…). Ce sont des conseils : rien n'est imposé, SHUI garde la main.
+- Le prompt de SHUI lui indique d'utiliser ces deux outils avant tout trade.
