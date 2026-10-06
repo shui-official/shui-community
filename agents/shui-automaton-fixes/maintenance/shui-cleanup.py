@@ -22,6 +22,9 @@ SHUI's context, so old "value creation completed" turns kept steering it),
 working/episodic/semantic/procedural/relationship memories, session summaries,
 knowledge store, event stream (planner "recent outcomes", incl. fake
 successes), goals and tasks, stopped worker records, orchestrator state.
+SERVICES: published services that answer are kept online; those that do not
+answer are stopped and archived, and folders never published are archived.
+Orders, chat history and the Jupiter key are kept.
 """
 import argparse
 import datetime as dt
@@ -60,16 +63,45 @@ MOVE_PATHS = [
     f"{HOME}/service",
     f"{HOME}/venv",
     f"{HOME}/arbitrage_env",
-    "/srv/shui/services/hello",
 ]
 # Loose files SHUI wrote directly in ~/workspace (next to automaton-main).
 WORKSPACE_DIR = f"{HOME}/workspace"
 # Untracked items at the root of the code repo that SHUI generated.
-REPO_JUNK = re.compile(r"arbitrage|trader|trading|api[_-]?server|defi|revenue|monetiz|deploy_service|value_creation|final_deployment", re.I)
+REPO_JUNK = re.compile(r"arbitrage|trader|trading|api[_-]?server|defi|revenue|monetiz|deploy_service|value_creation|final_deployment|dashboard|analy[sz]er|scanner|monitor|bot[_-]", re.I)
+SERVICES_ROOT = "/srv/shui/services"
+SERVICE_HELPER = "/usr/local/sbin/shui-service"
 
 
 def table_exists(cur, name):
     return cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def published_services():
+    """{name: (state, url)} from the service helper, or None if unavailable."""
+    try:
+        out = subprocess.run(["sudo", "-n", SERVICE_HELPER, "list"], capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    found = {}
+    for line in out.stdout.splitlines():
+        m = re.match(r"^([a-z][a-z0-9-]{1,30}): (\S+) port=\d+ url=(https://\S+)", line)
+        if m:
+            found[m.group(1)] = (m.group(2), m.group(3))
+    return found
+
+
+def answers(url):
+    import urllib.request
+    import urllib.error
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return r.status < 500
+    except urllib.error.HTTPError as e:
+        return e.code < 500
+    except Exception:
+        return False
 
 
 def untracked_repo_root_items():
@@ -119,6 +151,24 @@ def main():
     moves = [p for p in MOVE_PATHS if os.path.exists(p)]
     loose = [os.path.join(WORKSPACE_DIR, n) for n in sorted(os.listdir(WORKSPACE_DIR))
              if n != "automaton-main" and not n.endswith(".patch")]
+    services = published_services()
+    keep_services, stop_services, unpublished = [], [], []
+    if services is None:
+        print("== services: helper unavailable, published services left untouched")
+    else:
+        for name, (state, url) in sorted(services.items()):
+            (keep_services if state == "active" and answers(url) else stop_services).append((name, url))
+        if os.path.isdir(SERVICES_ROOT):
+            unpublished = [n for n in sorted(os.listdir(SERVICES_ROOT)) if n not in services]
+        print("== services kept (they answer):")
+        for name, url in keep_services:
+            print(f"  {name}  {url}")
+        print("== services to stop and archive (no answer or error):")
+        for name, url in stop_services:
+            print(f"  {name}  {url}")
+        print("== service folders never published (to archive):")
+        for name in unpublished:
+            print(f"  {os.path.join(SERVICES_ROOT, name)}")
     junk, other = untracked_repo_root_items()
     repo_moves = [os.path.join(REPO, n) for n in junk]
     print("== files to archive")
@@ -156,7 +206,11 @@ def main():
     con.close()
     print("== database reset done")
 
-    for path in moves + loose + repo_moves:
+    for name, _url in stop_services:
+        subprocess.run(["sudo", "-n", SERVICE_HELPER, "stop", name], capture_output=True, text=True, timeout=90)
+        print(f"  stopped service {name}")
+    service_moves = [os.path.join(SERVICES_ROOT, n) for n, _ in stop_services] + [os.path.join(SERVICES_ROOT, n) for n in unpublished]
+    for path in moves + loose + repo_moves + [p for p in service_moves if os.path.exists(p)]:
         rel = path.lstrip("/").replace("/", "__")
         shutil.move(path, os.path.join(archive, rel))
         print(f"  archived {path}")

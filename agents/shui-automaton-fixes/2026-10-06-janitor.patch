@@ -1,0 +1,464 @@
+diff --git a/src/__tests__/janitor.test.ts b/src/__tests__/janitor.test.ts
+new file mode 100644
+index 0000000..fd65271
+--- /dev/null
++++ b/src/__tests__/janitor.test.ts
+@@ -0,0 +1,119 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase, claimInboxMessages } from "../state/database.js";
++import { runJanitor, type JanitorPaths } from "../maintenance/janitor.js";
++
++const HOUR = 3_600_000;
++
++function setup() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), "janitor-"));
++  const paths: JanitorPaths = {
++    home: root,
++    workspaceRoot: path.join(root, "workspace"),
++    servicesRoot: path.join(root, "services"),
++    archiveRoot: path.join(root, "archive"),
++    repoRoot: path.join(root, "repo"),
++  };
++  for (const p of [paths.workspaceRoot, paths.servicesRoot, paths.archiveRoot, paths.repoRoot]) fs.mkdirSync(p, { recursive: true });
++  const db = createDatabase(path.join(root, "state.db"));
++  return { root, paths, db };
++}
++
++function age(target: string, hours: number) {
++  const t = new Date(Date.now() - hours * HOUR);
++  fs.utimesSync(target, t, t);
++}
++
++function goal(db: any, id: string, status: string, createdHoursAgo: number, completedTaskHoursAgo?: number) {
++  const created = new Date(Date.now() - createdHoursAgo * HOUR).toISOString();
++  db.raw.prepare("INSERT INTO goals (id, title, description, status, created_at) VALUES (?, ?, 'd', ?, ?)").run(id, `goal ${id}`, status, created);
++  db.raw.prepare("INSERT INTO task_graph (id, goal_id, title, description, status, created_at, completed_at) VALUES (?, ?, 't', 'd', ?, ?, ?)")
++    .run(`task-${id}`, id, completedTaskHoursAgo === undefined ? "running" : "completed", created,
++      completedTaskHoursAgo === undefined ? null : new Date(Date.now() - completedTaskHoursAgo * HOUR).toISOString());
++}
++
++const noServices = async () => ({ ok: true, output: "no published service" });
++
++describe("janitor", () => {
++  it("cancels goals without progress for 12 h and keeps progressing ones", async () => {
++    const { db, paths } = setup();
++    goal(db, "STALE", "active", 20);
++    goal(db, "BUSY", "active", 20, 2);
++    const report = await runJanitor({ db: db.raw, paths, helper: noServices, untracked: async () => [] });
++    expect(report.cancelledGoals).toEqual(["goal STALE"]);
++    const status = Object.fromEntries((db.raw.prepare("SELECT id, status FROM goals").all() as any[]).map((g) => [g.id, g.status]));
++    expect(status).toEqual({ STALE: "failed", BUSY: "active" });
++    expect((db.raw.prepare("SELECT status FROM task_graph WHERE goal_id = 'STALE'").get() as any).status).toBe("cancelled");
++  });
++
++  it("archives work folders of goals ended more than 24 h ago only", async () => {
++    const { db, paths } = setup();
++    goal(db, "OLD", "completed", 60, 40);
++    goal(db, "RECENT", "failed", 30, 3);
++    goal(db, "LIVE", "active", 60, 1);
++    for (const g of ["OLD", "RECENT", "LIVE", "ORPHAN"]) fs.mkdirSync(path.join(paths.workspaceRoot, g));
++    fs.writeFileSync(path.join(paths.workspaceRoot, "ORPHAN", "x.py"), "x");
++    age(path.join(paths.workspaceRoot, "ORPHAN", "x.py"), 30);
++    age(path.join(paths.workspaceRoot, "ORPHAN"), 30);
++    const report = await runJanitor({ db: db.raw, paths, helper: noServices, untracked: async () => [] });
++    expect(fs.readdirSync(paths.workspaceRoot).sort()).toEqual(["LIVE", "RECENT"]);
++    expect(report.archivedWorkspaces).toHaveLength(2);
++    const archived = fs.readdirSync(path.join(paths.archiveRoot, fs.readdirSync(paths.archiveRoot)[0]));
++    expect(archived.length).toBe(2);
++  });
++
++  it("stops a service only after it failed 3 checks over 24 h, and keeps working ones", async () => {
++    const { db, paths } = setup();
++    fs.mkdirSync(path.join(paths.servicesRoot, "broken"));
++    fs.mkdirSync(path.join(paths.servicesRoot, "good"));
++    const stopped: string[] = [];
++    const helper = async (args: string[]) => {
++      if (args[0] === "stop") { stopped.push(args[1]); return { ok: true, output: "stopped" }; }
++      return { ok: true, output: "broken: active port=8101 url=https://broken.x\ngood: active port=8102 url=https://good.x" };
++    };
++    const probe = async (url: string) => (url.includes("broken") ? 502 : 200);
++    let t = Date.now();
++    for (let i = 0; i < 3; i++) {
++      await runJanitor({ db: db.raw, paths, helper, probe, untracked: async () => [], now: () => new Date(t) });
++      t += 13 * HOUR;
++    }
++    expect(stopped).toEqual(["broken"]);
++    expect(fs.readdirSync(paths.servicesRoot)).toEqual(["good"]);
++  });
++
++  it("archives never-published service folders untouched for 48 h, stray repo files, old events and archives", async () => {
++    const { db, paths } = setup();
++    const draft = path.join(paths.servicesRoot, "draft");
++    fs.mkdirSync(draft);
++    fs.writeFileSync(path.join(draft, "app.py"), "x");
++    age(path.join(draft, "app.py"), 50);
++    age(draft, 50);
++    fs.writeFileSync(path.join(paths.repoRoot, "arbitrage_bot.py"), "x");
++    fs.writeFileSync(path.join(paths.repoRoot, "notes.md"), "x");
++    fs.mkdirSync(path.join(paths.archiveRoot, "janitor-2020-01-01"));
++    fs.mkdirSync(path.join(paths.archiveRoot, "cleanup-20261006-114055"));
++    db.raw.prepare("INSERT INTO event_stream (id, type, agent_address, content, token_count, created_at) VALUES ('e1','x','a','c',1,?)")
++      .run(new Date(Date.now() - 5 * 24 * HOUR).toISOString());
++    const report = await runJanitor({
++      db: db.raw, paths, helper: noServices, untracked: async () => ["arbitrage_bot.py", "notes.md"],
++    });
++    expect(report.archivedServiceFolders).toEqual(["draft (never published)"]);
++    expect(report.archivedRepoFiles).toEqual(["arbitrage_bot.py"]);
++    expect(fs.existsSync(path.join(paths.repoRoot, "notes.md"))).toBe(true);
++    expect(report.prunedEvents).toBe(1);
++    expect(report.deletedArchives).toEqual(["janitor-2020-01-01"]);
++    expect(fs.existsSync(path.join(paths.archiveRoot, "cleanup-20261006-114055"))).toBe(true);
++    const [notice] = claimInboxMessages(db.raw, 10);
++    expect(notice.fromAddress).toBe("system:janitor");
++    expect(notice.content).toContain("Automatic cleanup");
++  });
++
++  it("stays silent when there is nothing to clean", async () => {
++    const { db, paths } = setup();
++    const report = await runJanitor({ db: db.raw, paths, helper: noServices, untracked: async () => [] });
++    expect(Object.values(report).every((v) => (Array.isArray(v) ? v.length === 0 : v === 0))).toBe(true);
++    expect(claimInboxMessages(db.raw, 10)).toHaveLength(0);
++  });
++});
+diff --git a/src/index.ts b/src/index.ts
+index 0cd9051..815f550 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -23,6 +23,7 @@ import {
+ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+ import { startCreatorChatServer } from "./integration/creator-chat.js";
+ import { startOrderExecutor } from "./solana/orders.js";
++import { startJanitor } from "./maintenance/janitor.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+ import { loadSkills } from "./skills/loader.js";
+@@ -391,6 +392,9 @@ async function run(): Promise<void> {
+   // Creator chat endpoint for the Control Center (127.0.0.1, token required).
+   startCreatorChatServer(db.raw, process.env, (message) => logger.info(message));
+ 
++  // Automatic cleanup of abandoned work (archived, never the wallet or ledger).
++  startJanitor({ db: db.raw, log: (message) => logger.info(message) });
++
+   // Automatic orders (stop-loss, take-profit, buy_below) run without the model.
+   if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
+     startOrderExecutor({ db, chainIdentity, log: (message) => logger.info(message) });
+diff --git a/src/maintenance/janitor.ts b/src/maintenance/janitor.ts
+new file mode 100644
+index 0000000..2140e78
+--- /dev/null
++++ b/src/maintenance/janitor.ts
+@@ -0,0 +1,311 @@
++/**
++ * Automatic cleanup: keep only what is useful to SHUI's work.
++ *
++ * Runs in code every few hours (no model involved). Nothing is deleted at
++ * once: abandoned work goes to ~/archive/janitor-<date>/ and only those
++ * janitor archives are deleted after ARCHIVE_KEEP_DAYS. Never touched: wallet,
++ * ledger, lifespan, orders, chat, payment requests, SOUL, the agent's code,
++ * its facts and procedures (including what it learned does not work).
++ */
++import { execFile } from "node:child_process";
++import { promises as fs } from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import type { Database } from "better-sqlite3";
++import { queueSystemNotice } from "../integration/creator-chat.js";
++import { runServiceHelper, SERVICES_ROOT, type HelperRunner } from "../services/service-tools.js";
++
++const HOUR = 3_600_000;
++export const JANITOR_INTERVAL_MS = 6 * HOUR;
++export const ENDED_WORKSPACE_MS = 24 * HOUR;
++export const STALE_GOAL_MS = 12 * HOUR;
++export const BROKEN_SERVICE_MS = 24 * HOUR;
++const BROKEN_SERVICE_MIN_CHECKS = 3;
++const UNDEPLOYED_SERVICE_MS = 48 * HOUR;
++const EVENT_KEEP_MS = 3 * 24 * HOUR;
++const ARCHIVE_KEEP_DAYS = 14;
++const REPO_JUNK = /arbitrage|trader|trading|api[_-]?server|defi|revenue|monetiz|deploy_service|value_creation|final_deployment|dashboard|analy[sz]er|scanner|monitor|bot[_-]/i;
++
++export interface JanitorPaths {
++  home: string;
++  workspaceRoot: string;
++  servicesRoot: string;
++  archiveRoot: string;
++  repoRoot: string;
++}
++
++export function defaultJanitorPaths(): JanitorPaths {
++  const home = os.homedir();
++  return {
++    home,
++    workspaceRoot: path.join(home, ".automaton", "workspace"),
++    servicesRoot: SERVICES_ROOT,
++    archiveRoot: path.join(home, "archive"),
++    repoRoot: process.cwd(),
++  };
++}
++
++export interface JanitorDeps {
++  db: Database;
++  now?: () => Date;
++  paths?: JanitorPaths;
++  helper?: HelperRunner;
++  /** HTTP status of a service URL, or null if it does not answer. */
++  probe?: (url: string) => Promise<number | null>;
++  /** Untracked top-level entries of the code repository. */
++  untracked?: (repoRoot: string) => Promise<string[]>;
++  notify?: boolean;
++  log?: (message: string) => void;
++}
++
++export interface JanitorReport {
++  cancelledGoals: string[];
++  archivedWorkspaces: string[];
++  stoppedServices: string[];
++  archivedServiceFolders: string[];
++  archivedRepoFiles: string[];
++  prunedEvents: number;
++  deletedArchives: string[];
++}
++
++const defaultProbe = async (url: string): Promise<number | null> => {
++  try {
++    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
++    return response.status;
++  } catch {
++    return null;
++  }
++};
++
++const defaultUntracked = (repoRoot: string): Promise<string[]> =>
++  new Promise((resolve) => {
++    execFile("git", ["-C", repoRoot, "ls-files", "--others", "--directory", "--exclude-standard"], { timeout: 15_000 }, (error, stdout) => {
++      if (error) return resolve([]);
++      resolve([...new Set(stdout.split("\n").filter(Boolean).map((line) => line.split("/")[0]))]);
++    });
++  });
++
++async function moveToArchive(source: string, archiveDir: string): Promise<boolean> {
++  try {
++    await fs.mkdir(archiveDir, { recursive: true });
++    const target = path.join(archiveDir, source.replace(/^\/+/, "").replace(/\//g, "__"));
++    try {
++      await fs.rename(source, target);
++    } catch (error: any) {
++      if (error?.code !== "EXDEV") throw error;
++      await fs.cp(source, target, { recursive: true });
++      await fs.rm(source, { recursive: true, force: true });
++    }
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/** Newest modification time of a folder and its direct entries (edits inside files count). */
++async function latestMtime(dir: string): Promise<number | null> {
++  try {
++    let latest = (await fs.stat(dir)).mtimeMs;
++    for (const entry of await fs.readdir(dir)) {
++      try {
++        latest = Math.max(latest, (await fs.stat(path.join(dir, entry))).mtimeMs);
++      } catch {
++        // vanished
++      }
++    }
++    return latest;
++  } catch {
++    return null;
++  }
++}
++
++function tableExists(db: Database, name: string): boolean {
++  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
++}
++
++/** Latest activity of a goal: its creation, its end, or any task movement. */
++function goalActivity(db: Database): Map<string, { status: string; title: string; last: number }> {
++  const out = new Map<string, { status: string; title: string; last: number }>();
++  if (!tableExists(db, "goals")) return out;
++  const goals = db.prepare("SELECT id, title, status, created_at, completed_at FROM goals").all() as Array<Record<string, string | null>>;
++  for (const g of goals) {
++    const times = [g.created_at, g.completed_at].map((t) => (t ? Date.parse(t) : NaN)).filter(Number.isFinite);
++    out.set(String(g.id), { status: String(g.status), title: String(g.title), last: Math.max(0, ...times) });
++  }
++  if (tableExists(db, "task_graph")) {
++    const tasks = db.prepare(
++      "SELECT goal_id, MAX(COALESCE(completed_at, started_at, created_at)) AS last FROM task_graph GROUP BY goal_id",
++    ).all() as Array<{ goal_id: string; last: string | null }>;
++    for (const t of tasks) {
++      const goal = out.get(t.goal_id);
++      const last = t.last ? Date.parse(t.last) : NaN;
++      if (goal && Number.isFinite(last)) goal.last = Math.max(goal.last, last);
++    }
++  }
++  return out;
++}
++
++/** Last time a task of the goal was completed (progress), or the goal's creation. */
++function lastProgress(db: Database, goalId: string, createdAt: string): number {
++  const row = db.prepare(
++    "SELECT MAX(completed_at) AS last FROM task_graph WHERE goal_id = ? AND status = 'completed'",
++  ).get(goalId) as { last: string | null } | undefined;
++  return Date.parse(row?.last ?? createdAt);
++}
++
++export async function runJanitor(deps: JanitorDeps): Promise<JanitorReport> {
++  const db = deps.db;
++  const now = (deps.now ?? (() => new Date()))();
++  const paths = deps.paths ?? defaultJanitorPaths();
++  const archiveDir = path.join(paths.archiveRoot, `janitor-${now.toISOString().slice(0, 10)}`);
++  const report: JanitorReport = {
++    cancelledGoals: [], archivedWorkspaces: [], stoppedServices: [], archivedServiceFolders: [],
++    archivedRepoFiles: [], prunedEvents: 0, deletedArchives: [],
++  };
++
++  // c) Abandoned goals: active, but no task completed for STALE_GOAL_MS.
++  if (tableExists(db, "goals") && tableExists(db, "task_graph")) {
++    const active = db.prepare("SELECT id, title, created_at FROM goals WHERE status = 'active'").all() as Array<{ id: string; title: string; created_at: string }>;
++    for (const goal of active) {
++      if (now.getTime() - lastProgress(db, goal.id, goal.created_at) < STALE_GOAL_MS) continue;
++      db.transaction(() => {
++        db.prepare("UPDATE goals SET status = 'failed', completed_at = ? WHERE id = ?").run(now.toISOString(), goal.id);
++        db.prepare("UPDATE task_graph SET status = 'cancelled' WHERE goal_id = ? AND status IN ('pending','assigned','running','blocked')").run(goal.id);
++        const state = db.prepare("SELECT value FROM kv WHERE key = 'orchestrator.state'").get() as { value: string } | undefined;
++        try {
++          if (state && JSON.parse(state.value).goalId === goal.id) {
++            db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE key = 'orchestrator.state'")
++              .run(JSON.stringify({ phase: "idle", goalId: null, replanCount: 0, failedTaskId: null, failedError: null }));
++          }
++        } catch {
++          // malformed state: leave it
++        }
++      })();
++      report.cancelledGoals.push(goal.title);
++    }
++  }
++
++  // a) Work folders of goals that ended (or no longer exist) ENDED_WORKSPACE_MS ago.
++  const goals = goalActivity(db);
++  let entries: string[] = [];
++  try {
++    entries = await fs.readdir(paths.workspaceRoot);
++  } catch {
++    entries = [];
++  }
++  for (const name of entries) {
++    const dir = path.join(paths.workspaceRoot, name);
++    const goal = goals.get(name);
++    if (goal?.status === "active") continue;
++    let last = goal?.last ?? 0;
++    if (!goal) {
++      const touched = await latestMtime(dir);
++      if (touched === null) continue;
++      last = touched;
++    }
++    if (now.getTime() - last < ENDED_WORKSPACE_MS) continue;
++    if (await moveToArchive(dir, archiveDir)) report.archivedWorkspaces.push(goal ? `${goal.title} (${goal.status})` : name);
++  }
++
++  // b) Published services that keep failing; folders never published.
++  const helper = deps.helper ?? runServiceHelper;
++  const listed = await helper(["list"]);
++  const deployed = new Map<string, { state: string; url: string }>();
++  for (const m of listed.output.matchAll(/^([a-z][a-z0-9-]{1,30}): (\S+) port=\d+ url=(https:\/\/\S+)/gm)) {
++    deployed.set(m[1], { state: m[2], url: m[3] });
++  }
++  for (const [name, svc] of deployed) {
++    const key = `janitor.service.${name}`;
++    const status = svc.state === "active" ? await (deps.probe ?? defaultProbe)(svc.url) : null;
++    if (status !== null && status < 500) {
++      db.prepare("DELETE FROM kv WHERE key = ?").run(key);
++      continue;
++    }
++    const prev = db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined;
++    const record = prev ? JSON.parse(prev.value) as { firstFailAt: string; checks: number } : { firstFailAt: now.toISOString(), checks: 0 };
++    record.checks += 1;
++    if (record.checks >= BROKEN_SERVICE_MIN_CHECKS && now.getTime() - Date.parse(record.firstFailAt) >= BROKEN_SERVICE_MS) {
++      const stopped = await helper(["stop", name]);
++      if (stopped.ok) {
++        db.prepare("DELETE FROM kv WHERE key = ?").run(key);
++        report.stoppedServices.push(`${name} (${status === null ? "no answer" : `HTTP ${status}`} since ${record.firstFailAt.slice(0, 16)})`);
++        if (await moveToArchive(path.join(paths.servicesRoot, name), archiveDir)) report.archivedServiceFolders.push(name);
++        continue;
++      }
++    }
++    db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, JSON.stringify(record));
++  }
++  let serviceDirs: string[] = [];
++  try {
++    serviceDirs = await fs.readdir(paths.servicesRoot);
++  } catch {
++    serviceDirs = [];
++  }
++  if (listed.ok) {
++    for (const name of serviceDirs) {
++      if (deployed.has(name) || report.archivedServiceFolders.includes(name)) continue;
++      const dir = path.join(paths.servicesRoot, name);
++      const touched = await latestMtime(dir);
++      if (touched === null || now.getTime() - touched < UNDEPLOYED_SERVICE_MS) continue;
++      if (await moveToArchive(dir, archiveDir)) report.archivedServiceFolders.push(`${name} (never published)`);
++    }
++  }
++
++  // d) Files SHUI left at the root of its own code repository.
++  for (const name of await (deps.untracked ?? defaultUntracked)(paths.repoRoot)) {
++    if (!REPO_JUNK.test(name)) continue;
++    if (await moveToArchive(path.join(paths.repoRoot, name), archiveDir)) report.archivedRepoFiles.push(name);
++  }
++
++  // e) Old planner "recent outcomes".
++  if (tableExists(db, "event_stream")) {
++    const cutoff = new Date(now.getTime() - EVENT_KEEP_MS).toISOString();
++    report.prunedEvents = db.prepare("DELETE FROM event_stream WHERE created_at < ?").run(cutoff).changes;
++  }
++
++  // f) Janitor archives older than ARCHIVE_KEEP_DAYS (only its own).
++  try {
++    for (const name of await fs.readdir(paths.archiveRoot)) {
++      const m = /^janitor-(\d{4}-\d{2}-\d{2})$/.exec(name);
++      if (!m || now.getTime() - Date.parse(m[1]) < ARCHIVE_KEEP_DAYS * 24 * HOUR) continue;
++      await fs.rm(path.join(paths.archiveRoot, name), { recursive: true, force: true });
++      report.deletedArchives.push(name);
++    }
++  } catch {
++    // no archive folder yet
++  }
++
++  const summary = summarizeJanitor(report);
++  if (summary && deps.notify !== false) queueSystemNotice(db, "system:janitor", summary);
++  if (summary) deps.log?.(`[JANITOR] ${summary}`);
++  return report;
++}
++
++export function summarizeJanitor(r: JanitorReport): string {
++  const parts: string[] = [];
++  if (r.cancelledGoals.length) parts.push(`cancelled ${r.cancelledGoals.length} goal(s) with no completed task for 12 h: ${r.cancelledGoals.join("; ")}`);
++  if (r.stoppedServices.length) parts.push(`stopped broken service(s): ${r.stoppedServices.join("; ")}`);
++  if (r.archivedServiceFolders.length) parts.push(`archived service folder(s): ${r.archivedServiceFolders.join(", ")}`);
++  if (r.archivedWorkspaces.length) parts.push(`archived ${r.archivedWorkspaces.length} old work folder(s)`);
++  if (r.archivedRepoFiles.length) parts.push(`archived stray files from your code folder: ${r.archivedRepoFiles.join(", ")}`);
++  if (r.prunedEvents) parts.push(`forgot ${r.prunedEvents} planner events older than 3 days`);
++  if (r.deletedArchives.length) parts.push(`deleted archives older than 14 days: ${r.deletedArchives.join(", ")}`);
++  if (parts.length === 0) return "";
++  return `Automatic cleanup: ${parts.join(". ")}. Archived files are in ~/archive for 14 days. Focus on one goal at a time and finish it.`;
++}
++
++export function startJanitor(deps: JanitorDeps, firstRunDelayMs = 10 * 60_000): () => void {
++  let running = false;
++  const tick = () => {
++    if (running) return;
++    running = true;
++    runJanitor(deps)
++      .catch((error) => deps.log?.(`[JANITOR] failed: ${error instanceof Error ? error.message : String(error)}`))
++      .finally(() => { running = false; });
++  };
++  const first = setTimeout(tick, firstRunDelayMs);
++  const timer = setInterval(tick, JANITOR_INTERVAL_MS);
++  first.unref?.();
++  timer.unref?.();
++  return () => { clearTimeout(first); clearInterval(timer); };
++}

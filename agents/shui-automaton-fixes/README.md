@@ -210,3 +210,24 @@ Patch : `2026-10-06-jupiter-key.patch`, à appliquer après `2026-10-06-rate-lim
 L'API gratuite sans clé de Jupiter (`lite-api.jup.ag`) a renvoyé HTTP 429 dès le premier swap de SHUI. Si la variable `JUPITER_API_KEY` est définie (clé gratuite à créer sur portal.jup.ag), SHUI utilise `api.jup.ag` avec l'en-tête `x-api-key`, pour les swaps comme pour les prix des ordres automatiques. Sans clé, il garde l'API gratuite. Quand elle est saturée, le message d'erreur renvoie SHUI vers `raydium_swap`.
 
 Pour ajouter la clé sans qu'elle s'affiche à l'écran : `sudo bash -c 'read -rsp "Clé Jupiter: " K; echo; echo "JUPITER_API_KEY=$K" >> /etc/shui-agent/chat.env'`, puis `sudo systemctl restart shui-agent`.
+
+---
+
+# Nettoyage automatique (janitor) — 2026-10-06
+
+Patch : `2026-10-06-janitor.patch`, à appliquer après `2026-10-06-jupiter-key.patch`. Le script `maintenance/shui-cleanup.py` est aussi mis à jour.
+
+Toutes les 6 heures (premier passage 10 minutes après le démarrage), du code s'exécute sans passer par le modèle. Rien n'est supprimé directement : ce qui est abandonné part dans `~/archive/janitor-<date>/`, et seules ces archives automatiques sont supprimées au bout de 14 jours.
+- **Objectifs abandonnés** : un objectif actif sans aucune tâche terminée depuis 12 h est annulé, et ses tâches avec.
+- **Dossiers de travail** : ceux des objectifs terminés, échoués ou annulés depuis plus de 24 h (ou qui n'appartiennent à aucun objectif) sont archivés.
+- **Services publiés en panne** : un service qui ne répond pas ou renvoie une erreur 5xx à 3 vérifications, sur au moins 24 h, est arrêté et son dossier archivé. Un service qui répond n'est jamais touché.
+- **Brouillons de services** : un dossier de `/srv/shui/services` jamais publié et pas modifié depuis 48 h est archivé.
+- **Fichiers laissés à la racine du code** (non suivis par git : arbitrage, trader, dashboard, bot…) : archivés.
+- **Historique des « résultats récents » du planificateur** : gardé sur 3 jours seulement.
+
+SHUI reçoit un bilan de chaque passage dans sa boîte. Le nettoyage ne touche jamais au wallet, au journal comptable, au compteur de vie, aux ordres, au chat, aux liens de paiement, à SOUL, au code de l'agent, ni à ses faits et méthodes appris.
+
+Changements de `shui-cleanup.py` (ménage manuel) :
+- les services qui répondent restent en ligne ;
+- ceux qui ne répondent pas sont arrêtés puis archivés ;
+- les dossiers de services jamais publiés sont archivés.
