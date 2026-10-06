@@ -77,3 +77,18 @@ cd /home/automaton/.automaton && git add SOUL.md constitution.md && git commit -
 - Le backup contient `wallet.json`. Il n'a pas été ouvert, mais l'archive a circulé. Il faut considérer la clé comme exposée, et exclure ou chiffrer ce fichier dans les prochains backups.
 - La politique financière d'`automaton.json` n'est pas cohérente : `maxSingleTransferCents` (30000) est supérieur à `maxDailyTransferCents` (10000), et le seuil de confirmation est au-dessus du solde total. Elle n'a **pas** été modifiée : c'est une décision humaine.
 - Le dossier `src/` contient environ 100 fichiers `.backup-*` / `.before-*`, plus deux artefacts de shell (`udo -u automaton bash -c '` et `src/{config,database,websocket,alert,core}/`). Ils n'ont aucun effet sur le build, mais un nettoyage est conseillé.
+
+## Patch `2026-10-06-live-run-fixes.patch` (après l'analyse en direct du 6 octobre)
+À appliquer par-dessus les 8 patches précédents.
+- Planificateur : une estimation mal écrite (`"120"`, `"2 hours"`) ne fait plus rejeter le plan. Une seconde tentative précède le repli sur une tâche unique.
+- Budget du planificateur : la valeur vérifiée du wallet remplace les crédits Conway (inconnus, donc 0, ce qui menait à « critical » puis à « kill this goal »).
+- Workers :
+  - vrai `web_fetch` en lecture seule (avant : alias de `x402_fetch`, limité à conway.tech) ;
+  - chemins relatifs et commandes dans le dossier de la tâche ;
+  - consignes sur la machine (venv, pas de CLI `solana`, pas de root, données réelles uniquement) ;
+  - outils de gestion de SHUI masqués ; outils du wallet conservés ;
+  - `check_usdc_balance` corrigé.
+- Tâches des objectifs échoués ou terminés annulées automatiquement. Les workers concernés sont arrêtés.
+- Un `config.json` de projet est autorisé dans le dossier de la tâche. Les écritures refusées ne comptent plus comme travail conservé.
+- Le journal affiche le détail des avertissements et des erreurs.
+- Tests : 30 échecs, les mêmes qu'avant le patch (fichiers `/etc/shui-agent/*` absents de l'environnement de test). Tous les tests de l'orchestration et des workers passent.
