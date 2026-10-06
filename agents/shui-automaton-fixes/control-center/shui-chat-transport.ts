@@ -71,6 +71,7 @@ export async function listShuiChat(since?: string): Promise<ShuiChatMessage[]> {
   const res = await call(`/chat${since ? `?since=${encodeURIComponent(since)}` : ""}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = (await res.json()) as {
+    outgoing?: Array<{ id: string; content: string; at: string }>;
     messages: Array<{
       id: string; content: string; receivedAt: string; status: string;
       reply: { turnId: string; at: string; text: string; tools: Array<{ name: string; ok: boolean; result: string }> } | null;
@@ -94,5 +95,9 @@ export async function listShuiChat(since?: string): Promise<ShuiChatMessage[]> {
       });
     }
   }
-  return out;
+  // Messages SHUI sent on its own initiative (message_creator).
+  for (const o of body.outgoing ?? []) {
+    out.push({ id: o.id, role: "shui", content: o.content, at: o.at, status: "sent" });
+  }
+  return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }

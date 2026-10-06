@@ -156,3 +156,35 @@ Le patch contient aussi deux corrections pour les workers :
    - `GET /api/chat` doit renvoyer `connected`/`transport` depuis `shuiChatStatus()` et les messages depuis `listShuiChat()` ;
    - `POST /api/chat` doit appeler `sendCreatorMessage(content)`.
    Ne jamais renvoyer le jeton au navigateur.
+
+---
+
+# Outils de trading et d'autonomie — 2026-10-06
+
+Patch : `2026-10-06-trading-tools.patch`. Il s'applique après `2026-10-06-chat-inbox-fix.patch`. Côté Control Center, `control-center/chat.ts` et `control-center/shui-chat-transport.ts` sont mis à jour pour afficher les messages que SHUI t'envoie.
+
+1. **Bug du swap Raydium (`REQ_INPUT_ACCOUT_ERROR`).** Quand l'entrée n'était pas du SOL, le compte de token du wallet n'était jamais transmis à Raydium, ce qui faisait échouer tous les swaps USDC → token. Il est maintenant transmis. Le compte de sortie est aussi transmis s'il existe déjà.
+2. **A. Pas de tâche « déployer » réussie sans service en ligne.** Pour une tâche dont le titre contient deploy, publish, launch, host ou expose, le succès est refusé tant qu'aucun service publié avec `service_deploy` ne répond en HTTPS (réponse inférieure à 500).
+3. **B. Pas de serveur public lancé par `exec`.** Après chaque `exec`, les processus de SHUI qui écoutent sur une adresse publique (0.0.0.0, `::`) sont arrêtés. SHUI reçoit alors un message qui le renvoie vers `service_deploy`. Les tests sur 127.0.0.1 restent permis.
+4. **C. `payment_request` rappelle qu'un lien de paiement n'est pas un revenu.**
+5. **`message_creator`.** SHUI peut t'écrire de lui-même dans le chat, avec un maximum de 6 messages par heure. Ses messages apparaissent avec 📨. Les workers n'ont pas cet outil.
+6. **`jupiter_swap`.** C'est l'agrégateur Jupiter : il cherche le meilleur prix sur tous les DEX Solana et accepte presque tous les tokens. Il passe par le même moteur sécurisé que le swap Raydium : solde vérifié sur la chaîne, réserve de 0,01 SOL, verrou de transaction en attente, simulation et journal comptable. La transaction construite par Jupiter est vérifiée avant signature :
+   - SHUI est le seul signataire ;
+   - l'instruction de Jupiter contient exactement le montant, la sortie annoncée et le slippage demandés ;
+   - aucune délégation ni changement d'autorité sur ses tokens ;
+   - les SOL ne sont envoyés que vers son propre compte de SOL « wrappé » ;
+   - les frais de priorité sont plafonnés.
+7. **`market_scan`.** Données de marché en direct, via les API gratuites GeckoTerminal et DexScreener :
+   - `trending` : les pools en tendance ;
+   - `search` : la recherche d'un token par nom ou symbole ;
+   - `token` : le pool le plus profond d'un token, avec un résumé des bougies horaires sur 24 h.
+   Il signale les liquidités faibles et les paires de moins de 24 h.
+8. **Ordres automatiques : `order_create`, `order_list`, `order_cancel`.** Trois types : stop_loss, take_profit et buy_below. Le code vérifie les prix Jupiter toutes les 30 s, sans attendre le modèle, et exécute le swap par le moteur sécurisé. SHUI reçoit un message dans sa boîte quand un ordre est exécuté, échoue ou expire. Garde-fous :
+   - un ordre interrompu par un redémarrage n'est jamais relancé à l'aveugle ;
+   - 20 ordres ouverts au maximum.
+9. **Staking.** Il se fait par `jupiter_swap` : SOL → jitoSOL ou mSOL, environ 7 % par an. Le journal comptable compte le gain quand SHUI revend contre de l'USDC. Le prêt d'USDC (Kamino, marginfi) n'est pas inclus : il demande d'intégrer le SDK de chaque protocole, et sur 24 USDC il rapporterait moins d'un centime par jour.
+
+## Tests
+- 20 nouveaux tests ; `tsc` ne signale aucune erreur.
+- Suite complète : 1736 tests réussis. Les 27 échecs sont exactement ceux d'avant, dus à l'absence de `/etc/shui-agent` dans l'environnement de test.
+- Les API Raydium et Jupiter ne sont pas joignables depuis l'environnement de test. La vérification se fait donc sur le VPS, en dry run.

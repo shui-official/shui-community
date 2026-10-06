@@ -32,7 +32,6 @@ function toTs(iso: string): number {
 /** Conversation SHUI -> messages du dashboard (aucun contenu ajouté hormis l'état réel). */
 export function toChatMessages(items: ShuiChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
-  const answered = new Set(items.filter((m) => m.role === 'shui' && m.replyTo).map((m) => m.replyTo as string));
   for (const m of items) {
     if (m.role === 'creator') {
       out.push({ id: m.id, role: 'user', text: m.content, ts: toTs(m.at) });
@@ -45,12 +44,15 @@ export function toChatMessages(items: ShuiChatMessage[]): ChatMessage[] {
     out.push({
       id: m.id,
       role: 'assistant',
-      text: tools ? `${m.content}\n\nActions : ${tools}` : m.content,
+      text: m.status === 'sent'
+        ? `📨 ${m.content}`
+        : tools ? `${m.content}\n\nActions : ${tools}` : m.content,
       ts: toTs(m.at)
     });
   }
+  // État réel du dernier message envoyé tant que SHUI ne l'a pas traité.
   const last = items.filter((m) => m.role === 'creator').pop();
-  if (last && last.status !== 'failed' && !answered.has(last.id) && !items.some((m) => m.role === 'shui' && toTs(m.at) >= toTs(last.at))) {
+  if (last && (last.status === 'received' || last.status === 'in_progress')) {
     out.push({
       id: `${last.id}_pending`,
       role: 'system',
