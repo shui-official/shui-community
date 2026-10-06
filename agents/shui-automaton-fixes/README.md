@@ -200,3 +200,13 @@ Raydium, Jupiter et GeckoTerminal répondent en texte (« Rate limit exceeded »
 - si la limite persiste, SHUI reçoit un message clair : « … is rate-limiting requests … Wait a minute before retrying. »
 
 Le dry run Raydium USDC → SOL a été vérifié sur le VPS (17:11:19) : la transaction passerait, avec 6 001 lamports de frais. Le bug `REQ_INPUT_ACCOUT_ERROR` est donc corrigé.
+
+---
+
+# Clé d'API Jupiter — 2026-10-06
+
+Patch : `2026-10-06-jupiter-key.patch`, à appliquer après `2026-10-06-rate-limit-fix.patch`.
+
+L'API gratuite sans clé de Jupiter (`lite-api.jup.ag`) a renvoyé HTTP 429 dès le premier swap de SHUI. Si la variable `JUPITER_API_KEY` est définie (clé gratuite à créer sur portal.jup.ag), SHUI utilise `api.jup.ag` avec l'en-tête `x-api-key`, pour les swaps comme pour les prix des ordres automatiques. Sans clé, il garde l'API gratuite. Quand elle est saturée, le message d'erreur renvoie SHUI vers `raydium_swap`.
+
+Pour ajouter la clé sans qu'elle s'affiche à l'écran : `sudo bash -c 'read -rsp "Clé Jupiter: " K; echo; echo "JUPITER_API_KEY=$K" >> /etc/shui-agent/chat.env'`, puis `sudo systemctl restart shui-agent`.
