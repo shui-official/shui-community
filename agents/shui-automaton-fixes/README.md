@@ -375,3 +375,24 @@ Patch : `2026-10-07-trading-lot2.patch`, à appliquer après `2026-10-07-trader-
   - l'indice Fear & Greed (alternative.me) ;
   - le volume des DEX Solana (DefiLlama).
 - La méthode du mode trading intègre ces outils. Les workers ne peuvent pas créer ni arrêter de stratégie.
+
+---
+
+# Trading, lot 3 — 2026-10-07
+
+Patch : `2026-10-07-trading-lot3.patch`, à appliquer après `2026-10-07-trading-lot2.patch`.
+
+- **Indicateurs avancés** dans `technical_analysis` :
+  - VWAP sur 24 bougies, pour savoir si les acheteurs ou les vendeurs dominent ;
+  - Stoch RSI ;
+  - ADX avec +DI et -DI, qui mesure la force de la tendance (marché sans tendance sous 20, tendance forte au-dessus de 25) ;
+  - direction de l'OBV, pour repérer une hausse qui n'est pas suivie par le volume.
+  
+  L'ADX entre dans le calcul du biais.
+- **`dca_create`** : achats réguliers (montant, intervalle, nombre d'achats), avec un prix maximal au-delà duquel l'achat est sauté. Le tout est exécuté par le code et s'annule avec `order_cancel`.
+- **Paper trading** :
+  - `paper_trade` ouvre une position simulée, avec stop et objectif liés (OCO), sans aucun mouvement de fonds ;
+  - `strategy_create paper=true` crée une stratégie simulée (jusqu'à 5) ;
+  - `paper_stats` donne les résultats simulés et recommande de passer en réel au-delà de 20 trades positifs.
+- **`stake_sol` / `unstake_sol`** : SOL vers jitoSOL (environ 7 % par an) et retour. Le jitoSOL suit le prix du SOL : ce n'est pas une position en cash.
+- **Rapport quotidien automatique** (après 20 h UTC, une fois par jour), envoyé dans le chat du créateur. Il est rédigé par le code à partir des données vérifiées (le modèle ne peut pas embellir) : valeur du wallet, PnL réalisé, trades, durée de vie, ordres, stratégies, paper trading, dernière leçon.

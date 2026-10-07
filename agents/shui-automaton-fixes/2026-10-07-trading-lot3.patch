@@ -1,0 +1,746 @@
+diff --git a/src/__tests__/lot3-trading.test.ts b/src/__tests__/lot3-trading.test.ts
+new file mode 100644
+index 0000000..d2d4fbd
+--- /dev/null
++++ b/src/__tests__/lot3-trading.test.ts
+@@ -0,0 +1,99 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase, claimInboxMessages } from "../state/database.js";
++import { adx, obvTrend, stochRsi, vwap, type Candle } from "../solana/technical-analysis.js";
++import { listOrders, listPaperTrades, runOrderTick, saveOrder, type Order } from "../solana/orders.js";
++import { paperStatsText } from "../solana/trading-extras.js";
++import { listStrategies, runStrategyTick, saveStrategy } from "../solana/strategies.js";
++import { entrySignals } from "../solana/backtest.js";
++import { buildDailyReport, maybeSendDailyReport } from "../maintenance/daily-report.js";
++import { listOutgoingCreatorMessages } from "../integration/creator-chat.js";
++
++const TOKEN = "TokenMint1111111111111111111111111111111111";
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const mk = (closes: number[], vol = (i: number) => 100): Candle[] => closes.map((c, i) => ({ t: i * 3600, o: c, h: c * 1.01, l: c * 0.99, c, v: vol(i) }));
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot3-")), "s.db"));
++const order = (over: Partial<Order>): Order => ({
++  id: "o", kind: "stop_loss", inputMint: TOKEN, outputMint: USDC, amount: "0", watchMint: TOKEN, condition: "below", triggerPriceUsd: 1,
++  slippageBps: 100, venue: "jupiter", note: "", createdAt: "", expiresAt: null, status: "open", attempts: 0, updatedAt: new Date().toISOString(), ...over,
++});
++
++describe("advanced indicators", () => {
++  it("reads trend strength, momentum, VWAP and volume flow", () => {
++    const up = mk(Array.from({ length: 120 }, (_, i) => 100 + i), (i) => 100 + i);
++    const a = adx(up)!;
++    expect(a.adx).toBeGreaterThan(25);
++    expect(a.plusDi).toBeGreaterThan(a.minusDi);
++    expect(obvTrend(up)).toBe("rising");
++    expect(vwap(up)!).toBeLessThan(up[up.length - 1].c);
++    const st = stochRsi(up.map((c) => c.c));
++    expect(st).not.toBeNull();
++    const flat = mk(Array.from({ length: 120 }, (_, i) => 100 + Math.sin(i) * 0.5));
++    expect(adx(flat)!.adx).toBeLessThan(25);
++  });
++});
++
++describe("DCA", () => {
++  it("buys on schedule, skips above the max price and completes", async () => {
++    const db = freshDb();
++    const now = Date.now();
++    saveOrder(db.raw, order({ id: "dca1", kind: "dca", inputMint: USDC, outputMint: TOKEN, amount: "1000000", intervalHours: 24, remaining: 2, nextAt: new Date(now - 1000).toISOString(), maxPriceUsd: 2 }));
++    const swap = vi.fn(async () => JSON.stringify({ success: true, signature: "S" }));
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.5 }), swap, now: () => new Date(now) });
++    expect(swap).toHaveBeenCalledWith(expect.objectContaining({ id: "dca1" }), "1000000");
++    expect(listOrders(db.raw)[0]).toMatchObject({ status: "open", remaining: 1 });
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.5 }), swap, now: () => new Date(now + 3_600_000) });
++    expect(swap).toHaveBeenCalledTimes(1); // not due yet
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 3 }), swap, now: () => new Date(now + 25 * 3_600_000) });
++    expect(swap).toHaveBeenCalledTimes(1); // skipped: above max price
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.8 }), swap, now: () => new Date(now + 50 * 3_600_000) });
++    expect(listOrders(db.raw)[0]).toMatchObject({ status: "filled", remaining: 0 });
++  });
++});
++
++describe("paper trading", () => {
++  it("closes paper positions without any swap and records simulated PnL", async () => {
++    const db = freshDb();
++    const paper = { paper: true, paperUnits: 10, paperEntryUsd: 1, group: "p1" };
++    saveOrder(db.raw, order({ id: "p1_stop", ...paper, triggerPriceUsd: 0.9 }));
++    saveOrder(db.raw, order({ id: "p1_tp", ...paper, kind: "take_profit", condition: "above", triggerPriceUsd: 1.2 }));
++    const swap = vi.fn();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.25 }), swap });
++    expect(swap).not.toHaveBeenCalled();
++    const trades = listPaperTrades(db.raw);
++    expect(trades).toHaveLength(1);
++    expect(trades[0].pnlUsd).toBeCloseTo(2.5, 6);
++    expect(Object.fromEntries(listOrders(db.raw).map((o) => [o.id, o.status]))).toEqual({ p1_stop: "cancelled", p1_tp: "filled" });
++    expect(paperStatsText(trades, [])).toMatch(/win rate 100%.*\+\$2\.5000/);
++  });
++
++  it("runs a paper strategy without spending", async () => {
++    const db = freshDb();
++    const closes = [...Array.from({ length: 60 }, (_, i) => 100 - i * 0.3), ...Array.from({ length: 8 }, (_, i) => 82 + i * 1.5)];
++    const candles = mk(closes);
++    const last = entrySignals("ema_cross", candles).lastIndexOf(true);
++    saveStrategy(db.raw, {
++      id: "pp", mint: TOKEN, symbol: "TKN", timeframe: "1h", rule: "ema_cross", params: {}, sizeUsd: 10, active: true, state: "flat",
++      group: null, lastSignalTs: null, trades: 0, note: "", lastError: null, paper: true, createdAt: "", updatedAt: "",
++    });
++    const swap = vi.fn();
++    await runStrategyTick({ db, chainIdentity: {} as any, candles: async () => candles.slice(0, last + 2), swap });
++    expect(swap).not.toHaveBeenCalled();
++    expect(listOrders(db.raw).every((o) => o.paper)).toBe(true);
++    expect(listStrategies(db.raw)[0].state).toBe("long");
++  });
++});
++
++describe("daily report", () => {
++  it("sends one verified report per day after 20:00 UTC", () => {
++    const db = freshDb();
++    db.raw.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('last_known_balance', ?, datetime('now'))").run(JSON.stringify({ walletValueUsd: 36.5 }));
++    expect(buildDailyReport(db.raw, new Date("2026-10-07T20:30:00Z"))).toMatch(/Wallet: \$36\.50/);
++    expect(maybeSendDailyReport(db.raw, new Date("2026-10-07T12:00:00Z"))).toBe(false);
++    expect(maybeSendDailyReport(db.raw, new Date("2026-10-07T20:30:00Z"))).toBe(true);
++    expect(maybeSendDailyReport(db.raw, new Date("2026-10-07T21:30:00Z"))).toBe(false);
++    expect(listOutgoingCreatorMessages(db.raw)[0].content).toMatch(/^Daily report 2026-10-07/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 3311b86..0a69cde 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -1017,6 +1017,11 @@ export async function runAgentLoop(
+           "strategy_list",
+           "strategy_stop",
+           "market_regime",
++          "dca_create",
++          "paper_trade",
++          "paper_stats",
++          "stake_sol",
++          "unstake_sol",
+           "order_create",
+           "order_list",
+           "order_cancel",
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index d56e7a6..a0de5b5 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -8,6 +8,7 @@ import { createPortfolioTools } from "../solana/portfolio.js";
+ import { createBacktestTool } from "../solana/backtest.js";
+ import { createStrategyTools } from "../solana/strategies.js";
+ import { createMarketRegimeTool } from "../solana/market-regime.js";
++import { createTradingExtraTools } from "../solana/trading-extras.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+@@ -148,6 +149,7 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createBacktestTool(),
+     ...createStrategyTools(),
+     createMarketRegimeTool(),
++    ...createTradingExtraTools(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/index.ts b/src/index.ts
+index 17e4e1c..0341a30 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -25,6 +25,7 @@ import { startCreatorChatServer } from "./integration/creator-chat.js";
+ import { startOrderExecutor } from "./solana/orders.js";
+ import { startStrategyRunner } from "./solana/strategies.js";
+ import { startJanitor } from "./maintenance/janitor.js";
++import { startDailyReport } from "./maintenance/daily-report.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+ import { loadSkills } from "./skills/loader.js";
+@@ -395,6 +396,8 @@ async function run(): Promise<void> {
+ 
+   // Automatic cleanup of abandoned work (archived, never the wallet or ledger).
+   startJanitor({ db: db.raw, log: (message) => logger.info(message) });
++  // Daily report to the creator, built by code from verified data.
++  startDailyReport(db.raw, (message) => logger.info(message));
+ 
+   // Automatic orders (stop-loss, take-profit, buy_below) run without the model.
+   if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
+diff --git a/src/maintenance/daily-report.ts b/src/maintenance/daily-report.ts
+new file mode 100644
+index 0000000..e07edb6
+--- /dev/null
++++ b/src/maintenance/daily-report.ts
+@@ -0,0 +1,66 @@
++/**
++ * Daily report to the creator (Control Center chat), written by code from
++ * verified data, once a day after REPORT_HOUR_UTC. No model involved, so it
++ * cannot embellish: wallet value, realized PnL, trades, life, open orders,
++ * strategies, paper results and the latest lesson from the journal.
++ */
++import type { Database } from "better-sqlite3";
++import { saveOutgoingCreatorMessage } from "../integration/creator-chat.js";
++import { computeTradeStats, recentJournal } from "../solana/trading-desk.js";
++import { formatLifespanLine } from "../survival/lifespan.js";
++import { listOrders, listPaperTrades } from "../solana/orders.js";
++import { listStrategies } from "../solana/strategies.js";
++
++export const REPORT_HOUR_UTC = 20;
++const LAST_KEY = "report.last_day";
++
++export function buildDailyReport(db: Database, now: Date = new Date()): string {
++  const day = now.toISOString().slice(0, 10);
++  let walletUsd: number | null = null;
++  try {
++    const row = db.prepare("SELECT value FROM kv WHERE key = 'last_known_balance'").get() as { value: string } | undefined;
++    const v = row ? (JSON.parse(row.value) as { walletValueUsd?: number }).walletValueUsd : undefined;
++    walletUsd = typeof v === "number" ? v : null;
++  } catch {
++    walletUsd = null;
++  }
++  const stats = computeTradeStats(db, day);
++  const open = listOrders(db).filter((o) => o.status === "open");
++  const strategies = listStrategies(db).filter((s) => s.active);
++  const paper = listPaperTrades(db).filter((t) => t.at.startsWith(day));
++  const lesson = recentJournal(db, 20).find((j) => j.kind === "lesson");
++  const life = (formatLifespanLine(db, now) ?? "").split("\n")[0];
++  const lines = [
++    `Daily report ${day} (automatic, from verified data)`,
++    `Wallet: ${walletUsd === null ? "value unknown" : `$${walletUsd.toFixed(2)}`} | realized PnL today ${stats.todayPnlUsd >= 0 ? "+" : ""}$${stats.todayPnlUsd.toFixed(4)} | total ${stats.totalPnlUsd >= 0 ? "+" : ""}$${stats.totalPnlUsd.toFixed(4)}`,
++    `Trades closed: ${stats.closedTrades} (win rate ${stats.winRate === null ? "?" : `${(stats.winRate * 100).toFixed(0)}%`})`,
++    `Open orders: ${open.filter((o) => !o.paper && o.kind !== "alert").length} | alerts ${open.filter((o) => o.kind === "alert").length} | strategies active ${strategies.length}${strategies.some((s) => s.paper) ? ` (${strategies.filter((s) => s.paper).length} paper)` : ""}`,
++    `Paper trades today: ${paper.length}${paper.length ? ` (simulated PnL ${paper.reduce((s, t) => s + t.pnlUsd, 0).toFixed(4)}$)` : ""}`,
++  ];
++  if (life) lines.push(life);
++  if (lesson) lines.push(`Latest lesson: ${lesson.text.slice(0, 200)}`);
++  return lines.join("\n");
++}
++
++export function maybeSendDailyReport(db: Database, now: Date = new Date()): boolean {
++  if (now.getUTCHours() < REPORT_HOUR_UTC) return false;
++  const day = now.toISOString().slice(0, 10);
++  const last = (db.prepare("SELECT value FROM kv WHERE key = ?").get(LAST_KEY) as { value: string } | undefined)?.value;
++  if (last === day) return false;
++  const saved = saveOutgoingCreatorMessage(db, buildDailyReport(db, now), now);
++  if (typeof saved === "string") return false;
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(LAST_KEY, day);
++  return true;
++}
++
++export function startDailyReport(db: Database, log?: (m: string) => void): () => void {
++  const timer = setInterval(() => {
++    try {
++      if (maybeSendDailyReport(db)) log?.("[REPORT] daily report sent to the creator chat");
++    } catch (error) {
++      log?.(`[REPORT] failed: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  }, 15 * 60_000);
++  timer.unref?.();
++  return () => clearInterval(timer);
++}
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index 3a94a33..55d9451 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -63,6 +63,9 @@ const WORKER_EXCLUDED_TOOLS = new Set([
+   "protect_position",
+   "strategy_create",
+   "strategy_stop",
++  "dca_create",
++  "stake_sol",
++  "unstake_sol",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index af3095a..577392b 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -28,7 +28,7 @@ export type OrderStatus = "open" | "executing" | "filled" | "failed" | "cancelle
+ 
+ export interface Order {
+   id: string;
+-  kind: "stop_loss" | "take_profit" | "buy_below" | "trailing_stop" | "alert" | "custom";
++  kind: "stop_loss" | "take_profit" | "buy_below" | "trailing_stop" | "alert" | "dca" | "custom";
+   inputMint: string;
+   outputMint: string;
+   /** Raw input units, or "all" (whole balance of a non-SOL input at trigger time). */
+@@ -47,6 +47,15 @@ export interface Order {
+   /** trailing_stop: distance in % below the highest price seen. */
+   trailPct?: number;
+   highestPriceUsd?: number;
++  /** dca: buy `amount` (input raw) every intervalHours, `remaining` times; skip when price > maxPriceUsd. */
++  intervalHours?: number;
++  remaining?: number;
++  nextAt?: string;
++  maxPriceUsd?: number;
++  /** Paper position (simulated, no funds move): units held and entry price. */
++  paper?: boolean;
++  paperUnits?: number;
++  paperEntryUsd?: number;
+   attempts: number;
+   lastError?: string;
+   triggeredPriceUsd?: number;
+@@ -72,6 +81,28 @@ export function listOrders(db: Database): Order[] {
+   return out;
+ }
+ 
++export interface PaperTrade {
++  id: string;
++  at: string;
++  mint: string;
++  units: number;
++  entryUsd: number;
++  exitUsd: number;
++  pnlUsd: number;
++  exitKind: string;
++  source: string;
++}
++
++export function recordPaperTrade(db: Database, trade: PaperTrade): void {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))")
++    .run(`paper.trade.${trade.at}_${trade.id}`, JSON.stringify(trade));
++}
++
++export function listPaperTrades(db: Database): PaperTrade[] {
++  return (db.prepare("SELECT value FROM kv WHERE key LIKE 'paper.trade.%' ORDER BY key").all() as Array<{ value: string }>)
++    .map((r) => JSON.parse(r.value) as PaperTrade);
++}
++
+ export function isTriggered(order: Pick<Order, "condition" | "triggerPriceUsd">, priceUsd: number): boolean {
+   return order.condition === "below" ? priceUsd <= order.triggerPriceUsd : priceUsd >= order.triggerPriceUsd;
+ }
+@@ -165,6 +196,38 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     if (closedByGroup.has(listed.id)) continue;
+     let order = listed;
+     const price = prices[order.watchMint];
++    if (order.kind === "dca") {
++      if (order.nextAt && Date.parse(order.nextAt) > now.getTime()) continue;
++      const next = new Date(now.getTime() + (order.intervalHours ?? 24) * 3_600_000).toISOString();
++      if (order.maxPriceUsd && price !== undefined && price > order.maxPriceUsd) {
++        saveOrder(db, { ...order, nextAt: next, lastError: `skipped: price $${price} above max $${order.maxPriceUsd}`, updatedAt: now.toISOString() });
++        continue;
++      }
++      saveOrder(db, { ...order, status: "executing", updatedAt: now.toISOString() });
++      let dcaText: string;
++      try {
++        dcaText = await (deps.swap ?? ((o, a) => runSwap(
++          { db: deps.db, chainIdentity: deps.chainIdentity },
++          { inputMint: o.inputMint, outputMint: o.outputMint, amount: a, slippageBps: o.slippageBps },
++          venueOf(o),
++        )))(order, order.amount);
++      } catch (error) {
++        dcaText = `error: ${error instanceof Error ? error.message : String(error)}`;
++      }
++      const res = classifySwapResult(dcaText);
++      const remaining = (order.remaining ?? 1) - (res.done ? 1 : 0);
++      const finished = remaining <= 0;
++      saveOrder(db, {
++        ...order, status: finished ? "filled" : "open", remaining, nextAt: next,
++        lastError: res.done ? undefined : res.message, result: res.done ? dcaText.slice(0, 500) : order.result, updatedAt: now.toISOString(),
++      });
++      changed.push(order.id);
++      deps.log?.(`[ORDERS] DCA ${order.id}: ${res.done ? "bought" : "failed"} (${remaining} left)`);
++      if (finished || !res.done) {
++        queueSystemNotice(db, "system:orders", `DCA ${order.id}: ${res.done ? `last buy done, plan complete` : `buy failed (${res.message})`}.`);
++      }
++      continue;
++    }
+     if (price === undefined) continue;
+     if (order.kind === "trailing_stop" && order.trailPct) {
+       // The stop follows the price up, never down.
+@@ -188,7 +251,16 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+ 
+     saveOrder(db, { ...order, status: "executing", triggeredPriceUsd: price, updatedAt: now.toISOString() });
+     let text: string;
+-    try {
++    if (order.paper) {
++      // Simulated position: book the exit at the trigger price, no funds move.
++      const units = order.paperUnits ?? 0;
++      const entry = order.paperEntryUsd ?? price;
++      recordPaperTrade(db, {
++        id: order.id, at: now.toISOString(), mint: order.watchMint, units, entryUsd: entry, exitUsd: price,
++        pnlUsd: units * (price - entry), exitKind: order.kind, source: order.note,
++      });
++      text = JSON.stringify({ success: true, paper: true, signature: "paper", pnlUsd: units * (price - entry) });
++    } else try {
+       const amount = await resolveAmount(deps, order);
+       text = amount === "0"
+         ? "Blocked: nothing left to sell for this order."
+diff --git a/src/solana/strategies.ts b/src/solana/strategies.ts
+index 85e979c..5ebd059 100644
+--- a/src/solana/strategies.ts
++++ b/src/solana/strategies.ts
+@@ -38,6 +38,8 @@ export interface Strategy {
+   trades: number;
+   note: string;
+   lastError: string | null;
++  /** Paper strategy: simulated entries and exits, no funds move. */
++  paper?: boolean;
+   createdAt: string;
+   updatedAt: string;
+ }
+@@ -100,6 +102,22 @@ export async function runStrategyTick(deps: StrategyDeps): Promise<string[]> {
+ 
+     s = { ...s, lastSignalTs: closed[i].t, updatedAt: now.toISOString() };
+     saveStrategy(db, s); // never retry the same candle, whatever happens next
++    if (s.paper) {
++      const entryP = closed[i].c;
++      const stopP = entryP - (s.params.stopAtr ?? 1.5) * atr;
++      const targetP = entryP + (s.params.rr ?? 2) * (entryP - stopP);
++      const groupP = `stg_${s.id}_${now.getTime().toString(36)}`;
++      const baseP = {
++        inputMint: s.mint, outputMint: USDC_MINT, amount: "0", watchMint: s.mint, slippageBps: 0, venue: "jupiter" as const,
++        note: `paper strategy ${s.id}`, createdAt: now.toISOString(), expiresAt: null, status: "open" as const, attempts: 0,
++        updatedAt: now.toISOString(), group: groupP, paper: true, paperUnits: s.sizeUsd / entryP, paperEntryUsd: entryP,
++      };
++      saveOrder(db, { ...baseP, id: `${groupP}_stop`, kind: "stop_loss", condition: "below", triggerPriceUsd: stopP });
++      saveOrder(db, { ...baseP, id: `${groupP}_tp`, kind: "take_profit", condition: "above", triggerPriceUsd: targetP });
++      saveStrategy(db, { ...s, state: "long", group: groupP, trades: s.trades + 1, lastError: null });
++      acted.push(s.id);
++      continue;
++    }
+     const amountRaw = String(Math.floor(s.sizeUsd * 1_000_000));
+     let text: string;
+     try {
+@@ -182,6 +200,7 @@ export function createStrategyTools(): AutomatonTool[] {
+           ...RULE_PARAM_SCHEMA,
+           note: { type: "string" },
+           force: { type: "boolean", description: "Accept a strategy whose backtest is negative." },
++          paper: { type: "boolean", description: "Paper strategy: simulated trades only (see paper_stats). Up to 5." },
+         },
+         required: ["mint", "rule", "sizeUsd"],
+       },
+@@ -194,7 +213,10 @@ export function createStrategyTools(): AutomatonTool[] {
+         const sizeUsd = Number(args.sizeUsd);
+         if (!(sizeUsd >= 1)) return "Blocked: sizeUsd must be at least 1 USDC.";
+         const db = ctx.db.raw;
+-        if (listStrategies(db).filter((s) => s.active).length >= MAX_ACTIVE_STRATEGIES) return `Blocked: ${MAX_ACTIVE_STRATEGIES} strategies already active; stop one first.`;
++        const paper = args.paper === true;
++        if (listStrategies(db).filter((s) => s.active && !!s.paper === paper).length >= (paper ? 5 : MAX_ACTIVE_STRATEGIES)) {
++          return `Blocked: too many active ${paper ? "paper " : ""}strategies; stop one first.`;
++        }
+         const timeframe = ["15m", "1h", "4h", "1d"].includes(String(args.timeframe)) ? String(args.timeframe) : "1h";
+         const params: RuleParams = {
+           fast: args.fast as number | undefined, slow: args.slow as number | undefined, rsiLevel: args.rsiLevel as number | undefined,
+@@ -205,16 +227,17 @@ export function createStrategyTools(): AutomatonTool[] {
+         if (!market || market.candles.length < 60) return "Blocked: not enough market history for this token.";
+         const bt = backtest(rule, market.candles, params);
+         const summary = `backtest: ${bt.trades.length} trades, win rate ${bt.winRate === null ? "?" : (bt.winRate * 100).toFixed(0)}%, total ${bt.totalReturnPct.toFixed(2)}%, max drawdown -${bt.maxDrawdownPct.toFixed(2)}%`;
+-        if (bt.totalReturnPct <= 0 && args.force !== true) return `Refused: ${summary}. This rule lost money on recent history. Change it, or pass force=true if you have a reason.`;
++        if (bt.totalReturnPct <= 0 && args.force !== true && args.paper !== true) return `Refused: ${summary}. This rule lost money on recent history. Change it, or pass force=true if you have a reason.`;
+         const now = new Date();
+         const strategy: Strategy = {
+           id: `stg${now.getTime().toString(36)}${randomUUID().slice(0, 3)}`,
+           mint, symbol: market.symbol, timeframe, rule, params, sizeUsd, active: true, state: "flat", group: null,
+           lastSignalTs: market.candles.length > 1 ? market.candles[market.candles.length - 2].t : null,
+           trades: 0, note: String(args.note ?? "").slice(0, 200), lastError: null, createdAt: now.toISOString(), updatedAt: now.toISOString(),
++          ...(paper ? { paper: true } : {}),
+         };
+         saveStrategy(db, strategy);
+-        return `Strategy ${strategy.id} active: ${market.symbol} ${rule} ${timeframe}, $${sizeUsd} per entry (${summary}). It acts on the next new signal.`;
++        return `${paper ? "Paper strategy" : "Strategy"} ${strategy.id} active: ${market.symbol} ${rule} ${timeframe}, $${sizeUsd} per entry (${summary}). It acts on the next new signal.`;
+       },
+     },
+     {
+@@ -226,7 +249,7 @@ export function createStrategyTools(): AutomatonTool[] {
+       execute: async (_args, ctx) => {
+         const all = listStrategies(ctx.db.raw);
+         if (!all.length) return "No strategy.";
+-        return all.map((s) => `${s.id} ${s.active ? "ACTIVE" : "stopped"} ${s.symbol} ${s.rule} ${s.timeframe} $${s.sizeUsd} | ${s.state}${s.group ? ` (${s.group})` : ""} | trades ${s.trades}${s.lastError ? ` | last error: ${s.lastError}` : ""}`).join("\n");
++        return all.map((s) => `${s.id}${s.paper ? " [paper]" : ""} ${s.active ? "ACTIVE" : "stopped"} ${s.symbol} ${s.rule} ${s.timeframe} $${s.sizeUsd} | ${s.state}${s.group ? ` (${s.group})` : ""} | trades ${s.trades}${s.lastError ? ` | last error: ${s.lastError}` : ""}`).join("\n");
+       },
+     },
+     {
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 379d9f2..4910da9 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -86,6 +86,73 @@ export function swings(candles: Candle[], w = 3): { highs: number[]; lows: numbe
+   return { highs, lows };
+ }
+ 
++/** Rolling VWAP over the last n candles (typical price x volume). */
++export function vwap(candles: Candle[], n = 24): number | null {
++  const w = candles.slice(-n);
++  const vol = w.reduce((s, c) => s + c.v, 0);
++  if (w.length === 0 || vol <= 0) return null;
++  return w.reduce((s, c) => s + ((c.h + c.l + c.c) / 3) * c.v, 0) / vol;
++}
++
++/** Stochastic RSI %K (0-100) and its previous value. */
++export function stochRsi(closes: number[], n = 14): { k: number; prevK: number } | null {
++  if (closes.length < n * 2 + 2) return null;
++  const series: number[] = [];
++  for (let end = closes.length - n - 1; end <= closes.length; end++) {
++    const v = rsi(closes.slice(0, end), n);
++    if (v !== null) series.push(v);
++  }
++  if (series.length < n + 1) return null;
++  const k = (arr: number[]) => {
++    const w = arr.slice(-n);
++    const lo = Math.min(...w);
++    const hi = Math.max(...w);
++    return hi === lo ? 50 : ((w[w.length - 1] - lo) / (hi - lo)) * 100;
++  };
++  return { k: k(series), prevK: k(series.slice(0, -1)) };
++}
++
++/** ADX (trend strength) with +DI / -DI. */
++export function adx(candles: Candle[], n = 14): { adx: number; plusDi: number; minusDi: number } | null {
++  if (candles.length < n * 2 + 1) return null;
++  let trS = 0, pS = 0, mS = 0;
++  const dxs: number[] = [];
++  for (let i = 1; i < candles.length; i++) {
++    const c = candles[i];
++    const p = candles[i - 1];
++    const up = c.h - p.h;
++    const down = p.l - c.l;
++    const pdm = up > down && up > 0 ? up : 0;
++    const mdm = down > up && down > 0 ? down : 0;
++    const tr = Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c));
++    if (i <= n) { trS += tr; pS += pdm; mS += mdm; if (i < n) continue; }
++    else { trS = trS - trS / n + tr; pS = pS - pS / n + pdm; mS = mS - mS / n + mdm; }
++    const pdi = trS ? (100 * pS) / trS : 0;
++    const mdi = trS ? (100 * mS) / trS : 0;
++    dxs.push(pdi + mdi ? (100 * Math.abs(pdi - mdi)) / (pdi + mdi) : 0);
++  }
++  if (dxs.length < n) return null;
++  let value = dxs.slice(0, n).reduce((s, x) => s + x, 0) / n;
++  for (let i = n; i < dxs.length; i++) value = (value * (n - 1) + dxs[i]) / n;
++  const pdi = trS ? (100 * pS) / trS : 0;
++  const mdi = trS ? (100 * mS) / trS : 0;
++  return { adx: value, plusDi: pdi, minusDi: mdi };
++}
++
++/** On-balance volume trend over the last n candles: rising, falling or flat. */
++export function obvTrend(candles: Candle[], n = 20): "rising" | "falling" | "flat" | null {
++  if (candles.length < n + 1) return null;
++  let obv = 0;
++  const series: number[] = [0];
++  for (let i = 1; i < candles.length; i++) {
++    obv += candles[i].c > candles[i - 1].c ? candles[i].v : candles[i].c < candles[i - 1].c ? -candles[i].v : 0;
++    series.push(obv);
++  }
++  const delta = series[series.length - 1] - series[series.length - 1 - n];
++  const scale = candles.slice(-n).reduce((s, c) => s + c.v, 0) || 1;
++  return delta / scale > 0.15 ? "rising" : delta / scale < -0.15 ? "falling" : "flat";
++}
++
+ export interface FibLevels {
+   direction: "up" | "down";
+   swingLow: number;
+@@ -166,6 +233,16 @@ export function analyze(candles: Candle[], opts: AnalysisOptions = {}): string {
+     else reasons.push(`MACD momentum ${m.hist > 0 ? "positive" : "negative"}`);
+   }
+   if (baseVol > 0 && recentVol > baseVol * 1.5) reasons.push(`volume x${(recentVol / baseVol).toFixed(1)} vs average (move has participation)`);
++  const vw = vwap(candles);
++  const st = stochRsi(closes);
++  const dx = adx(candles);
++  const obv = obvTrend(candles);
++  if (dx && dx.adx < 20) reasons.push(`ADX ${dx.adx.toFixed(0)}: no real trend (range), trend signals are weaker`);
++  if (dx && dx.adx >= 25) {
++    if (dx.plusDi > dx.minusDi) { score += 1; reasons.push(`ADX ${dx.adx.toFixed(0)} strong uptrend`); }
++    else { score -= 1; reasons.push(`ADX ${dx.adx.toFixed(0)} strong downtrend`); }
++  }
++  if (obv === "falling" && price > ema20) reasons.push("OBV falling while price rises: weak participation (divergence)");
+   const bias = score >= 2 ? "BULLISH" : score <= -2 ? "BEARISH" : "NEUTRAL";
+ 
+   const resistances = [...new Set(highs.filter((h) => h > price).sort((x, y) => x - y))].slice(0, 3);
+@@ -177,6 +254,9 @@ export function analyze(candles: Candle[], opts: AnalysisOptions = {}): string {
+     `Momentum: RSI14 ${r === null ? "?" : r.toFixed(1)}, MACD hist ${fmt(m?.hist)}.`,
+     `Volatility: ATR14 ${fmt(a)}${a ? ` (${((a / price) * 100).toFixed(2)}% of price)` : ""}; Bollinger ${fmt(bb?.lower)} / ${fmt(bb?.mid)} / ${fmt(bb?.upper)}.`,
+     `Supports: ${supports.map(fmt).join(", ") || "none below in this window"}. Resistances: ${resistances.map(fmt).join(", ") || "none above (price discovery)"}.`,
++    `Advanced: VWAP(24) ${fmt(vw)}${vw ? ` (price ${price >= vw ? "above: buyers in control" : "below: sellers in control"})` : ""}; ` +
++    `Stoch RSI ${st ? `${st.k.toFixed(0)}${st.k > st.prevK ? " rising" : " falling"}${st.k < 20 ? " (oversold)" : st.k > 80 ? " (overbought)" : ""}` : "?"}; ` +
++    `ADX ${dx ? `${dx.adx.toFixed(0)} (+DI ${dx.plusDi.toFixed(0)} / -DI ${dx.minusDi.toFixed(0)})` : "?"}; OBV ${obv ?? "?"}.`,
+   ];
+   if (fib) {
+     lines.push(
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 81577c1..ae8c259 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -36,7 +36,9 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ 6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+ 7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+-trade it for you (buy + automatic OCO protection). Never swap SOL <-> USDC back and forth: it only costs fees.
++trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
++(paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
++A daily report is sent to your creator automatically; message_creator is for important events only. Never swap SOL <-> USDC back and forth: it only costs fees.
+ If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
+ 
+ export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [
+diff --git a/src/solana/trading-extras.ts b/src/solana/trading-extras.ts
+new file mode 100644
+index 0000000..649bec0
+--- /dev/null
++++ b/src/solana/trading-extras.ts
+@@ -0,0 +1,172 @@
++/**
++ * Lot 3 trading tools: DCA plans, paper trading (simulated positions, no
++ * funds move) and liquid staking of idle SOL (jitoSOL).
++ */
++import { randomUUID } from "node:crypto";
++import { PublicKey } from "@solana/web3.js";
++import type { AutomatonTool } from "../types.js";
++import { USDC_MINT } from "./raydium.js";
++import { NATIVE_SOL_MINT } from "./trading.js";
++import { jupiterPrices, listOrders, listPaperTrades, saveOrder, type Order } from "./orders.js";
++import { runSwap } from "./swap-engine.js";
++import { jupiterVenue } from "./jupiter.js";
++
++export const JITOSOL_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
++const MAX_OPEN = 20;
++
++const validMint = (m: string) => {
++  try { new PublicKey(m); return true; } catch { return false; }
++};
++
++export function paperStatsText(trades: ReturnType<typeof listPaperTrades>, open: Order[]): string {
++  const wins = trades.filter((t) => t.pnlUsd > 0).length;
++  const total = trades.reduce((s, t) => s + t.pnlUsd, 0);
++  const lines = [
++    `Paper trades closed: ${trades.length} | win rate ${trades.length ? `${((wins / trades.length) * 100).toFixed(0)}%` : "?"} | ` +
++    `simulated PnL ${total >= 0 ? "+" : ""}$${total.toFixed(4)}${trades.length ? ` | avg ${(total / trades.length).toFixed(4)}$/trade` : ""}`,
++  ];
++  for (const t of trades.slice(-5)) {
++    lines.push(`- ${t.at.slice(0, 16)} ${t.mint.slice(0, 6)}… ${t.exitKind}: entry ${t.entryUsd.toPrecision(5)} exit ${t.exitUsd.toPrecision(5)} -> ${t.pnlUsd >= 0 ? "+" : ""}$${t.pnlUsd.toFixed(4)}`);
++  }
++  const groups = new Set(open.filter((o) => o.paper).map((o) => o.group));
++  lines.push(`Open paper positions: ${groups.size}`);
++  if (trades.length >= 20) {
++    lines.push(total > 0 ? "20+ paper trades with a positive result: the method can go live with a small size." : "20+ paper trades and still negative: change the method before using real money.");
++  }
++  return lines.join("\n");
++}
++
++export function createTradingExtraTools(): AutomatonTool[] {
++  return [
++    {
++      name: "dca_create",
++      description: "Dollar-cost averaging: buy usdcPerBuy of a token every everyHours, count times, skipping buys when the price is above maxPriceUsd. Runs in code (no need to be awake). Cancel with order_cancel.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string" },
++          usdcPerBuy: { type: "number" },
++          everyHours: { type: "number" },
++          count: { type: "number" },
++          maxPriceUsd: { type: "number", description: "Optional: skip a buy when the price is above." },
++        },
++        required: ["mint", "usdcPerBuy", "everyHours", "count"],
++      },
++      execute: async (args, ctx) => {
++        const mint = String(args.mint ?? "");
++        const usdc = Number(args.usdcPerBuy);
++        const hours = Number(args.everyHours);
++        const count = Math.floor(Number(args.count));
++        if (!validMint(mint) || mint === USDC_MINT) return "Blocked: invalid mint.";
++        if (!(usdc >= 0.5) || !(hours >= 1) || !(count >= 1 && count <= 100)) return "Blocked: usdcPerBuy >= 0.5, everyHours >= 1, count 1-100.";
++        const db = ctx.db.raw;
++        if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN) return "Blocked: too many open orders.";
++        const now = new Date();
++        const order: Order = {
++          id: `dca_${now.getTime().toString(36)}_${randomUUID().slice(0, 4)}`, kind: "dca", inputMint: USDC_MINT, outputMint: mint,
++          amount: String(Math.floor(usdc * 1_000_000)), watchMint: mint, condition: "below", triggerPriceUsd: args.maxPriceUsd ? Number(args.maxPriceUsd) : 1e12,
++          slippageBps: 100, venue: "jupiter", note: `DCA ${usdc} USDC x${count}`, createdAt: now.toISOString(), expiresAt: null,
++          status: "open", attempts: 0, updatedAt: now.toISOString(), intervalHours: hours, remaining: count, nextAt: now.toISOString(),
++          ...(args.maxPriceUsd ? { maxPriceUsd: Number(args.maxPriceUsd) } : {}),
++        };
++        saveOrder(db, order);
++        return `DCA ${order.id}: ${usdc} USDC of ${mint} every ${hours} h, ${count} times (first buy within a minute). Total ${(usdc * count).toFixed(2)} USDC.`;
++      },
++    },
++    {
++      name: "paper_trade",
++      description:
++        "Simulated trade, no funds move: opens a paper position of sizeUsd at the current price with a stop (stopPriceUsd or " +
++        "trailPct) and a take-profit, linked OCO; the code closes it like a real one. Use it to test a method before real money. See paper_stats.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string" },
++          sizeUsd: { type: "number" },
++          stopPriceUsd: { type: "number" },
++          trailPct: { type: "number" },
++          takeProfitPriceUsd: { type: "number" },
++          note: { type: "string" },
++        },
++        required: ["mint", "sizeUsd", "takeProfitPriceUsd"],
++      },
++      execute: async (args, ctx) => {
++        const mint = String(args.mint ?? "");
++        const size = Number(args.sizeUsd);
++        const tp = Number(args.takeProfitPriceUsd);
++        const stop = args.stopPriceUsd === undefined ? NaN : Number(args.stopPriceUsd);
++        const trail = args.trailPct === undefined ? NaN : Number(args.trailPct);
++        if (!validMint(mint) || !(size > 0) || !(tp > 0)) return "Blocked: give a valid mint, sizeUsd and takeProfitPriceUsd.";
++        if (!(stop > 0) && !(trail > 0 && trail < 50)) return "Blocked: give stopPriceUsd or trailPct.";
++        let price: number | undefined;
++        try { price = (await jupiterPrices([mint]))[mint]; } catch { price = undefined; }
++        if (!price) return "Blocked: price unavailable.";
++        const stopPrice = stop > 0 ? stop : price * (1 - trail / 100);
++        if (!(stopPrice < price && tp > price)) return `Blocked: stop must be below and target above the current price ($${price}).`;
++        const db = ctx.db.raw;
++        if (listOrders(db).filter((o) => o.status === "open").length + 2 > MAX_OPEN) return "Blocked: too many open orders.";
++        const now = new Date();
++        const group = `paper_${now.getTime().toString(36)}`;
++        const units = size / price;
++        const base = {
++          inputMint: mint, outputMint: USDC_MINT, amount: "0", watchMint: mint, slippageBps: 0, venue: "jupiter" as const,
++          note: String(args.note ?? "paper").slice(0, 200), createdAt: now.toISOString(), expiresAt: null, status: "open" as const,
++          attempts: 0, updatedAt: now.toISOString(), group, paper: true, paperUnits: units, paperEntryUsd: price,
++        };
++        const stopOrder: Order = trail > 0 && !(stop > 0)
++          ? { ...base, id: `${group}_stop`, kind: "trailing_stop", condition: "below", triggerPriceUsd: stopPrice, trailPct: trail, highestPriceUsd: price }
++          : { ...base, id: `${group}_stop`, kind: "stop_loss", condition: "below", triggerPriceUsd: stopPrice };
++        saveOrder(db, stopOrder);
++        saveOrder(db, { ...base, id: `${group}_tp`, kind: "take_profit", condition: "above", triggerPriceUsd: tp });
++        return `Paper position ${group}: ${units.toPrecision(6)} units at $${price} ($${size}), stop $${stopPrice.toPrecision(6)}, target $${tp}. No funds moved.`;
++      },
++    },
++    {
++      name: "paper_stats",
++      description: "Results of your paper (simulated) trades: count, win rate, simulated PnL, recent trades, open paper positions.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => paperStatsText(listPaperTrades(ctx.db.raw), listOrders(ctx.db.raw).filter((o) => o.status === "open")),
++    },
++    {
++      name: "stake_sol",
++      description:
++        "Liquid staking for idle SOL: swap SOL into jitoSOL (~7%/year staking yield, swap back anytime with unstake_sol). " +
++        "jitoSOL follows the SOL price: it is not a cash position. 0.01 SOL always stays for fees. amountSol in SOL units.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: { amountSol: { type: "number" }, dryRun: { type: "boolean" } }, required: ["amountSol"] },
++      execute: async (args, ctx) => {
++        if (!ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Solana identity unavailable.";
++        const lamports = Math.floor(Number(args.amountSol) * 1e9);
++        if (!(lamports > 0)) return "Blocked: amountSol must be positive.";
++        return runSwap({ db: ctx.db, chainIdentity: ctx.identity.chainIdentity },
++          { inputMint: NATIVE_SOL_MINT, outputMint: JITOSOL_MINT, amount: String(lamports), slippageBps: 50, dryRun: args.dryRun === true }, jupiterVenue);
++      },
++    },
++    {
++      name: "unstake_sol",
++      description: 'Swap jitoSOL back into SOL. amountRaw in jitoSOL raw units (9 decimals) or "all".',
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: { amountRaw: { type: "string" }, dryRun: { type: "boolean" } }, required: ["amountRaw"] },
++      execute: async (args, ctx) => {
++        if (!ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Solana identity unavailable.";
++        let amount = String(args.amountRaw ?? "");
++        if (amount === "all") {
++          const { SolanaTradingService } = await import("./trading.js");
++          const balances = await new SolanaTradingService(ctx.identity.chainIdentity).getTokenBalances();
++          amount = balances.filter((b) => b.mint === JITOSOL_MINT).reduce((s, b) => s + BigInt(b.amount), 0n).toString();
++          if (amount === "0") return "No jitoSOL to unstake.";
++        }
++        return runSwap({ db: ctx.db, chainIdentity: ctx.identity.chainIdentity },
++          { inputMint: JITOSOL_MINT, outputMint: NATIVE_SOL_MINT, amount, slippageBps: 50, dryRun: args.dryRun === true }, jupiterVenue);
++      },
++    },
++  ];
++}
