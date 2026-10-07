@@ -350,3 +350,28 @@ Patch : `2026-10-07-trading-lot1.patch`, à appliquer après `2026-10-07-trading
   - archive SOUL.md et WORKLOG.md (reconstruits à partir de la nouvelle genèse) ;
   - annule les ordres automatiques ouverts ;
   - arrête tous les services publiés.
+
+---
+
+# Trading, lot 2 — 2026-10-07
+
+Patch : `2026-10-07-trading-lot2.patch`, à appliquer après `2026-10-07-trader-mission.patch`.
+
+- **`backtest`** : teste une règle sur environ 300 bougies réelles (15m, 1h, 4h ou 1d). Trois règles disponibles :
+  - `ema_cross` : croisement de deux moyennes mobiles (EMA) ;
+  - `rsi_rebound` : rebond du RSI depuis la zone basse ;
+  - `breakout` : cassure d'un plus-haut avec du volume.
+  
+  Chaque trade a un stop à X ATR et un objectif à N fois le risque. Les frais sont comptés (0,25 % par côté), et si le stop et l'objectif sont touchés dans la même bougie, c'est le stop qui compte. Résultat : nombre de trades, taux de réussite, rendement moyen et total, perte maximale, comparaison avec la simple détention, verdict.
+- **`strategy_create` / `strategy_list` / `strategy_stop`** : SHUI conçoit, le code exécute.
+  - Toutes les 5 min, le code regarde les bougies clôturées. Sur un signal, il achète un montant fixe en USDC via Jupiter, puis pose aussitôt un stop et un objectif liés (OCO).
+  - Une position à la fois par stratégie, 3 stratégies actives au maximum, jamais deux achats sur la même bougie.
+  - Un backtest tourne à la création : s'il est perdant, la stratégie est refusée, sauf avec `force=true`.
+  - Le disjoncteur de perte reste respecté, et SHUI est prévenu à chaque achat ou refus.
+- **`price_alert`** : réveille SHUI quand un prix franchit un niveau, sans trader.
+- **`market_regime`** : la météo du marché (RISK-ON, NEUTRAL ou RISK-OFF) à partir de :
+  - la tendance journalière de SOL ;
+  - la variation sur 7 jours de SOL et de BTC (CoinGecko) ;
+  - l'indice Fear & Greed (alternative.me) ;
+  - le volume des DEX Solana (DefiLlama).
+- La méthode du mode trading intègre ces outils. Les workers ne peuvent pas créer ni arrêter de stratégie.
