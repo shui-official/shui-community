@@ -424,3 +424,19 @@ Le patch nécessite le SDK Drift sur le VPS : `pnpm add @drift-labs/sdk@2.156.0`
   - le PnL réalisé (trades, frais, funding) est journalisé (`perp_pnl`) quand le compte n'a plus de position. Il compte dans `trade_stats` et dans la durée de vie hebdomadaire.
 - **Moniteur toutes les 5 minutes** : il rafraîchit la valeur, enregistre le PnL, et envoie une alerte dans l'inbox si une position est à moins de 5 % de sa liquidation.
 - **Workers** : ils ne peuvent pas utiliser les outils perp qui déplacent des fonds.
+
+## Lot 5 : shorts en tendance baissière, règle des 2 pertes appliquée par le code, paper trading en attente
+
+Patch : `2026-10-07-trading-lot5.patch`, à appliquer après `2026-10-07-trading-lot4.patch`.
+
+- **`setup_scan` dans les deux sens** :
+  - en tendance 4 h haussière, le scanner cherche des achats, comme avant ;
+  - en tendance 4 h baissière, pour SOL, BTC (cbBTC) et ETH, il cherche un short sur Drift : un rebond qui s'essouffle (RSI 1 h entre 32 et 65, momentum qui se retourne), un stop au-dessus de la résistance, un objectif au prochain creux 4 h et un reward/risk d'au moins 2. Il donne la commande `perp_open` prête à l'emploi, à tester d'abord avec `dryRun` ;
+  - cbBTC et ETH sont ajoutés à la liste surveillée.
+- **Règle « 2 pertes » appliquée par le code** :
+  - une perte ne compte que si elle dépasse 0,5 % du capital : les swaps de test ne comptent plus ;
+  - après 2 vraies pertes dans la journée, les nouveaux achats et `perp_open` sont bloqués jusqu'à 00:00 UTC (raison `LOSS_STREAK_STOP`) ;
+  - les ventes et les stops restent autorisés ;
+  - les ordres automatiques attendent la fin du blocage au lieu d'échouer ;
+  - `trade_stats` donne l'heure exacte de reprise.
+- **En attente** : quand aucun setup réel n'est trouvé, SHUI garde une stratégie en paper trading active (après un backtest) ou simule le meilleur quasi-setup, au lieu de seulement dormir.
