@@ -479,3 +479,28 @@ Le premier test réel de `perp_deposit` a échoué en simulation (`custom progra
 - Le prompt ne parle plus de levier.
 - `setup_scan` ne propose plus de shorts.
 - Le code reste en place. Il ne se réactive qu'avec `SHUI_PERPS_VENUE=drift`, à n'utiliser que si le protocole est de nouveau vérifié sûr.
+
+## Lot 6 : token du créateur, apports de fonds, dossier de code, plus d'opportunités
+
+Patch : `2026-10-07-trading-lot6.patch`, à appliquer après `2026-10-07-disable-drift.patch`.
+
+- **Token du créateur (SHUI, `CnrMgN…`) protégé.**
+  - Les swaps, ordres, alertes, paper trades, stratégies, DCA et analyses techniques sont refusés sur ce token.
+  - Les ordres et stratégies existants sur ce token sont annulés automatiquement.
+  - `positions` l'affiche comme « token du créateur, à conserver ».
+  - D'autres tokens peuvent être protégés avec `SHUI_CREATOR_TOKENS` (liste séparée par des virgules).
+- **Virements entrants = apports de fonds** (`funding`, revenu 0) en mode trading. Les anciennes entrées `revenue` sont reclassées. Seuls les trades comptent pour la durée de vie.
+- **`write_file` refuse d'écrire dans le dossier d'installation** (le code source de SHUI). Ses notes vont dans son workspace.
+- **Mode trading : moins de dispersion.**
+  - Les outils masqués sont `create_goal`, `set_goal`, `spawn_child`, `start_child`, `fund_child`, `git_commit` et `git_push`.
+  - Une alerte de prix doit être placée à au moins 1 % du prix actuel.
+- **5a, scanner élargi.** Quand aucun token n'est précisé, `setup_scan` ajoute jusqu'à 10 tokens tendance :
+  - liquidité d'au moins 250 k$ ;
+  - pool de plus de 7 jours ;
+  - ni stablecoin, ni token du créateur.
+  
+  Un setup trouvé sur ces tokens doit passer `token_safety`.
+- **5b, rebond en range.**
+  - Conditions : graphique 4 h sans tendance (ADX < 20 ou EMA plates), prix près du support, RSI 1 h sous 42 qui remonte.
+  - Stop sous le support, objectif sous le haut du range, reward/risk d'au moins 1,5.
+  - Le scanner propose ces setups en **paper trading uniquement** (`paper_trade setup="range"`), jusqu'à 20 trades range simulés avec un total positif.

@@ -1,0 +1,741 @@
+diff --git a/src/__tests__/lot6-trading.test.ts b/src/__tests__/lot6-trading.test.ts
+new file mode 100644
+index 0000000..b10f886
+--- /dev/null
++++ b/src/__tests__/lot6-trading.test.ts
+@@ -0,0 +1,128 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { isCreatorToken, findCreatorToken, creatorTokens } from "../solana/token-policy.js";
++import { listOrders, runOrderTick, saveOrder, type Order, recordPaperTrade } from "../solana/orders.js";
++import { evaluateRangeSetup, rangePaperRecord, setupScan, trendingCandidates } from "../solana/trading-desk.js";
++import { ensureLedgerSchema, listLedgerEntries, recordIncoming, reclassifyRevenueAsFunding } from "../solana/ledger.js";
++import { formatPositions } from "../solana/portfolio.js";
++import { isInsideInstallDir, INSTALL_DIR } from "../agent/tools.js";
++import type { Candle } from "../solana/technical-analysis.js";
++
++const SHUI = "CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C";
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot6-")), "s.db"));
++const order = (over: Partial<Order>): Order => ({
++  id: "o", kind: "stop_loss", inputMint: SHUI, outputMint: USDC, amount: "all", watchMint: SHUI, condition: "below", triggerPriceUsd: 0.00005,
++  slippageBps: 100, venue: "jupiter", note: "", createdAt: "", expiresAt: null, status: "open", attempts: 0, updatedAt: new Date().toISOString(), ...over,
++});
++
++describe("creator token", () => {
++  it("is recognised (default + env) and its orders are cancelled by code", async () => {
++    expect(isCreatorToken(SHUI)).toBe(true);
++    expect(creatorTokens({ SHUI_CREATOR_TOKENS: "Abc, Def" }).has("Def")).toBe(true);
++    expect(findCreatorToken(USDC, SHUI)).toBe(SHUI);
++    const db = freshDb();
++    saveOrder(db.raw, order({ id: "oco_stop", group: "oco" }));
++    const swap = vi.fn();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [SHUI]: 0.00001 }), swap, now: () => new Date() });
++    expect(swap).not.toHaveBeenCalled();
++    expect(listOrders(db.raw)[0]).toMatchObject({ status: "cancelled" });
++  });
++
++  it("is shown as the creator's token in positions, not as a trade", () => {
++    const text = formatPositions([{ mint: SHUI, amount: 10000, priceUsd: 0.0001, valueUsd: 1, costUsd: 0, avgEntryUsd: null, unrealizedPnlUsd: null, orders: [] } as any], 34);
++    expect(text).toMatch(/creator's own token/);
++    expect(text).not.toMatch(/NO STOP-LOSS/);
++  });
++
++  it("is refused by the trading tools", async () => {
++    const { createBuiltinTools } = await import("../agent/tools.js");
++    const tools = createBuiltinTools("");
++    const db = freshDb();
++    const ctx = { db, identity: {} } as any;
++    for (const [name, args] of [
++      ["protect_position", { mint: SHUI, takeProfitPriceUsd: 1, stopPriceUsd: 0.00001 }],
++      ["price_alert", { mint: SHUI, condition: "above", priceUsd: 1 }],
++      ["paper_trade", { mint: SHUI, sizeUsd: 10, takeProfitPriceUsd: 1, stopPriceUsd: 0.00001 }],
++      ["technical_analysis", { mint: SHUI }],
++    ] as const) {
++      expect(await tools.find((t) => t.name === name)!.execute(args as any, ctx)).toMatch(/creator's own token/);
++    }
++  });
++});
++
++describe("funding, not revenue", () => {
++  it("records incoming transfers as funding in trading focus and reclassifies old ones", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db.raw);
++    const delta = (sig: string) => ({ signature: sig, blockTime: 1_791_000_000, failed: false, signedByWallet: false, feePayer: "Exchange111", solLamportsDelta: 529_000n, tokenDeltas: [] }) as any;
++    recordIncoming(db.raw, delta("old"), { creatorAddress: "Creator", solPriceUsd: 117 });
++    expect(listLedgerEntries(db.raw)[0]).toMatchObject({ kind: "revenue" });
++    const prev = process.env.SHUI_FOCUS;
++    process.env.SHUI_FOCUS = "trading";
++    try {
++      expect(reclassifyRevenueAsFunding(db.raw)).toBe(1);
++      recordIncoming(db.raw, delta("new"), { creatorAddress: "Creator", solPriceUsd: 117 });
++      for (const e of listLedgerEntries(db.raw)) expect(e).toMatchObject({ kind: "funding", revenueUsd: 0 });
++    } finally {
++      if (prev === undefined) delete process.env.SHUI_FOCUS; else process.env.SHUI_FOCUS = prev;
++    }
++  });
++});
++
++describe("source folder", () => {
++  it("detects paths inside the installation", () => {
++    expect(isInsideInstallDir(path.join(INSTALL_DIR, "README.md"))).toBe(true);
++    expect(isInsideInstallDir("/home/automaton/.automaton/workspace/notes.md", "/home/automaton/workspace/automaton-main")).toBe(false);
++    expect(isInsideInstallDir("/home/automaton/workspace/automaton-main/x.py", "/home/automaton/workspace/automaton-main")).toBe(true);
++  });
++});
++
++const candles = (closes: number[], wick = 0.01): Candle[] => closes.map((c, i) => ({ t: i, o: c, h: c * (1 + wick), l: c * (1 - wick), c, v: 100 }));
++
++describe("range setups and trending tokens", () => {
++  it("only proposes range rebounds in a trendless chart, near support, RSI turning up", () => {
++    // 4h: sideways 95-105 range
++    const h4 = candles(Array.from({ length: 120 }, (_, i) => 100 + 5 * Math.sin(i / 4)));
++    // 1h: slide to the bottom then a small turn up
++    const h1closes = Array.from({ length: 120 }, (_, i) => (i < 110 ? 100 - (i / 110) * 6 : 94 + (i - 110) * 0.08));
++    const r = evaluateRangeSetup("RNG", "M", h4, candles(h1closes), 1_000_000);
++    expect(r.side).toBe("range");
++    if (r.plan) {
++      expect(r.plan.stop).toBeLessThan(r.plan.entry);
++      expect(r.plan.target).toBeGreaterThan(r.plan.entry);
++      expect(r.ok).toBe(r.plan.rr >= 1.5);
++    } else {
++      expect(r.reason).toMatch(/^range:/);
++    }
++    const trending = candles(Array.from({ length: 120 }, (_, i) => 100 + i));
++    expect(evaluateRangeSetup("UP", "M", trending, trending, 1_000_000).reason).toMatch(/trending/);
++  });
++
++  it("counts range paper trades before allowing live range trades", () => {
++    const db = freshDb();
++    expect(rangePaperRecord(db.raw)).toMatchObject({ trades: 0, live: false });
++    for (let i = 0; i < 20; i++) {
++      recordPaperTrade(db.raw, { id: `p${i}`, at: `2026-10-07T00:00:${String(i).padStart(2, "0")}Z`, mint: "M", units: 1, entryUsd: 1, exitUsd: 1.1, pnlUsd: 0.1, exitKind: "take_profit", source: "[range] test" });
++    }
++    expect(rangePaperRecord(db.raw)).toMatchObject({ trades: 20, live: true });
++  });
++
++  it("adds liquid, older trending tokens and never the creator token", async () => {
++    const day = 24 * 3_600_000;
++    const now = Date.parse("2026-10-07T12:00:00Z");
++    const pool = (mint: string, liq: number, ageDays: number, vol: number) => ({
++      relationships: { base_token: { data: { id: `solana_${mint}` } } },
++      attributes: { name: `${mint.slice(0, 4)} / SOL`, reserve_in_usd: String(liq), volume_usd: { h24: String(vol) }, pool_created_at: new Date(now - ageDays * day).toISOString() },
++    });
++    const fetcher = async () => ({ data: [
++      pool("GoodMint1111", 900_000, 30, 5e6), pool("ThinMint1111", 50_000, 30, 9e6), pool("YoungMint111", 900_000, 2, 9e6),
++      pool(SHUI, 900_000, 30, 9e6), pool("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", 900_000, 300, 9e6),
++    ] });
++    expect(await trendingCandidates(fetcher, now)).toEqual([{ symbol: "Good", mint: "GoodMint1111" }]);
++    expect(await setupScan({ mints: [SHUI] }, async () => [], 0, false, { trending: false })).not.toMatch(/CnrMgN/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 1fd5fbf..09f6dab 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -59,7 +59,7 @@ import {
+ } from "../solana/wallet-valuation.js";
+ import { perpValuationAsset } from "../solana/perps.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+-import { scanWalletHistory, getDailyGain, utcDay } from "../solana/ledger.js";
++import { scanWalletHistory, getDailyGain, utcDay, reclassifyRevenueAsFunding } from "../solana/ledger.js";
+ import {
+   checkLifeEnd,
+   evaluateCompletedDays,
+@@ -195,6 +195,7 @@ export async function runLifespanTick(params: {
+     }
+ 
+     ensureRulesV2(raw);
++    reclassifyRevenueAsFunding(raw);
+     recordWeekCapital(raw, params.verifiedWalletValueUsd ?? null);
+     updateDrawdownGuard(raw, params.verifiedWalletValueUsd ?? null);
+     const evaluated = evaluateCompletedDays(raw);
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index b94c9aa..daf1e93 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -1,3 +1,4 @@
++import { fileURLToPath } from "node:url";
+ import { createRaydiumSwapTool } from "../solana/swap-tool.js";
+ import { stopPublicListeners } from "../services/public-listeners.js";
+ import { createMessageCreatorTool } from "../integration/creator-chat.js";
+@@ -50,6 +51,14 @@ const logger = createLogger("tools");
+ // On the OVH local runtime this resolves to /home/automaton.
+ const SANDBOX_HOME = os.homedir();
+ 
++/** SHUI's own installation (source code); write_file must never land there. */
++export const INSTALL_DIR = nodePath.resolve(fileURLToPath(new URL("../../", import.meta.url)));
++
++export function isInsideInstallDir(filePath: string, installDir: string = INSTALL_DIR): boolean {
++  const resolved = nodePath.resolve(filePath);
++  return resolved === installDir || resolved.startsWith(installDir + nodePath.sep);
++}
++
+ /**
+  * Validate that a file path resolves to within the allowed root directory.
+  * Returns the resolved absolute path, or an error string if out of bounds.
+@@ -361,6 +370,10 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+         // Path confinement: restrict writes to sandbox home directory
+         const confined = confinePathToSandbox(filePath);
+         if (typeof confined === "object") return confined.error;
++        if (isInsideInstallDir(confined)) {
++          return `Blocked: ${confined} is inside your own source code folder (${INSTALL_DIR}). ` +
++            `Write notes, scripts and documents in your workspace instead (e.g. ${nodePath.join(SANDBOX_HOME, ".automaton", "workspace")}).`;
++        }
+         // Guard against overwriting protected files (same check as edit_own_file)
+         const { isProtectedFile } = await import("../self-mod/code.js");
+         if (isProtectedFile(confined)) {
+diff --git a/src/solana/ledger.ts b/src/solana/ledger.ts
+index a6d8069..06e5a4d 100644
+--- a/src/solana/ledger.ts
++++ b/src/solana/ledger.ts
+@@ -33,7 +33,9 @@ export type LedgerKind =
+   | "creator_deposit"
+   | "own_unjournaled"
+   | "perp_transfer"
+-  | "perp_pnl";
++  | "perp_pnl"
++  /** Incoming funds in trading focus: SHUI sells nothing, so it is funding, not revenue. */
++  | "funding";
+ 
+ export interface LedgerEntry {
+   signature: string;
+@@ -316,6 +318,7 @@ export function recordIncoming(db: Database, delta: WalletTransactionDelta, para
+   if (received.length === 0) return null;
+ 
+   const fromCreator = !!params.creatorAddress && delta.feePayer === params.creatorAddress;
++  const funding = !fromCreator && tradingFocus();
+   let valueUsd = 0;
+   let incomplete = false;
+ 
+@@ -339,12 +342,12 @@ export function recordIncoming(db: Database, delta: WalletTransactionDelta, para
+     signature: delta.signature,
+     ts: at.toISOString(),
+     day: utcDay(at),
+-    kind: fromCreator ? "creator_deposit" : "revenue",
++    kind: fromCreator ? "creator_deposit" : funding ? "funding" : "revenue",
+     inputMint: null,
+     inputAmountRaw: null,
+     outputMint: main.mint,
+     outputAmountRaw: main.raw.toString(),
+-    revenueUsd: fromCreator ? 0 : valueUsd,
++    revenueUsd: fromCreator || funding ? 0 : valueUsd,
+     realizedPnlUsd: 0,
+     incomplete,
+     counterparty: delta.feePayer,
+@@ -399,6 +402,21 @@ export function recordPerpPnl(db: Database, params: { pnlUsd: number; at?: Date;
+   });
+ }
+ 
++function tradingFocus(env: NodeJS.ProcessEnv = process.env): boolean {
++  return (env.SHUI_FOCUS ?? "").trim().toLowerCase() === "trading";
++}
++
++/**
++ * In trading focus only trades count: incoming transfers recorded earlier as
++ * "revenue" (e.g. a deposit from the creator's exchange account) become
++ * funding. Returns the number of entries reclassified.
++ */
++export function reclassifyRevenueAsFunding(db: Database, env: NodeJS.ProcessEnv = process.env): number {
++  if (!tradingFocus(env)) return 0;
++  ensureLedgerSchema(db);
++  return db.prepare("UPDATE shui_ledger SET kind = 'funding', revenue_usd = 0 WHERE kind = 'revenue'").run().changes;
++}
++
+ export interface WalletHistorySource {
+   /** Signatures newer than `until`, newest first (Solana RPC order). */
+   getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 9f9de1a..09c8efb 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -7,6 +7,7 @@
+  * and runs the swap through the same safe engine as the swap tools. SHUI is
+  * told the outcome in its inbox.
+  */
++import { creatorTokenBlock, findCreatorToken, isCreatorToken } from "./token-policy.js";
+ import { randomUUID } from "node:crypto";
+ import { PublicKey } from "@solana/web3.js";
+ import type { Database } from "better-sqlite3";
+@@ -20,6 +21,7 @@ import { fetchJson } from "./http-json.js";
+ import { queueSystemNotice } from "../integration/creator-chat.js";
+ 
+ const ORDER_PREFIX = "order.";
++const MIN_ALERT_DISTANCE = 0.01;
+ const MAX_OPEN_ORDERS = 20;
+ const MAX_ATTEMPTS = 3;
+ export const ORDER_CHECK_MS = 30_000;
+@@ -172,6 +174,13 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+   const changed: string[] = [];
+ 
+   for (const order of open) {
++    if (findCreatorToken(order.inputMint, order.outputMint, order.watchMint)) {
++      saveOrder(db, { ...order, status: "cancelled", lastError: "creator token: never traded", updatedAt: now.toISOString() });
++      queueSystemNotice(db, "system:orders",
++        `Order ${order.id} cancelled by code: ${order.watchMint} is your creator's own token (SHUI). Keep it, never trade it.`);
++      changed.push(order.id);
++      continue;
++    }
+     if (order.expiresAt && Date.parse(order.expiresAt) <= now.getTime()) {
+       saveOrder(db, { ...order, status: "expired", updatedAt: now.toISOString() });
+       queueSystemNotice(db, "system:orders", `Order ${order.id} (${order.kind}) expired without triggering.`);
+@@ -370,6 +379,8 @@ export function createOrderTools(): AutomatonTool[] {
+         const outputMint = String(args.outputMint ?? "");
+         const watchMint = String(args.watchMint ?? "");
+         if (![inputMint, outputMint, watchMint].every(validMint) || inputMint === outputMint) return "Blocked: invalid mints.";
++        const creator = findCreatorToken(inputMint, outputMint, watchMint);
++        if (creator) return creatorTokenBlock(creator);
+         // A stop-loss or take-profit sells the watched token; a buy_below buys it.
+         // A worker created "stop_loss all USDC -> SOL when SOL < $100", which
+         // buys SOL as it falls: the opposite of a stop-loss.
+@@ -464,6 +475,7 @@ export function createOrderTools(): AutomatonTool[] {
+         if (!validMint(mint) || !validMint(outputMint) || mint === outputMint || mint === NATIVE_SOL_MINT && args.amount === undefined) {
+           return "Blocked: invalid mint (for SOL itself, give a raw amount instead of all).";
+         }
++        if (isCreatorToken(mint)) return creatorTokenBlock(mint);
+         const tp = Number(args.takeProfitPriceUsd);
+         const stop = args.stopPriceUsd === undefined ? NaN : Number(args.stopPriceUsd);
+         const trailPct = args.trailPct === undefined ? NaN : Number(args.trailPct);
+@@ -525,6 +537,14 @@ export function createOrderTools(): AutomatonTool[] {
+         const condition = args.condition === "above" ? "above" : args.condition === "below" ? "below" : null;
+         const price = Number(args.priceUsd);
+         if (!validMint(mint) || !condition || !(price > 0)) return 'Blocked: give a valid mint, condition "above"/"below" and a positive priceUsd.';
++        if (isCreatorToken(mint)) return creatorTokenBlock(mint);
++        // An alert next to the current price fires at once and only wakes you for nothing.
++        let current: number | undefined;
++        try { current = (await jupiterPrices([mint]))[mint]; } catch { current = undefined; }
++        if (current && Math.abs(price - current) / current < MIN_ALERT_DISTANCE) {
++          return `Blocked: alert price $${price} is within ${MIN_ALERT_DISTANCE * 100}% of the current price ($${current}). ` +
++            "Set it at a level that matters (support, resistance, breakout).";
++        }
+         const db = ctx.db.raw;
+         if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN_ORDERS) return "Blocked: too many open orders and alerts.";
+         const now = new Date();
+diff --git a/src/solana/portfolio.ts b/src/solana/portfolio.ts
+index 31b73f4..9276f1b 100644
+--- a/src/solana/portfolio.ts
++++ b/src/solana/portfolio.ts
+@@ -6,6 +6,7 @@
+  *   authority, Token-2022 extensions that let the issuer take or block
+  *   tokens, holder concentration, liquidity and age of the pool).
+  */
++import { isCreatorToken } from "./token-policy.js";
+ import { Connection, PublicKey } from "@solana/web3.js";
+ import type { Database } from "better-sqlite3";
+ import type { AutomatonTool } from "../types.js";
+@@ -72,6 +73,10 @@ export function formatPositions(positions: PositionView[], usdc: number): string
+   const money = (x: number | null) => (x === null ? "?" : `$${x.toFixed(4)}`);
+   const lines = [`Cash: ${usdc.toFixed(4)} USDC`];
+   for (const p of positions) {
++    if (isCreatorToken(p.mint)) {
++      lines.push(`SHUI (your creator's own token) mint=${p.mint}: ${p.amount} = ${money(p.valueUsd)} | NOT A TRADE: keep it, never sell, protect or analyze it.`);
++      continue;
++    }
+     const label = p.mint === NATIVE_SOL_MINT ? "SOL" : `${p.mint.slice(0, 6)}…`;
+     const pnl = p.unrealizedPnlUsd === null ? "entry unknown (held before the ledger or received)"
+       : `unrealized ${p.unrealizedPnlUsd >= 0 ? "+" : ""}${money(p.unrealizedPnlUsd)} (${((p.unrealizedPnlUsd / (p.costUsd || 1)) * 100).toFixed(2)}%)`;
+diff --git a/src/solana/strategies.ts b/src/solana/strategies.ts
+index 5ebd059..3051d9d 100644
+--- a/src/solana/strategies.ts
++++ b/src/solana/strategies.ts
+@@ -6,6 +6,7 @@
+  * position with a linked stop-loss / take-profit (OCO). One position per
+  * strategy at a time. Creation runs a backtest first.
+  */
++import { creatorTokenBlock, isCreatorToken } from "./token-policy.js";
+ import { randomUUID } from "node:crypto";
+ import { PublicKey } from "@solana/web3.js";
+ import type { Database } from "better-sqlite3";
+@@ -77,6 +78,11 @@ export async function runStrategyTick(deps: StrategyDeps): Promise<string[]> {
+   const acted: string[] = [];
+   for (const strategy of listStrategies(db).filter((s) => s.active)) {
+     let s = strategy;
++    if (isCreatorToken(s.mint)) {
++      saveStrategy(db, { ...s, active: false, lastError: "creator token: never traded", updatedAt: now.toISOString() });
++      acted.push(s.id);
++      continue;
++    }
+     if (s.state === "long") {
+       const stillOpen = s.group && listOrders(db).some((o) => o.group === s.group && (o.status === "open" || o.status === "executing"));
+       if (stillOpen) continue;
+@@ -208,6 +214,7 @@ export function createStrategyTools(): AutomatonTool[] {
+         const mint = String(args.mint ?? "");
+         try { new PublicKey(mint); } catch { return "Blocked: invalid mint."; }
+         if (mint === USDC_MINT) return "Blocked: the strategy buys a token with USDC; mint cannot be USDC.";
++        if (isCreatorToken(mint)) return creatorTokenBlock(mint);
+         const rule = String(args.rule ?? "") as Rule;
+         if (!RULES.includes(rule)) return `Blocked: rule must be one of ${RULES.join(", ")}.`;
+         const sizeUsd = Number(args.sizeUsd);
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+index 36944c3..3acee85 100644
+--- a/src/solana/swap-engine.ts
++++ b/src/solana/swap-engine.ts
+@@ -15,6 +15,7 @@ import {
+ } from "./trading.js";
+ import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
+ import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
++import { findCreatorToken, creatorTokenBlock } from "./token-policy.js";
+ import { isBuy, lossStopUntil, tradingPausedUntil } from "../survival/risk-guard.js";
+ 
+ export interface SwapExpectation {
+@@ -68,6 +69,10 @@ export async function runSwap(
+   try { new PublicKey(inputMint); new PublicKey(outputMint); } catch { return "Blocked: invalid Solana mint address."; }
+   if (inputMint === outputMint) return "Blocked: input and output mints must differ.";
+   const inputAmount = BigInt(amountString);
++  const creatorToken = findCreatorToken(inputMint, outputMint);
++  if (creatorToken) {
++    return JSON.stringify({ success: false, blocked: true, reason: "CREATOR_TOKEN", message: creatorTokenBlock(creatorToken) });
++  }
+   const pausedUntil = tradingPausedUntil(ctx.db.raw);
+   if (pausedUntil && isBuy(outputMint)) {
+     return JSON.stringify({
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 53479ea..335d6bc 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -6,6 +6,7 @@
+  * output is a compact text summary a local model can act on; the rules of
+  * the trading playbook are advice, never enforced.
+  */
++import { creatorTokenBlock, isCreatorToken } from "./token-policy.js";
+ import type { AutomatonTool } from "../types.js";
+ import { fetchJson } from "./http-json.js";
+ 
+@@ -438,6 +439,7 @@ export function createTechnicalAnalysisTools(): AutomatonTool[] {
+         required: ["mint"],
+       },
+       execute: async (args, ctx) => {
++        if (isCreatorToken(String(args.mint ?? ""))) return creatorTokenBlock(String(args.mint));
+         let walletUsd: number | null = null;
+         try {
+           const row = ctx.db.raw.prepare("SELECT value FROM kv WHERE key = 'last_known_balance'").get() as { value: string } | undefined;
+diff --git a/src/solana/token-policy.ts b/src/solana/token-policy.ts
+new file mode 100644
+index 0000000..4b88d9b
+--- /dev/null
++++ b/src/solana/token-policy.ts
+@@ -0,0 +1,26 @@
++/**
++ * The creator's own token (SHUI, launched by the creator and sent to the
++ * agent's wallet). SHUI keeps it: it must never sell, buy, protect, alert or
++ * simulate it — selling it would dump the creator's project in its own thin
++ * pool. Extra mints can be added with SHUI_CREATOR_TOKENS (comma-separated).
++ */
++export const DEFAULT_CREATOR_TOKENS = ["CnrMgNn1N3uY6GqD6FeZRdd1uhPViEFxSioWhRZsCz4C"];
++
++export function creatorTokens(env: NodeJS.ProcessEnv = process.env): Set<string> {
++  const extra = (env.SHUI_CREATOR_TOKENS ?? "").split(",").map((m) => m.trim()).filter(Boolean);
++  return new Set([...DEFAULT_CREATOR_TOKENS, ...extra]);
++}
++
++export function isCreatorToken(mint: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
++  return !!mint && creatorTokens(env).has(mint);
++}
++
++export function creatorTokenBlock(mint: string): string {
++  return `Blocked: ${mint} is your creator's own token (SHUI). It is not a trade: keep it. ` +
++    "Never sell, buy, protect, alert, simulate or analyze it for trading.";
++}
++
++/** First creator token among the given mints, if any. */
++export function findCreatorToken(...mints: Array<string | null | undefined>): string | null {
++  return mints.find((m) => isCreatorToken(m)) ?? null;
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 3c55cd8..a41d601 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -11,14 +11,20 @@ import { randomUUID } from "node:crypto";
+ import type { Database } from "better-sqlite3";
+ import type { AutomatonTool } from "../types.js";
+ import {
+-  atr, emaSeries, fetchCandles, fibonacci, macd, rsi, swings, type Candle, type Fetcher, defaultFetcher,
++  adx, atr, emaSeries, fetchCandles, fibonacci, macd, rsi, swings, type Candle, type Fetcher, defaultFetcher,
+ } from "./technical-analysis.js";
+ import { USDC_MINT } from "./raydium.js";
+ import { perpsEnabled } from "./perps.js";
++import { isCreatorToken } from "./token-policy.js";
++import { rowsFromGeckoPools } from "./market-scan.js";
++import { tokenSafety as tokenSafetyText } from "./portfolio.js";
++import { listPaperTrades } from "./orders.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
++  // A trader does not need goals, workers or commits: they produced documentation instead of trades.
++  "create_goal", "set_goal", "spawn_child", "start_child", "fund_child", "git_commit", "git_push",
+ ]);
+ 
+ export function isTradingFocus(env: NodeJS.ProcessEnv = process.env): boolean {
+@@ -32,7 +38,9 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ 1. trade_stats, positions and market_regime: know your results, what you hold and the market weather.
+    After 2 real losing trades today the code blocks new entries until 00:00 UTC (trade_stats gives the time):
+    never sleep longer than that. In RISK-OFF, prefer USDC.
+-2. setup_scan: find setups that follow the playbook (long in a 4h uptrend, 1h entry, reward/risk >= 2).
++2. setup_scan: find setups that follow the playbook (long in a 4h uptrend, 1h entry, reward/risk >= 2). It also
++   scans the 10 most active liquid tokens of the moment, and RANGE setups (rebound at the bottom of a trendless
++   4h range, R/R >= 1.5): trade range setups with paper_trade setup="range" until 20 of them show a positive total.
+    No real setup = stay in USDC, but use the wait to learn: keep at
+    least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+@@ -44,7 +52,9 @@ To act while you sleep: price_alert wakes you at a level; backtest a rule, then
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
+ A daily report is sent to your creator automatically; message_creator is for important events only. Never swap SOL <-> USDC back and forth: it only costs fees.
+-If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
++If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.
++The SHUI token in your wallet is your creator's own token: it is not a position. Never trade, protect, alert or analyze it.
++Never write files in your source code folder (automaton-main): your notes go in your workspace.`;
+ 
+ export const PERPS_PROMPT = `Leverage (Drift perpetuals SOL/BTC/ETH-PERP, long or short): perp_deposit USDC as collateral (max 50% of capital),
+ then perp_open with a mandatory stopPrice (placed on Drift, works while you sleep), dryRun first. Code limits: 5x max
+@@ -76,8 +86,10 @@ export interface SetupResult {
+   mint: string;
+   ok: boolean;
+   reason: string;
+-  /** Set for short setups: the Drift market to use with perp_open. */
+-  side?: "long" | "short";
++  /** "range" = rebound at the bottom of a trendless range (paper first). */
++  side?: "long" | "short" | "range";
++  /** Found among the trending tokens (not the default watchlist). */
++  trending?: boolean;
+   perp?: string;
+   plan?: { entry: number; stop: number; target: number; rr: number; stopPct: number; targetPct: number };
+ }
+@@ -156,15 +168,104 @@ export function evaluateShortSetup(symbol: string, mint: string, perp: string, h
+   return { symbol, mint, ok: true, side: "short", perp, reason: `4h downtrend, 1h bounce fading (RSI ${r.toFixed(0)}), reward/risk ${rr.toFixed(2)}`, plan };
+ }
+ 
++/**
++ * Range rebound (5b): when the 4h chart has no trend (ADX < 20 or EMAs flat),
++ * buy near the bottom of the range once the 1h RSI is low and turning up.
++ * Stop under the support, target just below the top of the range, R/R >= 1.5.
++ */
++export const RANGE_MIN_RR = 1.5;
++export const RANGE_PAPER_TRADES_REQUIRED = 20;
++
++export function evaluateRangeSetup(symbol: string, mint: string, h4: Candle[], h1: Candle[], liquidityUsd: number): SetupResult {
++  const no = (reason: string): SetupResult => ({ symbol, mint, ok: false, reason: `range: ${reason}`, side: "range" });
++  if (liquidityUsd < MIN_LIQUIDITY_USD) return no(`liquidity $${Math.round(liquidityUsd)} < $50k`);
++  if (h4.length < 50 || h1.length < 50) return no("not enough candles");
++  const c4 = h4.map((c) => c.c);
++  const c1 = h1.map((c) => c.c);
++  const price = c1.at(-1)!;
++  const ema20 = emaSeries(c4, 20).at(-1)!;
++  const ema50 = emaSeries(c4, 50).at(-1)!;
++  const strength = adx(h4);
++  const trendless = (strength ? strength.adx < 20 : false) || Math.abs(ema20 - ema50) / price < 0.01;
++  if (!trendless) return no(`4h is trending (ADX ${strength?.adx.toFixed(0) ?? "?"}), not a range`);
++  const { highs, lows } = swings(h4, 3);
++  const support = lows.filter((l) => l < price).sort((x, y) => y - x)[0];
++  const top = highs.filter((h) => h > price * 1.01).sort((x, y) => y - x)[0];
++  if (support === undefined || top === undefined) return no("no clear range (support and top)");
++  const a = atr(h1);
++  if (!a) return no("no volatility data");
++  if (price - support > 1.5 * a) return no(`price not near the range bottom (support ${fmt(support)})`);
++  const r = rsi(c1);
++  const prev = rsi(c1.slice(0, -1));
++  if (r === null || prev === null || !(r < 42)) return no(`1h RSI ${r?.toFixed(0) ?? "?"} not low enough (< 42)`);
++  if (!(r > prev)) return no(`1h RSI ${r.toFixed(0)} still falling: wait for it to turn up`);
++  const stop = support - a;
++  const target = top - 0.25 * a;
++  const rr = (target - price) / (price - stop);
++  const plan = {
++    entry: price, stop, target, rr,
++    stopPct: ((price - stop) / price) * 100,
++    targetPct: ((target - price) / price) * 100,
++  };
++  if (!(rr >= RANGE_MIN_RR)) return { ...no(`reward/risk ${rr.toFixed(2)} < ${RANGE_MIN_RR}`), plan };
++  return { symbol, mint, ok: true, side: "range", reason: `4h range (support ${fmt(support)}, top ${fmt(top)}), 1h RSI ${r.toFixed(0)} turning up, reward/risk ${rr.toFixed(2)}`, plan };
++}
++
++/** Results of range paper trades (paper_trade setup="range"). */
++export function rangePaperRecord(db: Database | null): { trades: number; pnlUsd: number; live: boolean } {
++  if (!db) return { trades: 0, pnlUsd: 0, live: false };
++  const trades = listPaperTrades(db).filter((t) => String(t.source ?? "").startsWith("[range]"));
++  const pnlUsd = trades.reduce((s, t) => s + t.pnlUsd, 0);
++  return { trades: trades.length, pnlUsd, live: trades.length >= RANGE_PAPER_TRADES_REQUIRED && pnlUsd > 0 };
++}
++
++const TRENDING_MIN_LIQUIDITY_USD = 250_000;
++const TRENDING_MIN_AGE_MS = 7 * 24 * 3_600_000;
++const TRENDING_MAX = 10;
++const STABLES = new Set([USDC_MINT, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]);
++
++/** 5a: the most active liquid tokens of the moment, outside the default watchlist. */
++export async function trendingCandidates(fetcher: Fetcher = defaultFetcher, now = Date.now()): Promise<Array<{ symbol: string; mint: string }>> {
++  const rows = rowsFromGeckoPools(await fetcher("https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token"));
++  const known = new Set(DEFAULT_WATCHLIST.map((w) => w.mint));
++  const seen = new Set<string>();
++  return rows
++    .filter((r) => r.mint && !known.has(r.mint) && !STABLES.has(r.mint) && !isCreatorToken(r.mint))
++    .filter((r) => (r.liquidityUsd ?? 0) >= TRENDING_MIN_LIQUIDITY_USD)
++    .filter((r) => r.createdAt !== null && now - r.createdAt >= TRENDING_MIN_AGE_MS)
++    .sort((a, b) => (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0))
++    .filter((r) => (seen.has(r.mint) ? false : (seen.add(r.mint), true)))
++    .slice(0, TRENDING_MAX)
++    .map((r) => ({ symbol: r.symbol, mint: r.mint }));
++}
++
+ export async function setupScan(
+   args: { mints?: string[] },
+   fetcher: Fetcher = defaultFetcher,
+   pauseMs = 400,
+   shorts: boolean = perpsEnabled(),
++  options: {
++    db?: Database | null;
++    trending?: boolean;
++    safety?: (mint: string) => Promise<string>;
++  } = {},
+ ): Promise<string> {
+-  const list = Array.isArray(args.mints) && args.mints.length
+-    ? args.mints.slice(0, 12).map((mint) => DEFAULT_WATCHLIST.find((w) => w.mint === mint) ?? { symbol: mint.slice(0, 6), mint })
+-    : DEFAULT_WATCHLIST;
++  const explicit = Array.isArray(args.mints) && args.mints.length > 0;
++  let list: Array<{ symbol: string; mint: string; perp?: string; trending?: boolean }> = explicit
++    ? args.mints!.slice(0, 12).filter((m) => !isCreatorToken(m))
++      .map((mint) => DEFAULT_WATCHLIST.find((w) => w.mint === mint) ?? { symbol: mint.slice(0, 6), mint })
++    : [...DEFAULT_WATCHLIST];
++  let trendingNote = "";
++  if (!explicit && options.trending !== false) {
++    try {
++      const extra = await trendingCandidates(fetcher);
++      list = [...list, ...extra.map((t) => ({ ...t, trending: true }))];
++      trendingNote = extra.length ? `\nAlso scanned ${extra.length} trending token(s) (liquidity >= $250k, pool > 7 days): ${extra.map((t) => t.symbol).join(", ")}.` : "";
++    } catch (error) {
++      trendingNote = `\nTrending tokens unavailable (${error instanceof Error ? error.message : String(error)}).`;
++    }
++  }
++  const rangeRecord = rangePaperRecord(options.db ?? null);
+   const results: SetupResult[] = [];
+   for (const token of list) {
+     try {
+@@ -174,11 +275,25 @@ export async function setupScan(
+         results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: "no liquid pool" });
+       } else {
+         const long = evaluateSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd);
+-        const perp = (token as { perp?: string }).perp;
+-        // In a 4h downtrend, tokens with a Drift market are checked for a short.
+-        results.push(shorts && !long.ok && perp && long.reason.startsWith("4h trend not up")
+-          ? evaluateShortSetup(h4.symbol, token.mint, perp, h4.candles, h1.candles, h4.liquidityUsd)
+-          : long);
++        const perp = token.perp;
++        let result = long;
++        // In a 4h downtrend, tokens with a perp market are checked for a short.
++        if (shorts && !long.ok && perp && long.reason.startsWith("4h trend not up")) {
++          result = evaluateShortSetup(h4.symbol, token.mint, perp, h4.candles, h1.candles, h4.liquidityUsd);
++        }
++        // No trend setup: a trendless 4h chart may offer a range rebound.
++        if (!result.ok) {
++          const range = evaluateRangeSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd);
++          if (range.ok || !range.reason.includes("trending")) result = range.ok ? range : { ...result, reason: `${result.reason}; ${range.reason}` };
++        }
++        if (result.ok && token.trending) {
++          // Tokens outside the watchlist must pass token_safety before being proposed.
++          const verdict = await (options.safety ?? tokenSafetyText)(token.mint).catch(() => "UNKNOWN");
++          result = /HIGH RISK|UNKNOWN|Blocked/.test(verdict)
++            ? { ...result, ok: false, reason: `token_safety failed (${verdict.split("\n")[0].slice(0, 120)})` }
++            : { ...result, trending: true };
++        }
++        results.push(result);
+       }
+     } catch (error) {
+       results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: `data error: ${error instanceof Error ? error.message : String(error)}` });
+@@ -186,18 +301,26 @@ export async function setupScan(
+     if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+   }
+   const setups = results.filter((r) => r.ok).sort((a, b) => (b.plan?.rr ?? 0) - (a.plan?.rr ?? 0));
+-  const lines = setups.map((s) => s.side === "short"
++  const lines = setups.map((s) => s.side === "range"
++    ? `RANGE SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
++      `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}. ` +
++      (rangeRecord.live
++        ? `Range method validated in paper (${rangeRecord.trades} trades, ${rangeRecord.pnlUsd >= 0 ? "+" : ""}$${rangeRecord.pnlUsd.toFixed(2)}): may be traded live.`
++        : `PAPER ONLY: paper_trade setup="range" with this stop and target (${rangeRecord.trades}/${RANGE_PAPER_TRADES_REQUIRED} range paper trades, ` +
++          `${rangeRecord.pnlUsd >= 0 ? "+" : ""}$${rangeRecord.pnlUsd.toFixed(2)}; live only after ${RANGE_PAPER_TRADES_REQUIRED} with a positive total).`)
++    : s.side === "short"
+     ? `SHORT SETUP ${s.symbol} (Drift ${s.perp}): entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (+${s.plan!.stopPct.toFixed(2)}%), ` +
+       `target ${fmt(s.plan!.target)} (-${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}. ` +
+       `Use perp_open market=${s.perp} direction=short stopPrice=${fmt(s.plan!.stop)} takeProfitPrice=${fmt(s.plan!.target)} (dryRun first).`
+     : `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
+-      `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}`);
++      `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}` +
++      (s.trending ? " (trending token: token_safety passed; size small)" : ""));
+   const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
+   return (setups.length
+     ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before entering.`
+     : "No real setup right now: stay in USDC. Do not just sleep: keep a paper strategy running (backtest, then strategy_create paper=true) " +
+       "or paper_trade the closest near-setup, then check again in 1-4 h.") +
+-    `\nSkipped:\n${skipped.join("\n")}`;
++    `${trendingNote}\nSkipped:\n${skipped.join("\n")}`;
+ }
+ 
+ // ─── Journal and stats ─────────────────────────────────────────
+@@ -299,14 +422,15 @@ export function createTradingDeskTools(): AutomatonTool[] {
+       description:
+         "Scan a watchlist of liquid Solana tokens (default SOL, cbBTC, ETH, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
+         "and 1h (entry) and return the setups that follow the playbook: LONG in a 4h uptrend (1h RSI 35-68, momentum turning), " +
+-        "SHORT setups for SOL/BTC/ETH in a 4h downtrend only when perpetuals are enabled, liquidity >= $50k, reward/risk >= 2, " +
+-        "with entry, stop and target. Takes up to ~1 min (market data is rate-limited).",
++        "RANGE rebounds in a trendless 4h chart (R/R >= 1.5, paper first), SHORT setups only when perpetuals are enabled. " +
++        "Without mints it also scans the 10 most active liquid tokens (liquidity >= $250k, pool > 7 days, token_safety checked). " +
++        "Liquidity >= $50k, entry, stop and target given. Takes 1-3 min (market data is rate-limited).",
+       category: "financial",
+       riskLevel: "safe",
+       parameters: { type: "object", properties: { mints: { type: "array", items: { type: "string" }, description: "Optional token mints (max 12)." } } },
+-      execute: async (args) => {
++      execute: async (args, ctx) => {
+         try {
+-          return await setupScan(args as { mints?: string[] });
++          return await setupScan(args as { mints?: string[] }, defaultFetcher, 400, perpsEnabled(), { db: ctx.db.raw });
+         } catch (error) {
+           return `setup_scan failed: ${error instanceof Error ? error.message : String(error)}`;
+         }
+diff --git a/src/solana/trading-extras.ts b/src/solana/trading-extras.ts
+index 649bec0..81b7463 100644
+--- a/src/solana/trading-extras.ts
++++ b/src/solana/trading-extras.ts
+@@ -2,6 +2,7 @@
+  * Lot 3 trading tools: DCA plans, paper trading (simulated positions, no
+  * funds move) and liquid staking of idle SOL (jitoSOL).
+  */
++import { creatorTokenBlock, isCreatorToken } from "./token-policy.js";
+ import { randomUUID } from "node:crypto";
+ import { PublicKey } from "@solana/web3.js";
+ import type { AutomatonTool } from "../types.js";
+@@ -60,6 +61,7 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         const hours = Number(args.everyHours);
+         const count = Math.floor(Number(args.count));
+         if (!validMint(mint) || mint === USDC_MINT) return "Blocked: invalid mint.";
++        if (isCreatorToken(mint)) return creatorTokenBlock(mint);
+         if (!(usdc >= 0.5) || !(hours >= 1) || !(count >= 1 && count <= 100)) return "Blocked: usdcPerBuy >= 0.5, everyHours >= 1, count 1-100.";
+         const db = ctx.db.raw;
+         if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN) return "Blocked: too many open orders.";
+@@ -90,6 +92,7 @@ export function createTradingExtraTools(): AutomatonTool[] {
+           stopPriceUsd: { type: "number" },
+           trailPct: { type: "number" },
+           takeProfitPriceUsd: { type: "number" },
++          setup: { type: "string", description: '"trend" (default) or "range" (range rebound from setup_scan; counts toward validating the range method).' },
+           note: { type: "string" },
+         },
+         required: ["mint", "sizeUsd", "takeProfitPriceUsd"],
+@@ -101,6 +104,7 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         const stop = args.stopPriceUsd === undefined ? NaN : Number(args.stopPriceUsd);
+         const trail = args.trailPct === undefined ? NaN : Number(args.trailPct);
+         if (!validMint(mint) || !(size > 0) || !(tp > 0)) return "Blocked: give a valid mint, sizeUsd and takeProfitPriceUsd.";
++        if (isCreatorToken(mint)) return creatorTokenBlock(mint);
+         if (!(stop > 0) && !(trail > 0 && trail < 50)) return "Blocked: give stopPriceUsd or trailPct.";
+         let price: number | undefined;
+         try { price = (await jupiterPrices([mint]))[mint]; } catch { price = undefined; }
+@@ -114,7 +118,7 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         const units = size / price;
+         const base = {
+           inputMint: mint, outputMint: USDC_MINT, amount: "0", watchMint: mint, slippageBps: 0, venue: "jupiter" as const,
+-          note: String(args.note ?? "paper").slice(0, 200), createdAt: now.toISOString(), expiresAt: null, status: "open" as const,
++          note: `${args.setup === "range" ? "[range] " : ""}${String(args.note ?? "paper")}`.slice(0, 200), createdAt: now.toISOString(), expiresAt: null, status: "open" as const,
+           attempts: 0, updatedAt: now.toISOString(), group, paper: true, paperUnits: units, paperEntryUsd: price,
+         };
+         const stopOrder: Order = trail > 0 && !(stop > 0)
