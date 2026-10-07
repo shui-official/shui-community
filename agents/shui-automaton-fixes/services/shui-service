@@ -38,6 +38,10 @@ cmd_deploy() {
 [Unit]
 Description=SHUI public service $name
 After=network-online.target
+# A crashing service stops retrying after 10 failures in 10 minutes
+# (one service restarted 6297 times overnight).
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 User=shui-svc
@@ -47,7 +51,7 @@ Environment=PORT=$port
 Environment=HOST=127.0.0.1
 ExecStart=$dir/run.sh
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 StateDirectory=shui-svc/$name
 ProtectHome=yes
 ProtectSystem=strict

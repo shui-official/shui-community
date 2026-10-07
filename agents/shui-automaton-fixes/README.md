@@ -280,3 +280,14 @@ Le premier vrai swap SOL → USDC via Jupiter (6 octobre, 19:12) a été refusé
 - il est refermé au profit de SHUI.
 
 Tout autre transfert de SOL, toute autre instruction système et toute initialisation au nom d'un autre wallet restent refusés. Les messages de refus précisent maintenant l'instruction concernée et sa destination.
+
+---
+
+# Services qui plantent en boucle — 2026-10-07
+
+Patch : `2026-10-07-service-crash-loop.patch`, à appliquer après `2026-10-07-jupiter-wsol.patch`. Le helper `services/shui-service` est aussi mis à jour (à réinstaller en root).
+
+Le service `usdc-sol-trader` a redémarré 6297 fois pendant la nuit. Il écrivait son fichier de log dans son propre dossier, qui est en lecture seule une fois publié (bac à sable systemd).
+- Les règles données aux workers et la description de `service_deploy` le disent désormais : les logs vont sur stdout (visibles avec `service_logs`), les données dans `$STATE_DIRECTORY`, et un service publié n'a pas accès au wallet.
+- Si un service n'est pas `active` juste après `service_deploy`, l'outil renvoie un avertissement qui invite SHUI à lire `service_logs` et à corriger.
+- Le helper limite chaque service à 10 redémarrages en 10 minutes (avant : 1 toutes les 5 s, sans fin). Au-delà, le service reste arrêté, et le nettoyage automatique l'archive au bout de 24 h.

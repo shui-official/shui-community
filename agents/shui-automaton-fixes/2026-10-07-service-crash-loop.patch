@@ -1,0 +1,71 @@
+diff --git a/src/__tests__/services-payments.test.ts b/src/__tests__/services-payments.test.ts
+index 2dc2d81..8599781 100644
+--- a/src/__tests__/services-payments.test.ts
++++ b/src/__tests__/services-payments.test.ts
+@@ -75,3 +75,11 @@ describe("payment tools (Solana Pay, USDC)", () => {
+     expect(await request.execute({ amountUsdc: -1 }, c)).toMatch(/^Blocked/);
+   });
+ });
++
++describe("deploy result", () => {
++  it("warns when the published service is not running", async () => {
++    const { withDeployWarning } = await import("../services/service-tools.js");
++    expect(withDeployWarning("bot", "service: bot\nstate: activating\nurl: https://bot.x")).toMatch(/WARNING: the service is "activating".*STATE_DIRECTORY/s);
++    expect(withDeployWarning("api", "service: api\nstate: active\nurl: https://api.x")).not.toMatch(/WARNING/);
++  });
++});
+diff --git a/src/agent/harnesses/worker-environment.ts b/src/agent/harnesses/worker-environment.ts
+index 82df4b6..34543bb 100644
+--- a/src/agent/harnesses/worker-environment.ts
++++ b/src/agent/harnesses/worker-environment.ts
+@@ -31,7 +31,9 @@ export function buildWorkerEnvironmentSection(workspaceRoot: string): string {
+   executable run.sh that starts it in the foreground on 127.0.0.1:$PORT, then call
+   service_deploy (name, port 8100-8199). Only service_deploy gives a public URL;
+   other ports are not reachable. Services must listen on 127.0.0.1 (never 0.0.0.0) with
+-  debug mode off, and dependencies go in a .venv inside the service folder.
++  debug mode off, and dependencies go in a .venv inside the service folder. Once published the
++  service folder is read-only: log to stdout (no log files) and store data in $STATE_DIRECTORY.
++  A published service has no access to the wallet: it can show data and payment links, never trade.
+ - Payment links must come from payment_request (it returns a solana: URL to your wallet).
+   Never write a payment URL yourself (pay.solana.com and similar do not exist).
+ - Revenue is only what the wallet really received. Never record test, sample or
+diff --git a/src/services/service-tools.ts b/src/services/service-tools.ts
+index 540e1a8..e520c13 100644
+--- a/src/services/service-tools.ts
++++ b/src/services/service-tools.ts
+@@ -114,6 +114,15 @@ async function checkRunScript(name: string): Promise<string | null> {
+   }
+ }
+ 
++/** A deploy that leaves the service "activating"/"failed" is a crash loop, not a success. */
++export function withDeployWarning(name: string, output: string): string {
++  const state = /^state: (\S+)/m.exec(output)?.[1];
++  if (!state || state === "active") return output;
++  return `${output}\nWARNING: the service is "${state}", not running: it crashes at start. ` +
++    `Read service_logs ${name}, fix the error, then call service_deploy again. Common cause: writing files in its own ` +
++    `folder, which is read-only; write logs to stdout and data to $STATE_DIRECTORY.`;
++}
++
+ export function createServiceTools(runner: HelperRunner = runServiceHelper): AutomatonTool[] {
+   const nameParam = { type: "string", description: "Service name: lowercase letters, digits, dashes (2-31 chars)." };
+   return [
+@@ -122,7 +131,8 @@ export function createServiceTools(runner: HelperRunner = runServiceHelper): Aut
+       description:
+         `Publish a service on the internet over HTTPS so that people can use it (and pay for it). ` +
+         `Put the code in ${SERVICES_ROOT}/<name>/ with an executable run.sh that starts it in the foreground on ` +
+-        `127.0.0.1:$PORT. It runs as a sandboxed user with no access to /home, restarts on failure and survives ` +
++        `127.0.0.1:$PORT. Its folder is read-only once published: log to stdout (see service_logs) and keep data in ` +
++        `$STATE_DIRECTORY (/var/lib/shui-svc/<name>). It runs as a sandboxed user with no access to /home or the wallet, restarts on failure and survives ` +
+         `reboots. Returns the public URL. Port must be ${SERVICE_PORT_MIN}-${SERVICE_PORT_MAX}. Redeploy to restart it.`,
+       category: "vm",
+       riskLevel: "caution",
+@@ -144,7 +154,8 @@ export function createServiceTools(runner: HelperRunner = runServiceHelper): Aut
+         const unsafe = await checkServiceSafety(name);
+         if (unsafe) return unsafe;
+         const result = await runner(["deploy", name, String(port)]);
+-        return result.ok ? result.output : `Deploy failed: ${result.output}`;
++        if (!result.ok) return `Deploy failed: ${result.output}`;
++        return withDeployWarning(name, result.output);
+       },
+     },
+     {
