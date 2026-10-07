@@ -1,30 +1,3 @@
-From 402807910fcb9709a5393a4057d927bc7d2ce163 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Wed, 7 Oct 2026 07:27:47 +0000
-Subject: [PATCH] =?UTF-8?q?feat(trading):=20lot=204=20=E2=80=94=20Drift=20?=
- =?UTF-8?q?perpetuals=20(long/short,=20leverage=20max=205x,=20collateral?=
- =?UTF-8?q?=20max=2050%,=20stop=20on=20Drift,=20liquidation=20buffer,=202%?=
- =?UTF-8?q?=20risk,=20starter=20trades=20at=201x)?=
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01HxSGVszL3s8hbUj7MHMXpw
----
- src/__tests__/lot4-perps.test.ts  | 186 ++++++++
- src/agent/loop.ts                 |  10 +
- src/agent/tools.ts                |   2 +
- src/index.ts                      |   3 +
- src/orchestration/local-worker.ts |   4 +
- src/solana/ledger.ts              |  47 +-
- src/solana/perps.ts               | 707 ++++++++++++++++++++++++++++++
- src/solana/trading-desk.ts        |   8 +-
- src/solana/wallet-valuation.ts    |   3 +
- 9 files changed, 967 insertions(+), 3 deletions(-)
- create mode 100644 src/__tests__/lot4-perps.test.ts
- create mode 100644 src/solana/perps.ts
-
 diff --git a/src/__tests__/lot4-perps.test.ts b/src/__tests__/lot4-perps.test.ts
 new file mode 100644
 index 0000000..bacd009
@@ -379,7 +352,7 @@ index b1965ef..a6d8069 100644
    getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
 diff --git a/src/solana/perps.ts b/src/solana/perps.ts
 new file mode 100644
-index 0000000..e2f148e
+index 0000000..3cff29d
 --- /dev/null
 +++ b/src/solana/perps.ts
 @@ -0,0 +1,707 @@
@@ -679,7 +652,7 @@ index 0000000..e2f148e
 +  try {
 +    sdk = await import(moduleName);
 +  } catch {
-+    throw new Error(`Drift SDK not installed. On the VPS: cd /opt/shui-automaton && pnpm add @drift-labs/sdk@${DRIFT_SDK_VERSION} && pnpm build, then restart SHUI.`);
++    throw new Error(`Drift SDK not installed. Ask your creator to run, in /home/automaton/workspace/automaton-main: pnpm add @drift-labs/sdk@${DRIFT_SDK_VERSION} && pnpm build, then restart SHUI.`);
 +  }
 +  const web3 = await import("@solana/web3.js");
 +  const { DEFAULT_SOLANA_RPC } = await import("./trading.js");
@@ -1137,6 +1110,3 @@ index a61a1cb..9eb6715 100644
    ];
  
    return aggregateWalletValuation(
--- 
-2.43.0
-
