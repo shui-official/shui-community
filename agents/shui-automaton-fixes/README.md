@@ -266,3 +266,17 @@ Patch : `2026-10-06-forget-stale-facts.patch`, à appliquer après `2026-10-06-t
 
 - Quand un outil réussit, les erreurs que SHUI avait notées pour cet outil (`tool_error:<outil>:*`) sont effacées de sa mémoire. Avant, une erreur déjà corrigée (raydium_swap) continuait de l'éloigner de l'outil.
 - Le nettoyage automatique efface aussi de sa mémoire les liens de paiement jamais payés de plus de 3 jours. Ils ressemblaient à de l'argent à venir. Le journal comptable et les demandes de paiement elles-mêmes sont conservés.
+
+---
+
+# Jupiter : SOL emballé dans un compte temporaire — 2026-10-07
+
+Patch : `2026-10-07-jupiter-wsol.patch`, à appliquer après `2026-10-06-forget-stale-facts.patch`.
+
+Le premier vrai swap SOL → USDC via Jupiter (6 octobre, 19:12) a été refusé par la vérification avec le message « moves SOL outside SHUI's wrapped-SOL account ». Pour emballer le SOL, Jupiter passe en effet par un compte temporaire (CreateAccount ou CreateAccountWithSeed) au lieu du compte wSOL standard. La vérification accepte désormais ce cas aux conditions suivantes, toutes obligatoires :
+- le compte temporaire est financé par SHUI ;
+- il appartient au programme des tokens ;
+- il est initialisé au nom de SHUI ;
+- il est refermé au profit de SHUI.
+
+Tout autre transfert de SOL, toute autre instruction système et toute initialisation au nom d'un autre wallet restent refusés. Les messages de refus précisent maintenant l'instruction concernée et sa destination.

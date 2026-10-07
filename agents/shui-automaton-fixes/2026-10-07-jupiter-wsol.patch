@@ -1,0 +1,85 @@
+diff --git a/src/__tests__/trading-tools.test.ts b/src/__tests__/trading-tools.test.ts
+index b5f7c3d..541cbe2 100644
+--- a/src/__tests__/trading-tools.test.ts
++++ b/src/__tests__/trading-tools.test.ts
+@@ -69,6 +69,26 @@ describe("jupiter", () => {
+     await expect(validateJupiterSwap(fakeService([route, transfer]), {} as any, expected, venueQuote)).rejects.toThrow(/outside/);
+     await expect(validateJupiterSwap(fakeService([route], [WALLET, "X"]), {} as any, expected, venueQuote)).rejects.toThrow(/signers/);
+   });
++
++  it("accepts SOL wrapped through a temporary token account created for SHUI", async () => {
++    const { PublicKey } = await import("@solana/web3.js");
++    const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
++    const SYSTEM = "11111111111111111111111111111111";
++    const TEMP = "Temp111111111111111111111111111111111111111";
++    const route = { programId: JUPITER_PROGRAM_ID, accounts: [], dataHex: routeData(5_000_000n, 41_000_000n, 50), dataLength: 31 };
++    const seed = Buffer.from("abc");
++    const createWithSeed = Buffer.concat([
++      Buffer.from([3, 0, 0, 0]), new PublicKey(WALLET).toBuffer(), Buffer.from([seed.length, 0, 0, 0, 0, 0, 0, 0]), seed,
++      Buffer.alloc(8), Buffer.alloc(8), new PublicKey(TOKEN).toBuffer(),
++    ]);
++    const create = { programId: SYSTEM, accounts: [WALLET, TEMP, WALLET], dataHex: createWithSeed.toString("hex"), dataLength: createWithSeed.length };
++    const init = { programId: TOKEN, accounts: [TEMP, SOL_MINT, WALLET, "Rent"], dataHex: "01", dataLength: 1 };
++    const transfer = { programId: SYSTEM, accounts: [WALLET, TEMP], dataHex: "0200000000e1f50500000000", dataLength: 12 };
++    const close = { programId: TOKEN, accounts: [TEMP, WALLET, WALLET], dataHex: "09", dataLength: 1 };
++    await expect(validateJupiterSwap(fakeService([create, init, transfer, route, close]), {} as any, expected, venueQuote)).resolves.toBeUndefined();
++    const stolen = { ...init, accounts: [TEMP, SOL_MINT, "Attacker1111111111111111111111111111111111", "Rent"] };
++    await expect(validateJupiterSwap(fakeService([create, stolen, transfer, route, close]), {} as any, expected, venueQuote)).rejects.toThrow(/owned by another wallet/);
++  });
+ });
+ 
+ describe("market_scan", () => {
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index 6bba164..c7a8279 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -115,14 +115,43 @@ export async function validateJupiterSwap(
+   if (!routes.some((ix) => Buffer.from(ix.dataHex, "hex").includes(tail))) {
+     throw new Error("Jupiter route does not carry the quoted input amount, output and slippage");
+   }
+-  for (const ix of inspection.instructions) {
++  // SOL may be wrapped through SHUI's wrapped-SOL account or through a
++  // temporary token account created in this transaction (CreateAccount /
++  // CreateAccountWithSeed owned by the token program, initialized for SHUI,
++  // closed back to SHUI). The first real SOL -> USDC Jupiter swap used such an
++  // account and was refused by the stricter rule.
++  const tokenPrograms = new Set([TOKEN_PROGRAM_ID.toBase58(), TOKEN_2022_PROGRAM_ID.toBase58()]);
++  const shuiTokenAccounts = new Set([wsolAccount]);
++  for (const [index, ix] of inspection.instructions.entries()) {
+     const data = Buffer.from(ix.dataHex, "hex");
+-    if (ix.programId === TOKEN_PROGRAM_ID.toBase58() || ix.programId === TOKEN_2022_PROGRAM_ID.toBase58()) {
+-      if ([4, 6, 13].includes(data[0])) throw new Error("Jupiter transaction delegates or changes token authority");
+-      if (data[0] === 9 && ix.accounts[1] !== service.address) throw new Error("Jupiter transaction closes an account to another wallet");
++    const where = `instruction ${index}`;
++    if (tokenPrograms.has(ix.programId)) {
++      if ([4, 6, 13].includes(data[0])) throw new Error(`Jupiter transaction delegates or changes token authority (${where})`);
++      if (data[0] === 9 && ix.accounts[1] !== service.address) {
++        throw new Error(`Jupiter transaction closes an account to another wallet (${where}: ${ix.accounts[1]})`);
++      }
++      const initOwner = data[0] === 1 ? ix.accounts[2]
++        : data[0] === 16 || data[0] === 18 ? (data.length >= 33 ? new PublicKey(data.subarray(1, 33)).toBase58() : null)
++          : undefined;
++      if (initOwner !== undefined && initOwner !== service.address) {
++        throw new Error(`Jupiter transaction creates a token account owned by another wallet (${where}: ${initOwner})`);
++      }
+     } else if (ix.programId === SystemProgram.programId.toBase58()) {
+-      const kind = data.readUInt32LE(0);
+-      if (kind !== 2 || ix.accounts[1] !== wsolAccount) throw new Error("Jupiter transaction moves SOL outside SHUI's wrapped-SOL account");
++      const kind = data.length >= 4 ? data.readUInt32LE(0) : -1;
++      if (kind === 0 || kind === 3) {
++        // CreateAccount / CreateAccountWithSeed: owner program is the last 32 bytes.
++        const owner = data.length >= 36 ? new PublicKey(data.subarray(data.length - 32)).toBase58() : "";
++        if (ix.accounts[0] !== service.address || !tokenPrograms.has(owner)) {
++          throw new Error(`Jupiter transaction creates an unexpected account (${where}: owner ${owner || "?"})`);
++        }
++        shuiTokenAccounts.add(ix.accounts[1]);
++      } else if (kind === 2) {
++        if (ix.accounts[0] !== service.address || !shuiTokenAccounts.has(ix.accounts[1])) {
++          throw new Error(`Jupiter transaction moves SOL outside SHUI's own token accounts (${where}: to ${ix.accounts[1]})`);
++        }
++      } else {
++        throw new Error(`Jupiter transaction contains an unexpected system instruction (${where}: type ${kind})`);
++      }
+     }
+   }
+   const limitIx = inspection.instructions.find((ix) => ix.programId === COMPUTE_BUDGET_PROGRAM_ID && ix.dataHex.startsWith("02"));
