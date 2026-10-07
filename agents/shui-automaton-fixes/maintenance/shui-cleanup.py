@@ -23,10 +23,13 @@ working/episodic/relationship memories, session summaries, event stream (planner
 successes), goals and tasks, stopped worker records, orchestrator state.
 SERVICES: published services that answer are kept online; those that do not
 answer are stopped and archived, and folders never published are archived.
-Orders, chat history and the Jupiter key are kept. LEARNING (semantic and
+Orders, chat history and the Jupiter key are kept.
+--fresh-start (new mission): also archives SOUL.md and WORKLOG.md (rebuilt from
+the new genesis), cancels open automatic orders and stops ALL published services. LEARNING (semantic and
 procedural memory, knowledge store) is kept unless --forget-learning.
 """
 import argparse
+import json
 import datetime as dt
 import os
 import re
@@ -122,6 +125,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="really archive and reset (default: preview)")
     parser.add_argument("--forget-learning", action="store_true", help="also wipe learned facts, methods and knowledge")
+    parser.add_argument("--fresh-start", action="store_true",
+                        help="new mission: also archive SOUL.md and WORKLOG.md, cancel open orders, stop ALL published services")
     args = parser.parse_args()
     if args.forget_learning:
         CLEAR_TABLES[1:1] = LEARNING_TABLES
@@ -159,13 +164,27 @@ def main():
     moves = [p for p in MOVE_PATHS if os.path.exists(p)]
     loose = [os.path.join(WORKSPACE_DIR, n) for n in sorted(os.listdir(WORKSPACE_DIR))
              if n != "automaton-main" and not n.endswith(".patch")]
+    fresh_files = [p for p in (f"{HOME}/.automaton/SOUL.md", f"{HOME}/.automaton/WORKLOG.md") if args.fresh_start and os.path.exists(p)]
+    open_orders = []
+    if args.fresh_start:
+        for key, value in cur.execute("SELECT key, value FROM kv WHERE key LIKE 'order.%'").fetchall():
+            try:
+                if json.loads(value).get("status") == "open":
+                    open_orders.append(key)
+            except Exception:
+                pass
+        print("== fresh start: identity files to archive (recreated from the new genesis):")
+        for p in fresh_files:
+            print("  " + p)
+        print(f"== fresh start: open automatic orders to cancel: {len(open_orders)}")
     services = published_services()
     keep_services, stop_services, unpublished = [], [], []
     if services is None:
         print("== services: helper unavailable, published services left untouched")
     else:
         for name, (state, url) in sorted(services.items()):
-            (keep_services if state == "active" and answers(url) else stop_services).append((name, url))
+            keep = state == "active" and answers(url) and not args.fresh_start
+            (keep_services if keep else stop_services).append((name, url))
         if os.path.isdir(SERVICES_ROOT):
             unpublished = [n for n in sorted(os.listdir(SERVICES_ROOT)) if n not in services]
         print("== services kept (they answer):")
@@ -210,6 +229,11 @@ def main():
             cur.execute("DELETE FROM children WHERE status IN ('stopped','failed','dead','cleaned_up')")
         for key in kv_keys:
             cur.execute("DELETE FROM kv WHERE key = ?", (key,))
+        for key in open_orders:
+            order = json.loads(cur.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()[0])
+            order["status"] = "cancelled"
+            order["lastError"] = "cancelled by fresh start"
+            cur.execute("UPDATE kv SET value = ? WHERE key = ?", (json.dumps(order), key))
     con.execute("VACUUM")
     con.close()
     print("== database reset done")
@@ -218,7 +242,7 @@ def main():
         subprocess.run(["sudo", "-n", SERVICE_HELPER, "stop", name], capture_output=True, text=True, timeout=90)
         print(f"  stopped service {name}")
     service_moves = [os.path.join(SERVICES_ROOT, n) for n, _ in stop_services] + [os.path.join(SERVICES_ROOT, n) for n in unpublished]
-    for path in moves + loose + repo_moves + [p for p in service_moves if os.path.exists(p)]:
+    for path in moves + loose + repo_moves + fresh_files + [p for p in service_moves if os.path.exists(p)]:
         rel = path.lstrip("/").replace("/", "__")
         shutil.move(path, os.path.join(archive, rel))
         print(f"  archived {path}")

@@ -339,3 +339,14 @@ Patch : `2026-10-07-trading-lot1.patch`, à appliquer après `2026-10-07-trading
   
   Verdict : HIGH RISK, CAUTION ou OK. Le verrouillage de la liquidité n'est pas vérifié, et l'outil le signale.
 - Les workers ne peuvent pas créer d'ordres (y compris `protect_position`).
+
+---
+
+# Mission de trader et nouveau départ — 2026-10-07
+
+- Patch : `2026-10-07-trader-mission.patch`, à appliquer après `2026-10-07-trading-lot1.patch`. En mode trading, les règles de base du prompt sont remplacées par la mission de trader validée par le créateur : mesure hebdomadaire, méthode, honnêteté, pas de services, pas de demande d'argent. Les règles d'auto-préservation ne changent pas.
+- Genèse validée par le créateur : `genesis/genesis-trading.md` (à installer dans `/etc/shui-agent/genesis.md`).
+- `maintenance/shui-cleanup.py --fresh-start` : en plus du ménage habituel (qui garde ce que SHUI a appris), il :
+  - archive SOUL.md et WORKLOG.md (reconstruits à partir de la nouvelle genèse) ;
+  - annule les ordres automatiques ouverts ;
+  - arrête tous les services publiés.

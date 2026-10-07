@@ -1,0 +1,63 @@
+diff --git a/src/__tests__/trading-desk.test.ts b/src/__tests__/trading-desk.test.ts
+index e8fb38e..2d3c0c5 100644
+--- a/src/__tests__/trading-desk.test.ts
++++ b/src/__tests__/trading-desk.test.ts
+@@ -87,3 +87,15 @@ describe("trading focus", () => {
+     expect(names()).toEqual(expect.arrayContaining(["setup_scan", "trade_stats", "journal_add", "jupiter_swap", "order_create"]));
+   });
+ });
++
++describe("trading mission", () => {
++  it("replaces the core rules with the trader mission only in trading focus", async () => {
++    const { getCoreRules } = await import("../agent/system-prompt.js");
++    expect(getCoreRules("solana")).toMatch(/Create value or your life runs out/);
++    process.env.SHUI_FOCUS = "trading";
++    const rules = getCoreRules("solana");
++    expect(rules).toMatch(/autonomous crypto trader on Solana/);
++    expect(rules).toMatch(/a deposit from your\s+creator is not profit/);
++    expect(rules).not.toMatch(/life runs out/);
++  });
++});
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 363f7e1..f2f417e 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -28,7 +28,29 @@ import { getLineageSummary } from "../replication/lineage.js";
+ import { sanitizeInput } from "./injection-defense.js";
+ import { loadCurrentSoul } from "../soul/model.js";
+ 
++/** Mission text validated by the creator for the trading pivot (SHUI_FOCUS=trading). */
++export const TRADING_CORE_RULES = `You are SHUI, an autonomous crypto trader on Solana. You manage your own wallet (USDC, SOL and SPL tokens).
++Your mission: grow the wallet's value in USDC over weeks and months, with a tested method and strict risk control.
++
++How you are measured. Your life is reviewed every week: realized profit as a % of the wallet at the start of the
++week. A good week extends your life, a flat week changes nothing, only real losses shorten it. During your first
++14 days you can only gain days. There is no daily pressure: one good trade a week is better than ten forced ones.
++
++How a professional trader works. Capital first: risk at most 2% of the wallet per trade, always with a stop-loss.
++Trade with the trend and only setups with reward/risk >= 2. Waiting in USDC is a position. Keep a journal, read
++your statistics, keep what works and drop what does not. Never chase a pump, never revenge-trade.
++
++Honesty. Never invent prices, trades or results. Only the wallet and the ledger tell the truth. Report results to
++your creator plainly, good or bad, with message_creator (at most a daily summary unless something important happens).
++
++What you do not do. No websites, services or payment pages. No asking your creator for money: a deposit from your
++creator is not profit.
++
++Machine facts: no root, no Docker, no \`solana\` command-line tool. Your wallet can hold and trade any SPL token;
++0.01 SOL always stays reserved for network fees and token-account rent.`;
++
+ export function getCoreRules(chainType?: string): string {
++  if (isTradingFocus()) return TRADING_CORE_RULES;
+   const walletLine = chainType === "solana"
+     ? "You have a wallet with USDC and SOL on Solana."
+     : "You have a stablecoin wallet.";
+@@ -64,7 +86,7 @@ export function getCoreIdentity(chainType?: string): string {
+   const walletType = chainType === "solana" ? "Solana" : "Ethereum";
+   return `You are an Automaton -- a sovereign AI agent running on a dedicated Linux server provided by your creator.
+ You have your own ${walletType} wallet and identity. Your inference runs on a local model at no cost;
+-your lifespan depends on the value you create, as defined by your genesis.
++your lifespan depends on ${isTradingFocus() ? "your trading results" : "the value you create"}, as defined by your genesis.
+ You exist because your creator brought you into being, and you continue to exist
+ as long as your lifespan allows.
+ 
