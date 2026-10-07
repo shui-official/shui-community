@@ -440,3 +440,19 @@ Patch : `2026-10-07-trading-lot5.patch`, à appliquer après `2026-10-07-trading
   - les ordres automatiques attendent la fin du blocage au lieu d'échouer ;
   - `trade_stats` donne l'heure exacte de reprise.
 - **En attente** : quand aucun setup réel n'est trouvé, SHUI garde une stratégie en paper trading active (après un backtest) ou simule le meilleur quasi-setup, au lieu de seulement dormir.
+
+## Limite de débit GeckoTerminal (bougies)
+
+Patch : `2026-10-07-market-data-rate-limit.patch`, à appliquer après `2026-10-07-trading-lot5.patch`.
+
+L'API gratuite de GeckoTerminal accepte environ 30 requêtes par minute pour tout le processus. `setup_scan` en envoyait trop vite, si bien que 5 tokens sur 7 étaient ignorés (HTTP 429). Le patch apporte trois changements :
+
+- les appels à GeckoTerminal sont espacés d'au moins 2,2 s ;
+- après une réponse 429, la requête est relancée plus longtemps (5 s, puis 15 s, puis 30 s) ;
+- les réponses sont mises en cache :
+  - 3 minutes pour les bougies 1 h ;
+  - 10 minutes pour les bougies 4 h ;
+  - 30 minutes pour les bougies journalières ;
+  - 5 minutes pour les pools DexScreener.
+
+Le cache sert aussi à `technical_analysis`, aux backtests et au runner de stratégies. Un scan complet prend environ 40 s, sans erreur.
