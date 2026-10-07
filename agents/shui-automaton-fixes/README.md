@@ -519,3 +519,22 @@ Patch : `2026-10-07-trading-lot7.patch`, à appliquer après `2026-10-07-trading
   - taille de position conseillée, calculée pour perdre exactement ce risque au stop ;
   - alerte quand le stop se trouve dans le bruit normal sur 4 h.
 - **`trade_stats` et rapport quotidien** : profit factor, Sharpe et Sortino par trade, drawdown maximum, puis un verdict (« edge confirmed », « no clear edge yet » ou « losing method »), affiché à partir de 5 trades clôturés.
+
+## Lots 9 et 10 : la « vie » GPU de SHUI, recharge en crypto, Runpod Serverless
+
+Patch : `2026-10-07-compute-serverless.patch`, à appliquer après `2026-10-07-trading-lot7.patch`.
+
+- **Coût du GPU visible** (`RUNPOD_API_KEY`, une clé en lecture seule suffit).
+  - Toutes les 15 minutes, SHUI lit le solde Runpod et le coût horaire (GraphQL `myself { clientBalance currentSpendPerHr }`).
+  - Le coût de la journée est cumulé.
+  - Une ligne s'affiche dans son statut, dans `trade_stats` et dans le rapport du soir : solde, coût par heure et par jour, temps restant, et **résultat NET** (trading moins GPU).
+  - Nouvel outil : `compute_status`.
+- **Solde bas** (moins de 72 h) : une fois par jour, SHUI écrit au créateur et reçoit une notification.
+- **Recharge en crypto.** Le créateur colle dans le chat `TOPUP <adresse> <montant> USDC|SOL`, à partir de la page « Pay with crypto » de Runpod, réseau Solana. Seul ce message authentifié crée une demande, valable 55 minutes. `runpod_topup_pay` la paie :
+  - **une seule fois** ;
+  - dans la limite d'un plafond (`SHUI_TOPUP_MAX_USD`, 50 $ par défaut) ;
+  - avec au plus 50 % de l'USDC du wallet ;
+  - en passant par le transfert habituel (simulation, journal, verrou).
+  
+  Cet outil est interdit aux workers.
+- **Serverless (lot 10)** : `OLLAMA_API_KEY` permet à SHUI d'utiliser un endpoint Runpod Serverless vLLM, compatible OpenAI. Le paramètre `think`, propre à Ollama, n'est envoyé qu'au tunnel local. `OLLAMA_BASE_URL` doit valoir `https://api.runpod.ai/v2/<ENDPOINT_ID>/openai`.
