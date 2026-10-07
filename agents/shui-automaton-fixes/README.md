@@ -396,3 +396,31 @@ Patch : `2026-10-07-trading-lot3.patch`, à appliquer après `2026-10-07-trading
   - `paper_stats` donne les résultats simulés et recommande de passer en réel au-delà de 20 trades positifs.
 - **`stake_sol` / `unstake_sol`** : SOL vers jitoSOL (environ 7 % par an) et retour. Le jitoSOL suit le prix du SOL : ce n'est pas une position en cash.
 - **Rapport quotidien automatique** (après 20 h UTC, une fois par jour), envoyé dans le chat du créateur. Il est rédigé par le code à partir des données vérifiées (le modèle ne peut pas embellir) : valeur du wallet, PnL réalisé, trades, durée de vie, ordres, stratégies, paper trading, dernière leçon.
+
+## Lot 4 : levier et positions courtes (Drift perpetuals)
+
+Patch : `2026-10-07-trading-lot4.patch`, à appliquer après `2026-10-07-trading-lot3.patch`.
+
+Le patch nécessite le SDK Drift sur le VPS : `pnpm add @drift-labs/sdk@2.156.0`. Sans le SDK, SHUI fonctionne normalement et les outils perp indiquent la commande d'installation.
+
+- **Outils** :
+  - `perp_deposit` : dépose de l'USDC comme collatéral sur Drift. Le premier dépôt crée le compte (environ 0,035 SOL de loyer, récupérable).
+  - `perp_open` : ouvre un long ou un short sur SOL-PERP, BTC-PERP ou ETH-PERP. Le stop est obligatoire ; l'objectif est facultatif. L'option `dryRun` affiche le plan sans rien envoyer.
+  - `perp_close` : ferme la position au marché et annule ses ordres. La fermeture est toujours autorisée.
+  - `perp_withdraw` : retire l'USDC vers le wallet, uniquement le collatéral libre (jamais d'emprunt).
+  - `perp_positions` : affiche le compte, les positions, le PnL et le prix de liquidation.
+- **Garde-fous vérifiés par le code**, validés par le créateur :
+  - levier maximum 5x ;
+  - levier limité à 1x pour les 5 premiers trades ;
+  - collatéral Drift limité à 50 % du capital total ;
+  - stop obligatoire, posé sur Drift dans la même transaction que l'entrée (ordre reduce-only), donc actif même quand SHUI dort ;
+  - prix de liquidation estimé à au moins 1,5 fois la distance du stop ;
+  - perte au stop limitée à 2 % du capital, frais compris ;
+  - une seule position par marché ;
+  - le disjoncteur de drawdown bloque les nouvelles positions.
+- **Comptabilité** :
+  - la valeur du compte Drift (collatéral et PnL latent) est comptée dans la valeur du wallet. Un dépôt n'est donc pas vu comme une perte par le disjoncteur. Si cette valeur n'est pas fraîche, la valorisation est marquée incomplète, jamais à zéro ;
+  - les dépôts et retraits sont journalisés (`perp_transfer`, gain 0) ;
+  - le PnL réalisé (trades, frais, funding) est journalisé (`perp_pnl`) quand le compte n'a plus de position. Il compte dans `trade_stats` et dans la durée de vie hebdomadaire.
+- **Moniteur toutes les 5 minutes** : il rafraîchit la valeur, enregistre le PnL, et envoie une alerte dans l'inbox si une position est à moins de 5 % de sa liquidation.
+- **Workers** : ils ne peuvent pas utiliser les outils perp qui déplacent des fonds.
