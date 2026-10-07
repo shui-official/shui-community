@@ -309,3 +309,33 @@ Patch : `2026-10-07-trading-focus.patch`, à appliquer après `2026-10-07-servic
   Pour chaque token écarté, il donne la raison.
 - **`journal_add`** : plan avant un trade, leçon après, ou simple note.
 - **`trade_stats`** : résultats réels tirés du journal comptable (ventes vers l'USDC) : nombre de trades, taux de réussite, PnL réalisé, gain et perte moyens, espérance par trade, PnL du jour. Il signale « STOP » après 2 pertes d'affilée dans la journée, et une méthode perdante sur 10 trades ou plus.
+
+---
+
+# Trading, lot 1 — 2026-10-07
+
+Patch : `2026-10-07-trading-lot1.patch`, à appliquer après `2026-10-07-trading-focus.patch`. Décisions du créateur : B1 à B6, et la priorité 1 des outils.
+
+**Durée de vie, règles v2** (en vigueur à partir du premier démarrage avec ce patch ; les jours déjà jugés restent dans l'historique) :
+- **B2** : bilan par semaine de 7 jours.
+- **B1** : bilan en % de la valeur vérifiée du wallet au début de la semaine :
+  - +2 % = +1 jour, +5 % = +2 jours, +10 % = +3 jours ;
+  - entre -2 % et +2 %, rien ne change (**B3**, zone neutre) ;
+  - sous -2 % = -1 jour, sous -10 % = -2 jours.
+- **B4** : période d'apprentissage de 14 jours, pendant laquelle les pertes de jours sont annulées.
+- Si une donnée manque (valeur de départ ou prix), la semaine est notée inconnue et la vie ne change pas.
+- **B5** : disjoncteur. Si la valeur du wallet descend de 15 % sous son plus haut, les achats sont suspendus 24 h. Les ventes et les stop-loss continuent de fonctionner, et SHUI est prévenu.
+- **B6** : le statut affiché est plus calme (vie restante, gain de la semaine, règle, « la patience ne coûte rien »). Les lignes « Credits / Survival tier » de Conway, qui ne servaient à rien, n'apparaissent plus.
+
+**Outils** :
+- **Ordres OCO** : `protect_position` pose en un seul appel un stop-loss (fixe ou suiveur) et un take-profit liés. Quand l'un s'exécute, l'autre est annulé. Avant, le stop restait « orphelin ».
+- **Stop suiveur** : `order_create kind=trailing_stop trailPct=…`. Le stop monte avec le prix, jamais l'inverse.
+- **`positions`** : chaque token détenu, avec sa valeur, son prix moyen d'entrée (tiré du journal comptable), son PnL latent et ses ordres. Une position sans stop-loss est signalée.
+- **`token_safety`** : signaux d'arnaque avant un achat :
+  - mint authority ou freeze authority encore actives ;
+  - extensions Token-2022 dangereuses (permanent delegate, transfer hook, frais, pause) ;
+  - concentration des gros détenteurs ;
+  - liquidité, âge du pool.
+  
+  Verdict : HIGH RISK, CAUTION ou OK. Le verrouillage de la liquidité n'est pas vérifié, et l'outil le signale.
+- Les workers ne peuvent pas créer d'ordres (y compris `protect_position`).
