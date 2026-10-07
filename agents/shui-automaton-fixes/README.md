@@ -456,3 +456,15 @@ L'API gratuite de GeckoTerminal accepte environ 30 requêtes par minute pour tou
   - 5 minutes pour les pools DexScreener.
 
 Le cache sert aussi à `technical_analysis`, aux backtests et au runner de stratégies. Un scan complet prend environ 40 s, sans erreur.
+
+## Pause après un tour en échec, délai du modèle local
+
+Patch : `2026-10-07-turn-backoff-timeout.patch`, à appliquer après `2026-10-07-market-data-rate-limit.patch`.
+
+- **Pause après un tour en échec.**
+  - Problème : après un tour raté, SHUI relançait immédiatement un nouveau tour, environ une fois par seconde, même pendant que le coupe-circuit de l'inférence était ouvert. Chaque tour relit le wallet, ce qui saturait le RPC Solana public (HTTP 429), et la valorisation ainsi que le solde USDC échouaient.
+  - Correctif : la boucle attend que le coupe-circuit se referme. Pour les autres erreurs, elle attend 5 s, puis 10 s, puis 20 s, jusqu'à 60 s au maximum.
+- **Délai de réponse du modèle local porté de 3 à 6 minutes**, réglable avec `SHUI_OLLAMA_TIMEOUT_MS`.
+  - Après un redémarrage ou un changement du prompt, Ollama doit relire tout le prompt (environ 25 000 tokens) sans cache, ce qui peut dépasser 3 minutes.
+  - Quand le délai expire, la requête est abandonnée et la tentative suivante repart de zéro : SHUI restait alors bloqué en timeout.
+- **RPC Solana** : le RPC public est fortement limité, et Drift en a besoin d'un plus robuste. Il est recommandé de configurer `SOLANA_RPC_URL` avec un RPC dédié (Helius propose une offre gratuite).
