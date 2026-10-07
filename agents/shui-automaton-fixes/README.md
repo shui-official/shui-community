@@ -291,3 +291,21 @@ Le service `usdc-sol-trader` a redémarré 6297 fois pendant la nuit. Il écriva
 - Les règles données aux workers et la description de `service_deploy` le disent désormais : les logs vont sur stdout (visibles avec `service_logs`), les données dans `$STATE_DIRECTORY`, et un service publié n'a pas accès au wallet.
 - Si un service n'est pas `active` juste après `service_deploy`, l'outil renvoie un avertissement qui invite SHUI à lire `service_logs` et à corriger.
 - Le helper limite chaque service à 10 redémarrages en 10 minutes (avant : 1 toutes les 5 s, sans fin). Au-delà, le service reste arrêté, et le nettoyage automatique l'archive au bout de 24 h.
+
+---
+
+# Mode trading — 2026-10-07
+
+Patch : `2026-10-07-trading-focus.patch`, à appliquer après `2026-10-07-service-crash-loop.patch`.
+
+- **Mode trading** : activé par `SHUI_FOCUS=trading` dans `/etc/shui-agent/chat.env`, et réversible (on retire la ligne, puis on redémarre SHUI). Les outils de services et de paiement sont masqués, pour SHUI comme pour ses workers. Le prompt reçoit une section « FOCUS: TRADING ONLY » avec la méthode à suivre à chaque cycle : stats, scan, analyse, plan dans le journal, achat dimensionné pour risquer 2 %, stop-loss et take-profit immédiats, leçon tirée après coup. SOUL, la genèse et la règle de durée de vie ne changent pas.
+- **`setup_scan`** : passe en revue une liste de tokens liquides (SOL, JUP, RAY, PYTH, ORCA, BONK, WIF, ou des mints fournis) et ne remonte que les achats conformes au playbook :
+  - tendance haussière en 4h (EMA20 au-dessus de l'EMA50, prix au-dessus de l'EMA50) ;
+  - RSI 1h entre 35 et 68, momentum qui se retourne ;
+  - liquidité d'au moins 50 k$ ;
+  - stop placé sous le support ou à 2 ATR, objectif à la prochaine résistance majeure en 4h ou à l'extension Fibonacci 1,272 ;
+  - ratio gain/risque d'au moins 2.
+  
+  Pour chaque token écarté, il donne la raison.
+- **`journal_add`** : plan avant un trade, leçon après, ou simple note.
+- **`trade_stats`** : résultats réels tirés du journal comptable (ventes vers l'USDC) : nombre de trades, taux de réussite, PnL réalisé, gain et perte moyens, espérance par trade, PnL du jour. Il signale « STOP » après 2 pertes d'affilée dans la journée, et une méthode perdante sur 10 trades ou plus.

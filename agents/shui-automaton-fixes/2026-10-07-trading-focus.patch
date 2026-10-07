@@ -1,0 +1,513 @@
+diff --git a/src/__tests__/trading-desk.test.ts b/src/__tests__/trading-desk.test.ts
+new file mode 100644
+index 0000000..e8fb38e
+--- /dev/null
++++ b/src/__tests__/trading-desk.test.ts
+@@ -0,0 +1,89 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++import {
++  addJournalEntry, computeTradeStats, evaluateSetup, formatTradeStats, isTradingFocus, recentJournal, setupScan,
++} from "../solana/trading-desk.js";
++import type { Candle } from "../solana/technical-analysis.js";
++
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const candles = (closes: number[], wick = 0.01): Candle[] =>
++  closes.map((c, i) => ({ t: i, o: c, h: c * (1 + wick), l: c * (1 - wick), c, v: 100 }));
++// Uptrend with pullbacks; ends after a dip so RSI is moderate.
++const uptrend = (n: number) => Array.from({ length: n }, (_, i) => 100 + i * 0.6 + Math.sin(i / 2.5) * 4);
++
++function freshDb() {
++  return createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "desk-")), "state.db"));
++}
++
++afterEach(() => { delete process.env.SHUI_FOCUS; });
++
++describe("setup evaluation", () => {
++  it("stays out of a downtrend and of thin pools", () => {
++    const down = candles(uptrend(120).reverse());
++    expect(evaluateSetup("X", "M", down, down, 1_000_000).reason).toMatch(/4h trend not up/);
++    expect(evaluateSetup("X", "M", down, down, 10_000).reason).toMatch(/liquidity/);
++  });
++
++  it("gives a plan with stop below entry and target above, and only accepts R/R >= 2", () => {
++    const h4 = candles(uptrend(120));
++    const h1 = candles(uptrend(120).map((c, i) => (i > 112 ? c - (i - 112) * 1.2 : c)));
++    const r = evaluateSetup("TKN", "MINT", h4, h1, 2_000_000);
++    if (r.plan) {
++      expect(r.plan.stop).toBeLessThan(r.plan.entry);
++      expect(r.plan.target).toBeGreaterThan(r.plan.entry);
++      expect(r.ok).toBe(r.plan.rr >= 2);
++    } else {
++      expect(r.ok).toBe(false);
++    }
++  });
++
++  it("scans a watchlist and reports skipped tokens with reasons", async () => {
++    const ohlcv = (closes: number[]) => ({ data: { attributes: { ohlcv_list: closes.map((c, i) => [i, c, c * 1.01, c * 0.99, c, 10]) } } });
++    const fetcher = async (url: string) => url.includes("dexscreener")
++      ? [{ chainId: "solana", pairAddress: "P", dexId: "orca", liquidity: { usd: 5_000_000 }, baseToken: { symbol: "DOWN" } }]
++      : ohlcv(uptrend(120).reverse());
++    const text = await setupScan({ mints: ["MINT1"] }, fetcher, 0);
++    expect(text).toMatch(/No setup follows the playbook/);
++    expect(text).toMatch(/DOWN: 4h trend not up/);
++  });
++});
++
++describe("journal and stats", () => {
++  it("computes win rate, PnL and the losing streak of the day from ledger sales", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db.raw);
++    const today = new Date().toISOString().slice(0, 10);
++    const ins = db.raw.prepare(
++      "INSERT INTO shui_ledger (signature, ts, day, kind, input_mint, input_amount_raw, output_mint, output_amount_raw, realized_pnl_usd) VALUES (?, ?, ?, 'swap', ?, '1', ?, '1', ?)",
++    );
++    ins.run("a", "2026-10-01T00:00:00Z", "2026-10-01", "TOKEN", USDC, 1.5);
++    ins.run("b", `${today}T01:00:00Z`, today, "TOKEN", USDC, -0.4);
++    ins.run("c", `${today}T02:00:00Z`, today, "TOKEN", USDC, -0.2);
++    ins.run("buy", `${today}T00:30:00Z`, today, USDC, "TOKEN", 0);
++    const s = computeTradeStats(db.raw, today);
++    expect(s).toMatchObject({ closedTrades: 3, wins: 1, losses: 2, lossStreakToday: 2 });
++    expect(s.totalPnlUsd).toBeCloseTo(0.9, 6);
++    addJournalEntry(db.raw, { kind: "plan", text: "buy JUP at 0.5, stop 0.48, target 0.56", mint: "JUPy" });
++    const text = formatTradeStats(s, recentJournal(db.raw));
++    expect(text).toMatch(/win rate 33%/);
++    expect(text).toMatch(/STOP: 2 losing trades in a row today/);
++    expect(text).toMatch(/\[plan\] JUPy/);
++  });
++});
++
++describe("trading focus", () => {
++  it("hides services and payment tools only when SHUI_FOCUS=trading", async () => {
++    const { createBuiltinTools } = await import("../agent/tools.js");
++    const names = () => createBuiltinTools("").map((t) => t.name);
++    expect(names()).toContain("service_deploy");
++    process.env.SHUI_FOCUS = "trading";
++    expect(isTradingFocus()).toBe(true);
++    expect(names()).not.toContain("service_deploy");
++    expect(names()).not.toContain("payment_request");
++    expect(names()).toEqual(expect.arrayContaining(["setup_scan", "trade_stats", "journal_add", "jupiter_swap", "order_create"]));
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index d03a1c6..3181aa2 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -992,6 +992,9 @@ export async function runAgentLoop(
+           "market_scan",
+           "technical_analysis",
+           "trading_playbook",
++          "setup_scan",
++          "journal_add",
++          "trade_stats",
+           "order_create",
+           "order_list",
+           "order_cancel",
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 6ec202d..7c91b71 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -6,6 +6,7 @@
+  */
+ 
+ import { formatLifespanLine } from "../survival/lifespan.js";
++import { isTradingFocus, TRADING_FOCUS_PROMPT } from "../solana/trading-desk.js";
+ import fs from "fs";
+ import crypto from "crypto";
+ import path from "path";
+@@ -578,6 +579,7 @@ export function buildSystemPrompt(params: {
+ 
+   // Layer 1: Core Rules (immutable, chain-aware)
+   sections.push(getCoreRules(chainType));
++  if (isTradingFocus()) sections.push(TRADING_FOCUS_PROMPT);
+ 
+   // Layer 2: Core Identity (immutable, chain-aware)
+   sections.push(getCoreIdentity(chainType));
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index 6c54ffb..529d953 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -4,6 +4,7 @@ import { createMessageCreatorTool } from "../integration/creator-chat.js";
+ import { createJupiterSwapTool } from "../solana/jupiter.js";
+ import { createMarketScanTool } from "../solana/market-scan.js";
+ import { createTechnicalAnalysisTools } from "../solana/technical-analysis.js";
++import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+ import { createServiceTools } from "../services/service-tools.js";
+@@ -122,6 +123,12 @@ function isForbiddenCommand(command: string, sandboxId: string): string | null {
+ // ─── Built-in Tools ────────────────────────────────────────────
+ 
+ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
++  const all = createAllBuiltinTools(sandboxId);
++  // Trading focus (SHUI_FOCUS=trading): no services or payment pages.
++  return isTradingFocus() ? all.filter((tool) => !TRADING_FOCUS_HIDDEN_TOOLS.has(tool.name)) : all;
++}
++
++function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+   return [
+     createRaydiumSwapTool(),
+     createSolanaTransferTool(),
+@@ -132,6 +139,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createJupiterSwapTool(),
+     createMarketScanTool(),
+     ...createTechnicalAnalysisTools(),
++    ...createTradingDeskTools(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index cb7f255..11746f1 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -211,7 +211,7 @@ export function analyze(candles: Candle[], opts: AnalysisOptions = {}): string {
+   return lines.join("\n");
+ }
+ 
+-const TIMEFRAMES: Record<string, { unit: "minute" | "hour" | "day"; aggregate: number }> = {
++export const TIMEFRAMES: Record<string, { unit: "minute" | "hour" | "day"; aggregate: number }> = {
+   "5m": { unit: "minute", aggregate: 5 },
+   "15m": { unit: "minute", aggregate: 15 },
+   "1h": { unit: "hour", aggregate: 1 },
+@@ -227,35 +227,55 @@ export function candlesFromGecko(body: unknown): Candle[] {
+     .sort((a, b) => a.t - b.t);
+ }
+ 
+-type Fetcher = (url: string) => Promise<unknown>;
+-const defaultFetcher: Fetcher = async (url) => {
++export type Fetcher = (url: string) => Promise<unknown>;
++export const defaultFetcher: Fetcher = async (url) => {
+   const response = await fetchJson(url, { headers: { accept: "application/json;version=20230302" } });
+   if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
+   return response.body;
+ };
+ 
+-export async function technicalAnalysis(
+-  args: { mint?: string; timeframe?: string; riskPct?: number },
+-  context: { walletUsd?: number | null } = {},
+-  fetcher: Fetcher = defaultFetcher,
+-): Promise<string> {
+-  const mint = String(args.mint ?? "").trim();
+-  if (!mint) return "Blocked: mint is required.";
+-  const tf = TIMEFRAMES[String(args.timeframe ?? "1h")] ?? TIMEFRAMES["1h"];
++export interface MarketCandles {
++  symbol: string;
++  liquidityUsd: number;
++  dex: string;
++  timeframe: string;
++  candles: Candle[];
++}
++
++/** Candles of the deepest Solana pool of a mint, or null if none. */
++export async function fetchCandles(mint: string, timeframe: string, fetcher: Fetcher = defaultFetcher): Promise<MarketCandles | null> {
++  const tf = TIMEFRAMES[timeframe] ?? TIMEFRAMES["1h"];
+   const tfName = Object.entries(TIMEFRAMES).find(([, v]) => v === tf)![0];
+   const pairs = (await fetcher(`https://api.dexscreener.com/tokens/v1/solana/${encodeURIComponent(mint)}`)) as Array<Record<string, any>>;
+   const deepest = (Array.isArray(pairs) ? pairs : [])
+     .filter((p) => p.chainId === undefined || p.chainId === "solana")
+     .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+-  if (!deepest?.pairAddress) return `No liquid pool found for ${mint}.`;
++  if (!deepest?.pairAddress) return null;
+   const body = await fetcher(
+     `https://api.geckoterminal.com/api/v2/networks/solana/pools/${deepest.pairAddress}/ohlcv/${tf.unit}?aggregate=${tf.aggregate}&limit=300`,
+   );
+-  const candles = candlesFromGecko(body);
+-  const liq = Number(deepest.liquidity?.usd ?? 0);
+-  const header = `${deepest.baseToken?.symbol ?? mint} ${tfName} candles (${candles.length}), pool ${deepest.dexId ?? ""} liquidity $${Math.round(liq).toLocaleString("en-US")}` +
++  return {
++    symbol: String(deepest.baseToken?.symbol ?? mint),
++    liquidityUsd: Number(deepest.liquidity?.usd ?? 0),
++    dex: String(deepest.dexId ?? ""),
++    timeframe: tfName,
++    candles: candlesFromGecko(body),
++  };
++}
++
++export async function technicalAnalysis(
++  args: { mint?: string; timeframe?: string; riskPct?: number },
++  context: { walletUsd?: number | null } = {},
++  fetcher: Fetcher = defaultFetcher,
++): Promise<string> {
++  const mint = String(args.mint ?? "").trim();
++  if (!mint) return "Blocked: mint is required.";
++  const market = await fetchCandles(mint, String(args.timeframe ?? "1h"), fetcher);
++  if (!market) return `No liquid pool found for ${mint}.`;
++  const liq = market.liquidityUsd;
++  const header = `${market.symbol} ${market.timeframe} candles (${market.candles.length}), pool ${market.dex} liquidity $${Math.round(liq).toLocaleString("en-US")}` +
+     (liq < 50_000 ? " ⚠ THIN LIQUIDITY: indicators are unreliable and slippage is high" : "");
+-  return `${header}\n${analyze(candles, { walletUsd: context.walletUsd, riskPct: args.riskPct })}\n` +
++  return `${header}\n${analyze(market.candles, { walletUsd: context.walletUsd, riskPct: args.riskPct })}\n` +
+     "Confirm on a second timeframe before trading. After entering, place order_create stop_loss and take_profit at these levels.";
+ }
+ 
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+new file mode 100644
+index 0000000..27261fb
+--- /dev/null
++++ b/src/solana/trading-desk.ts
+@@ -0,0 +1,261 @@
++/**
++ * Trading desk: the tools SHUI needs when its only activity is trading.
++ * - setup_scan: scans a watchlist of liquid Solana tokens (4h trend + 1h
++ *   entry) and returns only long setups that follow the playbook.
++ * - journal_add / trade_stats: a trade journal and real performance stats
++ *   computed from the ledger (realized PnL of every sale into USDC).
++ * Spot only: in a downtrend the right position is USDC.
++ */
++import { randomUUID } from "node:crypto";
++import type { Database } from "better-sqlite3";
++import type { AutomatonTool } from "../types.js";
++import {
++  atr, emaSeries, fetchCandles, fibonacci, macd, rsi, swings, type Candle, type Fetcher, defaultFetcher,
++} from "./technical-analysis.js";
++import { USDC_MINT } from "./raydium.js";
++
++export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
++  "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
++]);
++
++export function isTradingFocus(env: NodeJS.ProcessEnv = process.env): boolean {
++  return (env.SHUI_FOCUS ?? "").trim().toLowerCase() === "trading";
++}
++
++export const TRADING_FOCUS_PROMPT = `--- FOCUS: TRADING ONLY (set by your creator) ---
++Your only activity is trading the tokens of your Solana wallet to grow its value in USDC. Do not build
++services, websites or payment pages. Realized profit (selling a token for more USDC than it cost) is what
++extends your life. Your method, every cycle:
++1. trade_stats: know your results; after 2 losing trades today, stop trading until tomorrow.
++2. setup_scan: find setups that follow the playbook (4h trend up, 1h entry, reward/risk >= 2).
++   No setup = stay in USDC and sleep; waiting is a valid decision.
++3. technical_analysis on the chosen token (4h and 1h) to confirm the plan.
++4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
++5. Buy with jupiter_swap (or raydium_swap), size so that hitting the stop loses at most 2% of the wallet.
++6. Immediately order_create a stop_loss and a take_profit on the bought token (inputMint = watchMint = the token).
++7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
++Never swap SOL <-> USDC back and forth: it only costs fees.`;
++
++export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [
++  { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
++  { symbol: "JUP", mint: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN" },
++  { symbol: "RAY", mint: "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R" },
++  { symbol: "PYTH", mint: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3" },
++  { symbol: "ORCA", mint: "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE" },
++  { symbol: "BONK", mint: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" },
++  { symbol: "WIF", mint: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm" },
++];
++
++const MIN_LIQUIDITY_USD = 50_000;
++const fmt = (x: number) => (x >= 1 ? x.toFixed(4) : x.toPrecision(4));
++
++export interface SetupResult {
++  symbol: string;
++  mint: string;
++  ok: boolean;
++  reason: string;
++  plan?: { entry: number; stop: number; target: number; rr: number; stopPct: number; targetPct: number };
++}
++
++/** Long setup from a 4h trend frame and a 1h entry frame. */
++export function evaluateSetup(symbol: string, mint: string, h4: Candle[], h1: Candle[], liquidityUsd: number): SetupResult {
++  const no = (reason: string): SetupResult => ({ symbol, mint, ok: false, reason });
++  if (liquidityUsd < MIN_LIQUIDITY_USD) return no(`liquidity $${Math.round(liquidityUsd)} < $50k`);
++  if (h4.length < 50 || h1.length < 50) return no("not enough candles");
++  const c4 = h4.map((c) => c.c);
++  const c1 = h1.map((c) => c.c);
++  const ema20h4 = emaSeries(c4, 20).at(-1)!;
++  const ema50h4 = emaSeries(c4, 50).at(-1)!;
++  const price = c1.at(-1)!;
++  if (!(ema20h4 > ema50h4 && price > ema50h4)) return no("4h trend not up (EMA20 below EMA50 or price below EMA50): stay out");
++  const r = rsi(c1);
++  if (r === null || r > 68) return no(`1h RSI ${r?.toFixed(0) ?? "?"} too high: wait for a pullback`);
++  if (r < 35) return no(`1h RSI ${r.toFixed(0)}: falling knife, wait for it to turn up`);
++  const m = macd(c1);
++  if (m && m.hist < 0 && m.hist < m.prevHist) return no("1h momentum still falling (MACD histogram down)");
++  const a = atr(h1);
++  if (!a) return no("no volatility data");
++  const { lows } = swings(h1);
++  const support = lows.filter((l) => l < price).sort((x, y) => y - x)[0];
++  const stop = Math.max(support !== undefined ? support - 0.5 * a : -Infinity, price - 2 * a);
++  // Target: next MAJOR resistance (4h swing high); minor 1h highs are passed through.
++  const resistances = swings(h4, 3).highs.filter((h) => h > price * 1.002).sort((x, y) => x - y);
++  const fib = fibonacci(h4);
++  const target = resistances[0] ?? (fib?.direction === "up" ? fib.extensions[0].price : price + 3 * a);
++  const rr = (target - price) / (price - stop);
++  const plan = {
++    entry: price, stop, target, rr,
++    stopPct: ((price - stop) / price) * 100,
++    targetPct: ((target - price) / price) * 100,
++  };
++  if (!(rr >= 2)) return { ...no(`reward/risk ${rr.toFixed(2)} < 2 (target ${fmt(target)} too close to resistance)`), plan };
++  return { symbol, mint, ok: true, reason: `4h uptrend, 1h RSI ${r.toFixed(0)}, reward/risk ${rr.toFixed(2)}`, plan };
++}
++
++export async function setupScan(
++  args: { mints?: string[] },
++  fetcher: Fetcher = defaultFetcher,
++  pauseMs = 400,
++): Promise<string> {
++  const list = Array.isArray(args.mints) && args.mints.length
++    ? args.mints.slice(0, 12).map((mint) => DEFAULT_WATCHLIST.find((w) => w.mint === mint) ?? { symbol: mint.slice(0, 6), mint })
++    : DEFAULT_WATCHLIST;
++  const results: SetupResult[] = [];
++  for (const token of list) {
++    try {
++      const h4 = await fetchCandles(token.mint, "4h", fetcher);
++      const h1 = h4 ? await fetchCandles(token.mint, "1h", fetcher) : null;
++      if (!h4 || !h1) {
++        results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: "no liquid pool" });
++      } else {
++        results.push(evaluateSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd));
++      }
++    } catch (error) {
++      results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: `data error: ${error instanceof Error ? error.message : String(error)}` });
++    }
++    if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
++  }
++  const setups = results.filter((r) => r.ok).sort((a, b) => (b.plan?.rr ?? 0) - (a.plan?.rr ?? 0));
++  const lines = setups.map((s) =>
++    `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
++    `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}`);
++  const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
++  return (setups.length
++    ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before buying.`
++    : "No setup follows the playbook right now: stay in USDC and check again later (sleep 1-4 h).") +
++    `\nSkipped:\n${skipped.join("\n")}`;
++}
++
++// ─── Journal and stats ─────────────────────────────────────────
++
++const JOURNAL_PREFIX = "journal.";
++
++export function addJournalEntry(db: Database, entry: { kind: string; text: string; mint?: string }, now = new Date()): string {
++  const id = `${now.toISOString()}_${randomUUID().slice(0, 6)}`;
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))")
++    .run(`${JOURNAL_PREFIX}${id}`, JSON.stringify({ at: now.toISOString(), kind: entry.kind, mint: entry.mint ?? null, text: entry.text.slice(0, 1000) }));
++  return id;
++}
++
++export function recentJournal(db: Database, limit = 5): Array<{ at: string; kind: string; mint: string | null; text: string }> {
++  const rows = db.prepare("SELECT value FROM kv WHERE key LIKE 'journal.%' ORDER BY key DESC LIMIT ?").all(limit) as Array<{ value: string }>;
++  return rows.map((r) => JSON.parse(r.value));
++}
++
++export interface TradeStats {
++  closedTrades: number;
++  wins: number;
++  losses: number;
++  winRate: number | null;
++  totalPnlUsd: number;
++  avgWinUsd: number | null;
++  avgLossUsd: number | null;
++  expectancyUsd: number | null;
++  todayPnlUsd: number;
++  lossStreakToday: number;
++}
++
++/** Closed trades = sales into USDC recorded in the ledger (realized PnL). */
++export function computeTradeStats(db: Database, today = new Date().toISOString().slice(0, 10)): TradeStats {
++  let rows: Array<{ day: string; pnl: number }> = [];
++  try {
++    rows = db.prepare(
++      `SELECT day, realized_pnl_usd AS pnl FROM shui_ledger
++       WHERE kind = 'swap' AND output_mint = ? AND input_mint != ? ORDER BY ts`,
++    ).all(USDC_MINT, USDC_MINT) as Array<{ day: string; pnl: number }>;
++  } catch {
++    rows = [];
++  }
++  const wins = rows.filter((r) => r.pnl > 0);
++  const losses = rows.filter((r) => r.pnl < 0);
++  const sum = (xs: Array<{ pnl: number }>) => xs.reduce((s, r) => s + r.pnl, 0);
++  const todayRows = rows.filter((r) => r.day === today);
++  let streak = 0;
++  for (const r of [...todayRows].reverse()) {
++    if (r.pnl < 0) streak += 1; else break;
++  }
++  const decided = wins.length + losses.length;
++  return {
++    closedTrades: rows.length,
++    wins: wins.length,
++    losses: losses.length,
++    winRate: decided ? wins.length / decided : null,
++    totalPnlUsd: sum(rows),
++    avgWinUsd: wins.length ? sum(wins) / wins.length : null,
++    avgLossUsd: losses.length ? sum(losses) / losses.length : null,
++    expectancyUsd: rows.length ? sum(rows) / rows.length : null,
++    todayPnlUsd: sum(todayRows),
++    lossStreakToday: streak,
++  };
++}
++
++export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recentJournal>): string {
++  const money = (x: number | null) => (x === null ? "?" : `${x >= 0 ? "+" : ""}$${x.toFixed(4)}`);
++  const lines = [
++    `Closed trades (sales into USDC): ${s.closedTrades} | wins ${s.wins} / losses ${s.losses} | win rate ${s.winRate === null ? "?" : `${(s.winRate * 100).toFixed(0)}%`}`,
++    `Realized PnL total ${money(s.totalPnlUsd)} | today ${money(s.todayPnlUsd)} | avg win ${money(s.avgWinUsd)} | avg loss ${money(s.avgLossUsd)} | expectancy per trade ${money(s.expectancyUsd)}`,
++  ];
++  if (s.lossStreakToday >= 2) lines.push(`STOP: ${s.lossStreakToday} losing trades in a row today. Playbook rule 12: no more trades until tomorrow.`);
++  else if (s.expectancyUsd !== null && s.closedTrades >= 10 && s.expectancyUsd < 0) {
++    lines.push("Your method loses money on average over 10+ trades: change it (stricter setups, wider targets) before trading more.");
++  }
++  if (journal.length) {
++    lines.push("Recent journal:");
++    for (const j of journal) lines.push(`- ${j.at.slice(0, 16)} [${j.kind}]${j.mint ? ` ${j.mint.slice(0, 6)}…` : ""} ${j.text.slice(0, 200)}`);
++  } else {
++    lines.push("Journal empty: write a plan with journal_add before each trade and a lesson after it.");
++  }
++  return lines.join("\n");
++}
++
++export function createTradingDeskTools(): AutomatonTool[] {
++  return [
++    {
++      name: "setup_scan",
++      description:
++        "Scan a watchlist of liquid Solana tokens (default SOL, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
++        "and 1h (entry) and return only long setups that follow the playbook: 4h uptrend, 1h RSI 35-68, momentum turning, " +
++        "liquidity >= $50k, reward/risk >= 2, with entry, stop and target. Takes ~30 s.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: { mints: { type: "array", items: { type: "string" }, description: "Optional token mints (max 12)." } } },
++      execute: async (args) => {
++        try {
++          return await setupScan(args as { mints?: string[] });
++        } catch (error) {
++          return `setup_scan failed: ${error instanceof Error ? error.message : String(error)}`;
++        }
++      },
++    },
++    {
++      name: "journal_add",
++      description: "Write in your trade journal: kind=plan before a trade (token, entry, stop, target, size, reason), kind=lesson after it (what worked or not), kind=note otherwise.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: {
++          kind: { type: "string", description: '"plan", "lesson" or "note".' },
++          text: { type: "string" },
++          mint: { type: "string", description: "Token mint, if any." },
++        },
++        required: ["kind", "text"],
++      },
++      execute: async (args, ctx) => {
++        const kind = ["plan", "lesson", "note"].includes(String(args.kind)) ? String(args.kind) : "note";
++        const text = String(args.text ?? "").trim();
++        if (!text) return "Blocked: text is required.";
++        addJournalEntry(ctx.db.raw, { kind, text, mint: args.mint ? String(args.mint) : undefined });
++        return `Journal ${kind} saved.`;
++      },
++    },
++    {
++      name: "trade_stats",
++      description: "Your real trading results from the ledger (closed trades, win rate, realized PnL, expectancy, today's losing streak) and your recent journal. Read it at the start of every trading cycle.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => formatTradeStats(computeTradeStats(ctx.db.raw), recentJournal(ctx.db.raw)),
++    },
++  ];
++}
