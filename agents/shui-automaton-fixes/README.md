@@ -504,3 +504,18 @@ Patch : `2026-10-07-trading-lot6.patch`, à appliquer après `2026-10-07-disable
   - Conditions : graphique 4 h sans tendance (ADX < 20 ou EMA plates), prix près du support, RSI 1 h sous 42 qui remonte.
   - Stop sous le support, objectif sous le haut du range, reward/risk d'au moins 1,5.
   - Le scanner propose ces setups en **paper trading uniquement** (`paper_trade setup="range"`), jusqu'à 20 trades range simulés avec un total positif.
+
+## Lot 7 : idées reprises d'OpenBB (Apache-2.0)
+
+Patch : `2026-10-07-trading-lot7.patch`, à appliquer après `2026-10-07-trading-lot6.patch`. Les formules sont réécrites en TypeScript dans `src/solana/quant.ts`, sans dépendance Python.
+
+- **`market_regime` + Deribit** (API publique, sans clé, mêmes appels que le provider `openbb_deribit`) :
+  - financement moyen sur 8 h des perpétuels BTC, ETH et SOL : au-dessus de +0,03 %, signal « longs trop nombreux, risque de chute brutale », score -1 ; en dessous de -0,01 %, signal « shorts trop nombreux » ;
+  - DVOL du BTC, l'indice de volatilité : s'il monte de plus de 15 % en 24 h, signal « marché nerveux », score -1.
+- **`setup_scan`** :
+  - classement des setups par momentum de Clenow : pente annualisée × R² sur 90 bougies de 4 h, la tendance la plus forte et la plus régulière en premier, les setups de range en dernier ;
+  - volatilité Yang-Zhang calculée sur les bougies 1 h ;
+  - risque de 2 %, 1,5 % ou 1 % du capital selon que la volatilité journalière est inférieure à 4 %, à 8 %, ou plus élevée ;
+  - taille de position conseillée, calculée pour perdre exactement ce risque au stop ;
+  - alerte quand le stop se trouve dans le bruit normal sur 4 h.
+- **`trade_stats` et rapport quotidien** : profit factor, Sharpe et Sortino par trade, drawdown maximum, puis un verdict (« edge confirmed », « no clear edge yet » ou « losing method »), affiché à partir de 5 trades clôturés.

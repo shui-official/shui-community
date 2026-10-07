@@ -1,0 +1,501 @@
+diff --git a/src/__tests__/lot7-quant.test.ts b/src/__tests__/lot7-quant.test.ts
+new file mode 100644
+index 0000000..bcb4176
+--- /dev/null
++++ b/src/__tests__/lot7-quant.test.ts
+@@ -0,0 +1,77 @@
++import { describe, expect, it } from "vitest";
++import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "../solana/quant.js";
++import { classifyRegime, readDeribit } from "../solana/market-regime.js";
++import { annotateSetup } from "../solana/trading-desk.js";
++import type { Candle } from "../solana/technical-analysis.js";
++
++const candles = (closes: number[], wick = 0.01): Candle[] =>
++  closes.map((c, i) => ({ t: i, o: i ? closes[i - 1] : c, h: Math.max(c, i ? closes[i - 1] : c) * (1 + wick), l: Math.min(c, i ? closes[i - 1] : c) * (1 - wick), c, v: 100 }));
++
++describe("Clenow momentum", () => {
++  it("ranks a steady trend above a jumpy one with the same gain", () => {
++    const steady = Array.from({ length: 90 }, (_, i) => 100 * Math.exp(0.002 * i));
++    const jumpy = steady.map((v, i) => v * (1 + (i % 2 ? 0.08 : -0.08)));
++    const a = clenowMomentum(steady)!;
++    const b = clenowMomentum(jumpy)!;
++    expect(a.r2).toBeGreaterThan(0.99);
++    expect(a.annualizedPct).toBeGreaterThan(0);
++    expect(a.score).toBeGreaterThan(b.score);
++    expect(clenowMomentum([1, 2])).toBeNull();
++  });
++});
++
++describe("Yang-Zhang volatility and sizing", () => {
++  it("is higher for wider candles and sets the risk per trade", () => {
++    const base = Array.from({ length: 60 }, (_, i) => 100 + Math.sin(i / 3));
++    const calm = yangZhang(candles(base, 0.002))!;
++    const wild = yangZhang(candles(base, 0.05))!;
++    expect(wild).toBeGreaterThan(calm);
++    expect(volAdjustedRiskPct(3)).toBe(2);
++    expect(volAdjustedRiskPct(6)).toBe(1.5);
++    expect(volAdjustedRiskPct(15)).toBe(1);
++    expect(volAdjustedRiskPct(null)).toBe(1);
++  });
++
++  it("annotates a setup with momentum, volatility and a size that risks the right share", () => {
++    const closes = Array.from({ length: 120 }, (_, i) => 100 * Math.exp(0.003 * i));
++    const r = annotateSetup(
++      { symbol: "X", mint: "M", ok: true, reason: "", side: "long", plan: { entry: 100, stop: 95, target: 115, rr: 3, stopPct: 5, targetPct: 15 } },
++      candles(closes, 0.003), candles(closes, 0.003), 100,
++    );
++    expect(r.momentum!.score).toBeGreaterThan(0);
++    expect(r.sizeUsd).toBeCloseTo((100 * r.riskPct!) / 5);
++  });
++});
++
++describe("performance metrics", () => {
++  it("computes profit factor, Sharpe, Sortino and drawdown", () => {
++    const m = performanceMetrics([2, -1, 3, -1, -1, 2]);
++    expect(m.profitFactor).toBeCloseTo(7 / 3);
++    expect(m.sharpe).toBeGreaterThan(0);
++    expect(m.sortino).toBeGreaterThan(m.sharpe!);
++    expect(m.maxDrawdownUsd).toBeCloseTo(2);
++    expect(formatPerformance(m, 100)).toMatch(/profit factor 2.33.*edge confirmed/);
++    expect(formatPerformance(performanceMetrics([1, -1]))).toMatch(/need 5\+/);
++  });
++});
++
++describe("Deribit in the market regime", () => {
++  it("flags crowded longs and a volatility spike", async () => {
++    const now = Date.parse("2026-10-07T12:00:00Z");
++    const get = async (url: string) => {
++      if (url.includes("get_book_summary_by_instrument")) return { result: [{ funding_8h: 0.0005 }] };
++      return { result: { data: [[now - 24 * 3_600_000, 0, 0, 0, 40], [now - 3_600_000, 0, 0, 0, 50]] } };
++    };
++    const d = await readDeribit(get, now);
++    expect(d.funding8hPct).toBeCloseTo(0.05);
++    expect(d.dvol).toBe(50);
++    expect(d.dvolChange24hPct).toBeCloseTo(25);
++    const base = { btc7d: null, btc24h: null, sol7d: null, sol24h: null, fearGreed: null, solDexVolume24h: null, solDexVolumeChange7d: null, solDailyTrendUp: null };
++    const r = classifyRegime({ ...base, ...d });
++    expect(r.score).toBe(-2);
++    expect(r.reasons.join()).toMatch(/crowded leveraged longs/);
++    expect(r.reasons.join()).toMatch(/volatility jumping/);
++    const failing = await readDeribit(async () => { throw new Error("down"); }, now);
++    expect(failing).toMatchObject({ funding8hPct: null, dvol: null });
++  });
++});
+diff --git a/src/maintenance/daily-report.ts b/src/maintenance/daily-report.ts
+index e07edb6..96538e0 100644
+--- a/src/maintenance/daily-report.ts
++++ b/src/maintenance/daily-report.ts
+@@ -7,6 +7,7 @@
+ import type { Database } from "better-sqlite3";
+ import { saveOutgoingCreatorMessage } from "../integration/creator-chat.js";
+ import { computeTradeStats, recentJournal } from "../solana/trading-desk.js";
++import { formatPerformance } from "../solana/quant.js";
+ import { formatLifespanLine } from "../survival/lifespan.js";
+ import { listOrders, listPaperTrades } from "../solana/orders.js";
+ import { listStrategies } from "../solana/strategies.js";
+@@ -34,6 +35,7 @@ export function buildDailyReport(db: Database, now: Date = new Date()): string {
+     `Daily report ${day} (automatic, from verified data)`,
+     `Wallet: ${walletUsd === null ? "value unknown" : `$${walletUsd.toFixed(2)}`} | realized PnL today ${stats.todayPnlUsd >= 0 ? "+" : ""}$${stats.todayPnlUsd.toFixed(4)} | total ${stats.totalPnlUsd >= 0 ? "+" : ""}$${stats.totalPnlUsd.toFixed(4)}`,
+     `Trades closed: ${stats.closedTrades} (win rate ${stats.winRate === null ? "?" : `${(stats.winRate * 100).toFixed(0)}%`})`,
++    ...(stats.metrics ? [formatPerformance(stats.metrics, walletUsd)] : []),
+     `Open orders: ${open.filter((o) => !o.paper && o.kind !== "alert").length} | alerts ${open.filter((o) => o.kind === "alert").length} | strategies active ${strategies.length}${strategies.some((s) => s.paper) ? ` (${strategies.filter((s) => s.paper).length} paper)` : ""}`,
+     `Paper trades today: ${paper.length}${paper.length ? ` (simulated PnL ${paper.reduce((s, t) => s + t.pnlUsd, 0).toFixed(4)}$)` : ""}`,
+   ];
+diff --git a/src/solana/market-regime.ts b/src/solana/market-regime.ts
+index 36dc23b..498c077 100644
+--- a/src/solana/market-regime.ts
++++ b/src/solana/market-regime.ts
+@@ -3,7 +3,9 @@
+  * mostly follow SOL and BTC; buying them while both fall is fighting the
+  * tide. Free public sources (no key): CoinGecko (BTC/SOL 24h and 7d),
+  * alternative.me (Fear & Greed), DefiLlama (Solana DEX volume), SOL daily
+- * candles (trend). Each source can fail independently.
++ * candles (trend), Deribit (perpetual funding rates and the DVOL volatility
++ * index; endpoints as used by OpenBB's openbb_deribit provider, Apache-2.0).
++ * Each source can fail independently.
+  */
+ import type { AutomatonTool } from "../types.js";
+ import { fetchJson } from "./http-json.js";
+@@ -18,8 +20,17 @@ export interface RegimeInputs {
+   solDexVolume24h: number | null;
+   solDexVolumeChange7d: number | null;
+   solDailyTrendUp: boolean | null;
++  /** Average 8h funding of the BTC/ETH/SOL perpetuals on Deribit, in % (null = unavailable). */
++  funding8hPct?: number | null;
++  /** BTC DVOL (30-day implied volatility index) and its 24h change in %. */
++  dvol?: number | null;
++  dvolChange24hPct?: number | null;
+ }
+ 
++export const CROWDED_LONG_FUNDING_PCT = 0.03;
++export const CROWDED_SHORT_FUNDING_PCT = -0.01;
++export const DVOL_SPIKE_PCT = 15;
++
+ export function classifyRegime(x: RegimeInputs): { regime: "RISK-ON" | "NEUTRAL" | "RISK-OFF"; score: number; reasons: string[] } {
+   let score = 0;
+   const reasons: string[] = [];
+@@ -37,6 +48,23 @@ export function classifyRegime(x: RegimeInputs): { regime: "RISK-ON" | "NEUTRAL"
+     reasons.push(`Solana DEX volume 7d ${x.solDexVolumeChange7d >= 0 ? "+" : ""}${x.solDexVolumeChange7d.toFixed(1)}%`);
+     if (x.solDexVolumeChange7d < -30) score -= 1;
+   }
++  if (typeof x.funding8hPct === "number") {
++    reasons.push(`perp funding ${x.funding8hPct >= 0 ? "+" : ""}${x.funding8hPct.toFixed(4)}%/8h`);
++    if (x.funding8hPct > CROWDED_LONG_FUNDING_PCT) {
++      score -= 1;
++      reasons.push("crowded leveraged longs: a flush (sharp drop) is likely, tighten stops");
++    } else if (x.funding8hPct < CROWDED_SHORT_FUNDING_PCT) {
++      reasons.push("crowded shorts: a short squeeze (sharp rise) is possible");
++    }
++  }
++  if (typeof x.dvol === "number") {
++    const ch = typeof x.dvolChange24hPct === "number" ? x.dvolChange24hPct : null;
++    reasons.push(`BTC DVOL ${x.dvol.toFixed(0)}${ch === null ? "" : ` (${ch >= 0 ? "+" : ""}${ch.toFixed(0)}% 24h)`}`);
++    if (ch !== null && ch > DVOL_SPIKE_PCT) {
++      score -= 1;
++      reasons.push("volatility jumping: market nervous, use smaller size");
++    }
++  }
+   const regime = score >= 2 ? "RISK-ON" : score <= -2 ? "RISK-OFF" : "NEUTRAL";
+   return { regime, score, reasons };
+ }
+@@ -68,10 +96,44 @@ export async function readRegimeInputs(get: (url: string) => Promise<unknown> =
+         const c7 = b.change_7dover7d ?? b.change_7d;
+         out.solDexVolumeChange7d = typeof c7 === "number" ? c7 : null;
+       }).catch(() => undefined),
++    readDeribit(get).then((d) => Object.assign(out, d)).catch(() => undefined),
+   ]);
+   return out;
+ }
+ 
++const DERIBIT = "https://www.deribit.com/api/v2/public";
++const PERPETUALS = ["BTC-PERPETUAL", "ETH-PERPETUAL", "SOL_USDC-PERPETUAL"];
++
++/** Deribit public data, no key: funding of the main perpetuals and BTC DVOL. */
++export async function readDeribit(
++  get: (url: string) => Promise<unknown>,
++  now = Date.now(),
++): Promise<Pick<RegimeInputs, "funding8hPct" | "dvol" | "dvolChange24hPct">> {
++  const fundings = await Promise.all(PERPETUALS.map((name) =>
++    get(`${DERIBIT}/get_book_summary_by_instrument?instrument_name=${name}`)
++      .then((body) => {
++        const row = ((body as { result?: Array<{ funding_8h?: number }> }).result ?? [])[0];
++        return typeof row?.funding_8h === "number" ? row.funding_8h * 100 : null;
++      })
++      .catch(() => null)));
++  const known = fundings.filter((f): f is number => f !== null);
++  let dvol: number | null = null;
++  let dvolChange24hPct: number | null = null;
++  try {
++    const body = await get(`${DERIBIT}/get_volatility_index_data?currency=BTC&start_timestamp=${now - 26 * 3_600_000}&end_timestamp=${now}&resolution=3600`);
++    const data = ((body as { result?: { data?: number[][] } }).result?.data ?? []).filter((c) => Array.isArray(c) && c.length >= 5)
++      .sort((a, b) => a[0] - b[0]);
++    if (data.length) {
++      dvol = data.at(-1)![4];
++      const dayAgo = data.find((c) => c[0] >= now - 24 * 3_600_000) ?? data[0];
++      dvolChange24hPct = dayAgo[4] > 0 && dayAgo !== data.at(-1) ? ((dvol - dayAgo[4]) / dayAgo[4]) * 100 : null;
++    }
++  } catch {
++    // DVOL unavailable
++  }
++  return { funding8hPct: known.length ? known.reduce((s, f) => s + f, 0) / known.length : null, dvol, dvolChange24hPct };
++}
++
+ export async function marketRegime(): Promise<string> {
+   const inputs = await readRegimeInputs();
+   try {
+@@ -95,7 +157,7 @@ export async function marketRegime(): Promise<string> {
+ export function createMarketRegimeTool(): AutomatonTool {
+   return {
+     name: "market_regime",
+-    description: "Overall market weather before trading: SOL daily trend, SOL and BTC 7-day moves, Fear & Greed index, Solana DEX volume. Returns RISK-ON / NEUTRAL / RISK-OFF with advice. Check it once per cycle.",
++    description: "Overall market weather before trading: SOL daily trend, SOL and BTC 7-day moves, Fear & Greed index, Solana DEX volume, perpetual funding rates (crowded longs/shorts) and the BTC DVOL volatility index. Returns RISK-ON / NEUTRAL / RISK-OFF with advice. Check it once per cycle.",
+     category: "financial",
+     riskLevel: "safe",
+     parameters: { type: "object", properties: {} },
+diff --git a/src/solana/quant.ts b/src/solana/quant.ts
+new file mode 100644
+index 0000000..29b5e4c
+--- /dev/null
++++ b/src/solana/quant.ts
+@@ -0,0 +1,140 @@
++/**
++ * Quantitative helpers adapted from OpenBB (github.com/OpenBB-finance/OpenBB,
++ * Apache-2.0): openbb_technical (Clenow momentum, Yang-Zhang volatility) and
++ * openbb_quantitative (Sharpe, Sortino, Omega). Rewritten in TypeScript, no
++ * dependency.
++ */
++import type { Candle } from "./technical-analysis.js";
++
++/**
++ * Clenow volatility-adjusted momentum: slope of a linear regression on log
++ * prices, annualized, multiplied by the R² of the fit. A steady trend scores
++ * high; a jumpy one with the same gain scores low.
++ */
++export function clenowMomentum(closes: number[], window = 90, periodsPerYear = 2190):
++  { r2: number; annualizedPct: number; score: number } | null {
++  const values = closes.slice(-window).filter((v) => v > 0);
++  if (values.length < Math.min(window, 30)) return null;
++  const y = values.map(Math.log);
++  const n = y.length;
++  const xMean = (n - 1) / 2;
++  const yMean = y.reduce((s, v) => s + v, 0) / n;
++  let sxy = 0;
++  let sxx = 0;
++  for (let i = 0; i < n; i++) {
++    sxy += (i - xMean) * (y[i] - yMean);
++    sxx += (i - xMean) ** 2;
++  }
++  const slope = sxx ? sxy / sxx : 0;
++  const intercept = yMean - slope * xMean;
++  let ssRes = 0;
++  let ssTot = 0;
++  for (let i = 0; i < n; i++) {
++    ssRes += (y[i] - (slope * i + intercept)) ** 2;
++    ssTot += (y[i] - yMean) ** 2;
++  }
++  const r2 = ssTot === 0 ? 0 : 1 - ssRes / ssTot;
++  // Cap the exponent: a few days of a parabolic move would otherwise annualize to infinity.
++  const annualizedPct = (Math.exp(Math.max(-50, Math.min(50, slope * periodsPerYear))) - 1) * 100;
++  return { r2, annualizedPct, score: annualizedPct * r2 };
++}
++
++const variance = (xs: number[]): number => {
++  if (xs.length < 2) return 0;
++  const m = xs.reduce((s, v) => s + v, 0) / xs.length;
++  return xs.reduce((s, v) => s + (v - m) ** 2, 0) / (xs.length - 1);
++};
++
++/**
++ * Yang-Zhang volatility per candle (standard deviation of log returns): uses
++ * open, high, low and close, so it reads the real intrabar range and the gaps.
++ */
++export function yangZhang(candles: Candle[], window = 30): number | null {
++  const c = candles.slice(-(window + 1));
++  if (c.length < Math.min(window + 1, 10)) return null;
++  const overnight: number[] = [];
++  const openClose: number[] = [];
++  const rs: number[] = [];
++  for (let i = 1; i < c.length; i++) {
++    const { o, h, l, c: close } = c[i];
++    if (!(o > 0 && h > 0 && l > 0 && close > 0 && c[i - 1].c > 0)) continue;
++    overnight.push(Math.log(o / c[i - 1].c));
++    openClose.push(Math.log(close / o));
++    const ho = Math.log(h / o);
++    const lo = Math.log(l / o);
++    const co = Math.log(close / o);
++    rs.push(ho * (ho - co) + lo * (lo - co));
++  }
++  const n = rs.length;
++  if (n < 2) return null;
++  const k = 0.34 / (1.34 + (n + 1) / (n - 1));
++  const sigma2 = variance(overnight) + k * variance(openClose) + (1 - k) * (rs.reduce((s, v) => s + v, 0) / n);
++  return sigma2 > 0 ? Math.sqrt(sigma2) : 0;
++}
++
++/**
++ * Share of capital to risk at the stop, from the token's daily volatility:
++ * calm tokens keep the playbook's 2%, wild ones risk less.
++ */
++export function volAdjustedRiskPct(dailyVolPct: number | null): number {
++  if (dailyVolPct === null || !Number.isFinite(dailyVolPct)) return 1;
++  if (dailyVolPct <= 4) return 2;
++  if (dailyVolPct <= 8) return 1.5;
++  return 1;
++}
++
++export interface PerformanceMetrics {
++  trades: number;
++  profitFactor: number | null;
++  /** Mean / standard deviation of trade results (per trade, not annualized). */
++  sharpe: number | null;
++  /** Mean / downside deviation (only losses count as risk). */
++  sortino: number | null;
++  /** Sum of gains / sum of losses around 0 (Omega ratio at threshold 0). */
++  omega: number | null;
++  maxDrawdownUsd: number;
++  avgWinUsd: number | null;
++  avgLossUsd: number | null;
++}
++
++export function performanceMetrics(pnls: number[]): PerformanceMetrics {
++  const trades = pnls.length;
++  const wins = pnls.filter((p) => p > 0);
++  const losses = pnls.filter((p) => p < 0);
++  const gross = wins.reduce((s, p) => s + p, 0);
++  const lost = -losses.reduce((s, p) => s + p, 0);
++  const mean = trades ? pnls.reduce((s, p) => s + p, 0) / trades : 0;
++  const sd = Math.sqrt(variance(pnls));
++  const downside = trades ? Math.sqrt(pnls.reduce((s, p) => s + Math.min(0, p) ** 2, 0) / trades) : 0;
++  let peak = 0;
++  let cum = 0;
++  let maxDrawdownUsd = 0;
++  for (const p of pnls) {
++    cum += p;
++    peak = Math.max(peak, cum);
++    maxDrawdownUsd = Math.max(maxDrawdownUsd, peak - cum);
++  }
++  return {
++    trades,
++    profitFactor: lost > 0 ? gross / lost : gross > 0 ? Infinity : null,
++    sharpe: trades >= 2 && sd > 0 ? mean / sd : null,
++    sortino: trades >= 2 && downside > 0 ? mean / downside : null,
++    omega: lost > 0 ? gross / lost : null,
++    maxDrawdownUsd,
++    avgWinUsd: wins.length ? gross / wins.length : null,
++    avgLossUsd: losses.length ? -lost / losses.length : null,
++  };
++}
++
++export function formatPerformance(m: PerformanceMetrics, capitalUsd: number | null = null): string {
++  if (m.trades < 5) return `Quality metrics: need 5+ closed trades (${m.trades} so far).`;
++  const f = (x: number | null, d = 2) => (x === null ? "?" : x === Infinity ? "∞" : x.toFixed(d));
++  const dd = capitalUsd ? ` (${((m.maxDrawdownUsd / capitalUsd) * 100).toFixed(1)}% of capital)` : "";
++  const verdict = m.profitFactor !== null && m.profitFactor >= 1.5 && (m.sharpe ?? 0) > 0.2
++    ? "edge confirmed so far"
++    : m.profitFactor !== null && m.profitFactor < 1
++      ? "losing method: fix it before trading bigger"
++      : "no clear edge yet";
++  return `Quality: profit factor ${f(m.profitFactor)} | Sharpe/trade ${f(m.sharpe)} | Sortino/trade ${f(m.sortino)} | ` +
++    `max drawdown $${m.maxDrawdownUsd.toFixed(2)}${dd} → ${verdict}.`;
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index a41d601..155ef98 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -19,6 +19,7 @@ import { isCreatorToken } from "./token-policy.js";
+ import { rowsFromGeckoPools } from "./market-scan.js";
+ import { tokenSafety as tokenSafetyText } from "./portfolio.js";
+ import { listPaperTrades } from "./orders.js";
++import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "./quant.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+@@ -45,7 +46,8 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+    least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+-5. Buy with jupiter_swap (or raydium_swap), sized so that hitting the stop loses at most 2% of the wallet.
++5. Buy with jupiter_swap (or raydium_swap) using the size setup_scan gives (risk 2%, less on volatile tokens);
++   among several setups, take the first one (strongest steady momentum).
+ 6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+ 7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+@@ -90,6 +92,14 @@ export interface SetupResult {
+   side?: "long" | "short" | "range";
+   /** Found among the trending tokens (not the default watchlist). */
+   trending?: boolean;
++  /** Clenow momentum on 4h closes (annualized slope x R²), for ranking. */
++  momentum?: { r2: number; annualizedPct: number; score: number } | null;
++  /** Yang-Zhang volatility from 1h candles, per day in %. */
++  dailyVolPct?: number | null;
++  riskPct?: number;
++  sizeUsd?: number | null;
++  /** The stop sits inside the normal 4h noise. */
++  stopInNoise?: boolean;
+   perp?: string;
+   plan?: { entry: number; stop: number; target: number; rr: number; stopPct: number; targetPct: number };
+ }
+@@ -239,6 +249,32 @@ export async function trendingCandidates(fetcher: Fetcher = defaultFetcher, now
+     .map((r) => ({ symbol: r.symbol, mint: r.mint }));
+ }
+ 
++/**
++ * Rank and size a setup (lot 7): Clenow momentum on the 4h chart, Yang-Zhang
++ * daily volatility from 1h candles, risk 2% / 1.5% / 1% of capital depending
++ * on that volatility, and the position size that loses exactly that at the stop.
++ */
++export function annotateSetup(result: SetupResult, h4: Candle[], h1: Candle[], capitalUsd: number | null): SetupResult {
++  const momentum = clenowMomentum(h4.map((c) => c.c), 90, 6 * 365);
++  const sigma1h = yangZhang(h1, 48);
++  const dailyVolPct = sigma1h === null ? null : sigma1h * Math.sqrt(24) * 100;
++  const riskPct = volAdjustedRiskPct(dailyVolPct);
++  const stopPct = result.plan!.stopPct;
++  const sizeUsd = capitalUsd && stopPct > 0 ? Math.min(capitalUsd, (capitalUsd * riskPct) / stopPct) : null;
++  const stopInNoise = sigma1h !== null && stopPct < sigma1h * 2 * 100;
++  return { ...result, momentum, dailyVolPct, riskPct, sizeUsd, stopInNoise };
++}
++
++function sizingText(s: SetupResult): string {
++  const parts: string[] = [];
++  if (s.momentum && s.side !== "range") parts.push(`momentum ${s.momentum.annualizedPct >= 0 ? "+" : ""}${s.momentum.annualizedPct.toFixed(0)}%/yr R² ${s.momentum.r2.toFixed(2)}`);
++  if (s.dailyVolPct !== null && s.dailyVolPct !== undefined) parts.push(`vol ${s.dailyVolPct.toFixed(1)}%/day`);
++  if (s.riskPct) parts.push(`risk ${s.riskPct}%`);
++  if (s.sizeUsd) parts.push(`size ≈ $${s.sizeUsd.toFixed(2)}`);
++  if (s.stopInNoise) parts.push("⚠ stop inside normal 4h noise: widen it or skip");
++  return parts.length ? ` [${parts.join(", ")}]` : "";
++}
++
+ export async function setupScan(
+   args: { mints?: string[] },
+   fetcher: Fetcher = defaultFetcher,
+@@ -266,6 +302,7 @@ export async function setupScan(
+     }
+   }
+   const rangeRecord = rangePaperRecord(options.db ?? null);
++  const capitalUsd = options.db ? lastCapitalUsd(options.db) : null;
+   const results: SetupResult[] = [];
+   for (const token of list) {
+     try {
+@@ -293,6 +330,7 @@ export async function setupScan(
+             ? { ...result, ok: false, reason: `token_safety failed (${verdict.split("\n")[0].slice(0, 120)})` }
+             : { ...result, trending: true };
+         }
++        if (result.ok && result.plan) result = annotateSetup(result, h4.candles, h1.candles, capitalUsd);
+         results.push(result);
+       }
+     } catch (error) {
+@@ -300,21 +338,23 @@ export async function setupScan(
+     }
+     if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+   }
+-  const setups = results.filter((r) => r.ok).sort((a, b) => (b.plan?.rr ?? 0) - (a.plan?.rr ?? 0));
++  // Strongest steady trends first (Clenow momentum), range rebounds last.
++  const rank = (r: SetupResult) => (r.side === "range" ? -1e12 : 0) + (r.momentum?.score ?? r.plan?.rr ?? 0);
++  const setups = results.filter((r) => r.ok).sort((a, b) => rank(b) - rank(a));
+   const lines = setups.map((s) => s.side === "range"
+     ? `RANGE SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
+       `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}. ` +
+       (rangeRecord.live
+         ? `Range method validated in paper (${rangeRecord.trades} trades, ${rangeRecord.pnlUsd >= 0 ? "+" : ""}$${rangeRecord.pnlUsd.toFixed(2)}): may be traded live.`
+         : `PAPER ONLY: paper_trade setup="range" with this stop and target (${rangeRecord.trades}/${RANGE_PAPER_TRADES_REQUIRED} range paper trades, ` +
+-          `${rangeRecord.pnlUsd >= 0 ? "+" : ""}$${rangeRecord.pnlUsd.toFixed(2)}; live only after ${RANGE_PAPER_TRADES_REQUIRED} with a positive total).`)
++          `${rangeRecord.pnlUsd >= 0 ? "+" : ""}$${rangeRecord.pnlUsd.toFixed(2)}; live only after ${RANGE_PAPER_TRADES_REQUIRED} with a positive total).`) + sizingText(s)
+     : s.side === "short"
+     ? `SHORT SETUP ${s.symbol} (Drift ${s.perp}): entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (+${s.plan!.stopPct.toFixed(2)}%), ` +
+       `target ${fmt(s.plan!.target)} (-${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}. ` +
+-      `Use perp_open market=${s.perp} direction=short stopPrice=${fmt(s.plan!.stop)} takeProfitPrice=${fmt(s.plan!.target)} (dryRun first).`
++      `Use perp_open market=${s.perp} direction=short stopPrice=${fmt(s.plan!.stop)} takeProfitPrice=${fmt(s.plan!.target)} (dryRun first).` + sizingText(s)
+     : `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
+       `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}` +
+-      (s.trending ? " (trending token: token_safety passed; size small)" : ""));
++      (s.trending ? " (trending token: token_safety passed; size small)" : "") + sizingText(s));
+   const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
+   return (setups.length
+     ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before entering.`
+@@ -350,6 +390,9 @@ export interface TradeStats {
+   expectancyUsd: number | null;
+   todayPnlUsd: number;
+   lossStreakToday: number;
++  /** Quality metrics over all closed trades (lot 7). */
++  metrics?: ReturnType<typeof performanceMetrics>;
++  capitalUsd?: number | null;
+ }
+ 
+ /** Closed trades = sales into USDC recorded in the ledger (realized PnL). */
+@@ -384,6 +427,8 @@ export function computeTradeStats(
+     expectancyUsd: rows.length ? sum(rows) / rows.length : null,
+     todayPnlUsd: sum(todayRows),
+     lossStreakToday: streak,
++    metrics: performanceMetrics(rows.map((r) => r.pnl)),
++    capitalUsd,
+   };
+ }
+ 
+@@ -393,6 +438,7 @@ export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recen
+     `Closed trades (sales into USDC): ${s.closedTrades} | wins ${s.wins} / losses ${s.losses} | win rate ${s.winRate === null ? "?" : `${(s.winRate * 100).toFixed(0)}%`}`,
+     `Realized PnL total ${money(s.totalPnlUsd)} | today ${money(s.todayPnlUsd)} | avg win ${money(s.avgWinUsd)} | avg loss ${money(s.avgLossUsd)} | expectancy per trade ${money(s.expectancyUsd)}`,
+   ];
++  if (s.metrics) lines.push(formatPerformance(s.metrics, s.capitalUsd ?? null));
+   if (s.lossStreakToday >= MAX_LOSS_STREAK) {
+     const until = new Date();
+     until.setUTCHours(24, 0, 0, 0);
