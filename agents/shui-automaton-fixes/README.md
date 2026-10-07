@@ -538,3 +538,37 @@ Patch : `2026-10-07-compute-serverless.patch`, à appliquer après `2026-10-07-t
   
   Cet outil est interdit aux workers.
 - **Serverless (lot 10)** : `OLLAMA_API_KEY` permet à SHUI d'utiliser un endpoint Runpod Serverless vLLM, compatible OpenAI. Le paramètre `think`, propre à Ollama, n'est envoyé qu'au tunnel local. `OLLAMA_BASE_URL` doit valoir `https://api.runpod.ai/v2/<ENDPOINT_ID>/openai`.
+
+## Lot 8 : limites de trading appliquées par le code, montants lisibles, budget GPU
+
+Patch : `2026-10-07-trading-lot8.patch`, à appliquer après `2026-10-07-compute-serverless.patch`. Pas d'exécution automatique des setups : SHUI décide toujours lui-même de chaque trade.
+
+- **Limites sur les achats**, vérifiées par le code avant chaque swap (les ventes et les stops ne sont jamais bloqués) :
+  - minimum 5 $ par achat (avant, SHUI a acheté de l'ORCA pour 0,11 $) ;
+  - au plus 20 % du capital par achat et 35 % dans un même token ;
+  - memecoins pump.fun autorisés, mais dans une poche de risque : 5 % du capital par token, 15 % au total ;
+  - slippage maximum de 100 bps ;
+  - impact de prix maximum de 1 % (0,5 % au-delà de 1 000 $).
+
+  Réglables sans patch : `SHUI_MIN_TRADE_USD`, `SHUI_MAX_TRADE_PCT`.
+- **Montants en dollars.** `solana_swap` accepte `amountUsd`, converti par le code en unités brutes pour USDC et SOL.
+- **Montants lisibles.** Le journal affiche SOL et USDC en vraies unités (529 000 lamports = 0,000529 SOL, pas 529 000 SOL). Pour les autres tokens, il indique « unités brutes ».
+- **Valorisation corrigée.**
+  - Le token du créateur ne compte plus dans la valeur du wallet.
+  - Le pic de drawdown et le capital des semaines pas encore jugées sont recalculés une seule fois.
+  - Le SOL détenu avant le journal reçoit un prix de référence, une seule fois.
+  - La pénalité du 06/10 n'est pas modifiée.
+- **Dépôts USDC du créateur.** Le compte USDC du wallet est maintenant scanné aussi : les dépôts USDC n'étaient pas journalisés. Il est relu depuis le début des règles v2.
+- **Budget GPU journalier** (`SHUI_GPU_DAILY_CAP_USD`, 8 $ par défaut, `0` = pas de plafond).
+  - Le coût est mesuré par la baisse du solde Runpod ; une recharge n'est pas comptée.
+  - Une fois le budget atteint, SHUI dort jusqu'à 00:00 UTC et prévient le créateur une fois.
+  - Les messages du créateur le réveillent quand même, et ses ordres et stops continuent de tourner.
+- **Secrets.** `exec` refuse toute commande qui touche `wallet.json`, `~/.automaton/automaton.json`, `/etc/shui-agent`, `chat.env`, `/proc/*/environ` ou `printenv`.
+- **Mode trading.**
+  - Les outils shell, code et git sont masqués.
+  - Le prompt précise que les 20 trades papier ne concernent que les setups de RANGE : un setup de tendance se trade en réel.
+  - La mise en sommeil est limitée à 1–2 h.
+- **Serverless.** Les providers configurés sur `127.0.0.1` (planner, workers) suivent l'endpoint https d'`OLLAMA_BASE_URL`.
+- **Janitor.**
+  - Les messages bloqués « en cours » depuis plus de 2 h sont expirés, pas rejoués.
+  - Une sauvegarde de `state.db` est faite chaque jour dans `~/backups/state-daily/` ; les 14 dernières sont gardées.
