@@ -468,3 +468,14 @@ Patch : `2026-10-07-turn-backoff-timeout.patch`, à appliquer après `2026-10-07
   - Après un redémarrage ou un changement du prompt, Ollama doit relire tout le prompt (environ 25 000 tokens) sans cache, ce qui peut dépasser 3 minutes.
   - Quand le délai expire, la requête est abandonnée et la tentative suivante repart de zéro : SHUI restait alors bloqué en timeout.
 - **RPC Solana** : le RPC public est fortement limité, et Drift en a besoin d'un plus robuste. Il est recommandé de configurer `SOLANA_RPC_URL` avec un RPC dédié (Helius propose une offre gratuite).
+
+## Drift désactivé
+
+Patch : `2026-10-07-disable-drift.patch`, à appliquer après `2026-10-07-turn-backoff-timeout.patch`.
+
+Le premier test réel de `perp_deposit` a échoué en simulation (`custom program error: 0x65`, InstructionFallback). Aucune transaction n'a été envoyée et aucun fonds n'a bougé. Explication : Drift a été piraté le 1er avril 2026 (environ 285 M$ volés). Le protocole a suspendu les dépôts et les retraits, et il est en cours de reconstruction.
+
+- Les outils `perp_*` et le moniteur Drift sont désactivés par défaut.
+- Le prompt ne parle plus de levier.
+- `setup_scan` ne propose plus de shorts.
+- Le code reste en place. Il ne se réactive qu'avec `SHUI_PERPS_VENUE=drift`, à n'utiliser que si le protocole est de nouveau vérifié sûr.

@@ -1,0 +1,212 @@
+diff --git a/src/__tests__/lot4-perps.test.ts b/src/__tests__/lot4-perps.test.ts
+index bacd009..3fe642b 100644
+--- a/src/__tests__/lot4-perps.test.ts
++++ b/src/__tests__/lot4-perps.test.ts
+@@ -184,3 +184,16 @@ describe("valuation with Drift", () => {
+     expect(buildCentralWalletValuation({ balances, solPriceUsd: 150, extraAssets: [stale] })).toMatchObject({ knownValueUsd: 59, complete: false });
+   });
+ });
++
++describe("perpetuals switch", () => {
++  it("is off by default (Drift paused after its April 2026 exploit)", async () => {
++    const { perpsEnabled } = await import("../solana/perps.js");
++    const { tradingFocusPrompt } = await import("../solana/trading-desk.js");
++    expect(perpsEnabled({})).toBe(false);
++    expect(perpsEnabled({ SHUI_PERPS_VENUE: "drift" })).toBe(true);
++    expect(tradingFocusPrompt({})).not.toMatch(/perp_open|Drift/);
++    expect(tradingFocusPrompt({ SHUI_PERPS_VENUE: "drift" })).toMatch(/perp_open/);
++    const { createBuiltinTools } = await import("../agent/tools.js");
++    expect(createBuiltinTools("").map((t) => t.name)).not.toContain("perp_deposit");
++  });
++});
+diff --git a/src/__tests__/lot5-trading.test.ts b/src/__tests__/lot5-trading.test.ts
+index 165d8fd..8dfad8a 100644
+--- a/src/__tests__/lot5-trading.test.ts
++++ b/src/__tests__/lot5-trading.test.ts
+@@ -50,11 +50,13 @@ describe("short setups", () => {
+     const fetcher = async (url: string) => url.includes("dexscreener")
+       ? [{ chainId: "solana", pairAddress: "P", dexId: "orca", liquidity: { usd: 5_000_000 }, baseToken: { symbol: "SOL" } }]
+       : ohlcv(uptrend(120).reverse());
+-    const sol = await setupScan({ mints: [SOL] }, fetcher, 0);
++    const sol = await setupScan({ mints: [SOL] }, fetcher, 0, true);
+     expect(sol).toMatch(/SHORT SETUP SOL|SOL: (short|4h trend not down)/);
+     expect(sol).not.toMatch(/SOL: 4h trend not up/);
+-    const other = await setupScan({ mints: ["JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"] }, fetcher, 0);
++    const other = await setupScan({ mints: ["JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"] }, fetcher, 0, true);
+     expect(other).not.toMatch(/SHORT/);
++    // Perpetuals off (default): no short analysis at all.
++    expect(await setupScan({ mints: [SOL] }, fetcher, 0, false)).toMatch(/SOL: 4h trend not up/);
+   });
+ });
+ 
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index f2f417e..79aec5c 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -6,7 +6,7 @@
+  */
+ 
+ import { formatLifespanLine } from "../survival/lifespan.js";
+-import { isTradingFocus, TRADING_FOCUS_PROMPT } from "../solana/trading-desk.js";
++import { isTradingFocus, tradingFocusPrompt } from "../solana/trading-desk.js";
+ import fs from "fs";
+ import crypto from "crypto";
+ import path from "path";
+@@ -601,7 +601,7 @@ export function buildSystemPrompt(params: {
+ 
+   // Layer 1: Core Rules (immutable, chain-aware)
+   sections.push(getCoreRules(chainType));
+-  if (isTradingFocus()) sections.push(TRADING_FOCUS_PROMPT);
++  if (isTradingFocus()) sections.push(tradingFocusPrompt());
+ 
+   // Layer 2: Core Identity (immutable, chain-aware)
+   sections.push(getCoreIdentity(chainType));
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index cef4ef2..b94c9aa 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -9,7 +9,7 @@ import { createBacktestTool } from "../solana/backtest.js";
+ import { createStrategyTools } from "../solana/strategies.js";
+ import { createMarketRegimeTool } from "../solana/market-regime.js";
+ import { createTradingExtraTools } from "../solana/trading-extras.js";
+-import { createPerpTools } from "../solana/perps.js";
++import { createPerpTools, perpsEnabled } from "../solana/perps.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+@@ -151,7 +151,7 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+     ...createStrategyTools(),
+     createMarketRegimeTool(),
+     ...createTradingExtraTools(),
+-    ...createPerpTools(),
++    ...(perpsEnabled() ? createPerpTools() : []),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/index.ts b/src/index.ts
+index edf89ee..045cec1 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -405,6 +405,7 @@ async function run(): Promise<void> {
+     startOrderExecutor({ db, chainIdentity, log: (message) => logger.info(message) });
+     startStrategyRunner({ db, chainIdentity, log: (message) => logger.info(message) });
+     // Drift perpetuals: account value for the valuation, realized PnL, liquidation warnings.
++    // (off unless SHUI_PERPS_VENUE=drift: Drift is paused since its April 2026 exploit)
+     startPerpMonitor(db.raw, chainIdentity, (message) => logger.info(message));
+   }
+ 
+diff --git a/src/solana/perps.ts b/src/solana/perps.ts
+index b57590f..ecf338c 100644
+--- a/src/solana/perps.ts
++++ b/src/solana/perps.ts
+@@ -38,6 +38,16 @@ export const PERP_LIMITS = {
+   entrySlippagePct: 1,
+ } as const;
+ 
++/**
++ * Drift was exploited on 2026-04-01 (~$285M), paused deposits and withdrawals
++ * and is being rebuilt; its program now rejects the SDK's instructions
++ * (custom error 0x65). Perpetuals stay OFF unless the creator explicitly sets
++ * SHUI_PERPS_VENUE=drift after the venue is verified safe again.
++ */
++export function perpsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
++  return (env.SHUI_PERPS_VENUE ?? "").trim().toLowerCase() === "drift";
++}
++
+ export const PERP_MARKETS: Record<string, number> = { "SOL-PERP": 0, "BTC-PERP": 1, "ETH-PERP": 2 };
+ export const DRIFT_SDK_VERSION = "2.156.0";
+ const CACHE_KEY = "perp.account";
+@@ -679,7 +689,7 @@ export async function runPerpTick(db: Database, identity: ChainIdentity, factory
+ }
+ 
+ export function startPerpMonitor(db: Database, identity: ChainIdentity | undefined, log: (m: string) => void = () => {}): NodeJS.Timeout | null {
+-  if (!identity || identity.chainType !== "solana") return null;
++  if (!identity || identity.chainType !== "solana" || !perpsEnabled()) return null;
+   let running = false;
+   const tick = async () => {
+     if (running || !perpsInUse(db)) return;
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 05d760c..53479ea 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -415,7 +415,7 @@ export const TRADING_PLAYBOOK = `Trading playbook (rules of experienced traders;
+ 10. Keep a journal: every trade's reason, entry, stop, target and result (remember_fact). Review it: repeat what worked, drop what did not.
+ 11. No trade is a position too. Sitting in USDC while waiting for a clean setup costs nothing.
+ 12. Revenge trading after a loss is forbidden: after 2 real losing trades in a row (> 0.5% of capital each), no new entry until 00:00 UTC (enforced by code).
+-13. In a 4h downtrend, the trend is your friend too: short SOL/BTC/ETH on Drift after a fading bounce, stop above resistance.`;
++13. In a 4h downtrend, do not buy: stay in USDC (shorting needs a perpetuals venue, only when your creator enables one).`;
+ 
+ export function createTechnicalAnalysisTools(): AutomatonTool[] {
+   return [
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 0d17fbc..3c55cd8 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -14,6 +14,7 @@ import {
+   atr, emaSeries, fetchCandles, fibonacci, macd, rsi, swings, type Candle, type Fetcher, defaultFetcher,
+ } from "./technical-analysis.js";
+ import { USDC_MINT } from "./raydium.js";
++import { perpsEnabled } from "./perps.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+@@ -30,9 +31,9 @@ services, websites or payment pages. Realized profit (selling a token for more U
+ counts. Work calmly: a week without a good setup costs you nothing; a bad trade does. Your method, every cycle:
+ 1. trade_stats, positions and market_regime: know your results, what you hold and the market weather.
+    After 2 real losing trades today the code blocks new entries until 00:00 UTC (trade_stats gives the time):
+-   never sleep longer than that. In RISK-OFF, prefer USDC or a short setup.
+-2. setup_scan: find setups that follow the playbook (long in a 4h uptrend; SHORT on Drift for SOL/BTC/ETH in a
+-   4h downtrend; 1h entry, reward/risk >= 2). No real setup = stay in USDC, but use the wait to learn: keep at
++   never sleep longer than that. In RISK-OFF, prefer USDC.
++2. setup_scan: find setups that follow the playbook (long in a 4h uptrend, 1h entry, reward/risk >= 2).
++   No real setup = stay in USDC, but use the wait to learn: keep at
+    least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+@@ -43,11 +44,17 @@ To act while you sleep: price_alert wakes you at a level; backtest a rule, then
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
+ A daily report is sent to your creator automatically; message_creator is for important events only. Never swap SOL <-> USDC back and forth: it only costs fees.
+-If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.
+-Leverage (Drift perpetuals SOL/BTC/ETH-PERP, long or short): perp_deposit USDC as collateral (max 50% of capital),
++If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
++
++export const PERPS_PROMPT = `Leverage (Drift perpetuals SOL/BTC/ETH-PERP, long or short): perp_deposit USDC as collateral (max 50% of capital),
+ then perp_open with a mandatory stopPrice (placed on Drift, works while you sleep), dryRun first. Code limits: 5x max
+ (1x for your first 5 trades), 2% of capital lost at the stop, liquidation far beyond the stop. A short lets you profit
+-from a 4h downtrend. Leverage multiplies losses as much as gains: use it only on A+ setups. perp_positions, perp_close.`;
++from a 4h downtrend. Leverage multiplies losses as much as gains: use it only on A+ setups. perp_positions, perp_close.
++setup_scan also returns SHORT setups (SOL/BTC/ETH-PERP) in a 4h downtrend.`;
++
++export function tradingFocusPrompt(env: NodeJS.ProcessEnv = process.env): string {
++  return perpsEnabled(env) ? `${TRADING_FOCUS_PROMPT}\n${PERPS_PROMPT}` : TRADING_FOCUS_PROMPT;
++}
+ 
+ export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string; perp?: string }> = [
+   { symbol: "SOL", mint: "So11111111111111111111111111111111111111112", perp: "SOL-PERP" },
+@@ -153,6 +160,7 @@ export async function setupScan(
+   args: { mints?: string[] },
+   fetcher: Fetcher = defaultFetcher,
+   pauseMs = 400,
++  shorts: boolean = perpsEnabled(),
+ ): Promise<string> {
+   const list = Array.isArray(args.mints) && args.mints.length
+     ? args.mints.slice(0, 12).map((mint) => DEFAULT_WATCHLIST.find((w) => w.mint === mint) ?? { symbol: mint.slice(0, 6), mint })
+@@ -168,7 +176,7 @@ export async function setupScan(
+         const long = evaluateSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd);
+         const perp = (token as { perp?: string }).perp;
+         // In a 4h downtrend, tokens with a Drift market are checked for a short.
+-        results.push(!long.ok && perp && long.reason.startsWith("4h trend not up")
++        results.push(shorts && !long.ok && perp && long.reason.startsWith("4h trend not up")
+           ? evaluateShortSetup(h4.symbol, token.mint, perp, h4.candles, h1.candles, h4.liquidityUsd)
+           : long);
+       }
+@@ -291,7 +299,7 @@ export function createTradingDeskTools(): AutomatonTool[] {
+       description:
+         "Scan a watchlist of liquid Solana tokens (default SOL, cbBTC, ETH, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
+         "and 1h (entry) and return the setups that follow the playbook: LONG in a 4h uptrend (1h RSI 35-68, momentum turning), " +
+-        "SHORT via Drift perpetuals for SOL/BTC/ETH in a 4h downtrend (1h bounce fading), liquidity >= $50k, reward/risk >= 2, " +
++        "SHORT setups for SOL/BTC/ETH in a 4h downtrend only when perpetuals are enabled, liquidity >= $50k, reward/risk >= 2, " +
+         "with entry, stop and target. Takes up to ~1 min (market data is rate-limited).",
+       category: "financial",
+       riskLevel: "safe",
