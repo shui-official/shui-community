@@ -1,6 +1,6 @@
 diff --git a/src/__tests__/lot8b-decisions.test.ts b/src/__tests__/lot8b-decisions.test.ts
 new file mode 100644
-index 0000000..ed37054
+index 0000000..3144608
 --- /dev/null
 +++ b/src/__tests__/lot8b-decisions.test.ts
 @@ -0,0 +1,73 @@
@@ -35,7 +35,7 @@ index 0000000..ed37054
 +    const db = freshDb();
 +    recordPendingSetups(db, [setup("ORCA", ORCA), setup("RAY", RAY)], t0);
 +    const first = sleepGuard(db, 14400, true, later(5));
-+    expect("blocked" in first && first.blocked).toMatch(/2 valid setup\(s\).*\n- ORCA: BUY → solana_swap .*amountUsd=11.55.*SKIP → journal_add kind=note mint=orcaE/s);
++    expect("blocked" in first && first.blocked).toMatch(/2 valid setup\(s\).*\n- ORCA: BUY → jupiter_swap .*amountUsd=11.55, then protect_position mint=orcaE.* stopPriceUsd=2.7600 takeProfitPriceUsd=3.4700.*SKIP → journal_add kind=note mint=orcaE/s);
 +    expect("blocked" in sleepGuard(db, 14400, true, later(6))).toBe(true);
 +    expect(sleepGuard(db, 14400, true, later(7))).toMatchObject({ durationS: 7200 });
 +  });
@@ -162,7 +162,7 @@ index 9054287..a5fd6a6 100644
      {
 diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
 new file mode 100644
-index 0000000..6ddb4a0
+index 0000000..3dfc537
 --- /dev/null
 +++ b/src/solana/decisions.ts
 @@ -0,0 +1,131 @@
@@ -266,8 +266,8 @@ index 0000000..6ddb4a0
 +const fmt = (x: number) => (x >= 100 ? x.toFixed(2) : x >= 1 ? x.toFixed(4) : x.toPrecision(4));
 +
 +export function decisionLine(s: PendingSetup): string {
-+  return `${s.symbol}: BUY → solana_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
-+    `then protect_position stop ${fmt(s.stop)} target ${fmt(s.target)}; ` +
++  return `${s.symbol}: BUY → jupiter_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
++    `then protect_position mint=${s.mint} stopPriceUsd=${fmt(s.stop)} takeProfitPriceUsd=${fmt(s.target)}; ` +
 +    `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
 +}
 +

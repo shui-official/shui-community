@@ -551,7 +551,7 @@ Patch : `2026-10-07-trading-lot8.patch`, à appliquer après `2026-10-07-compute
   - impact de prix maximum de 1 % (0,5 % au-delà de 1 000 $).
 
   Réglables sans patch : `SHUI_MIN_TRADE_USD`, `SHUI_MAX_TRADE_PCT`.
-- **Montants en dollars.** `solana_swap` accepte `amountUsd`, converti par le code en unités brutes pour USDC et SOL.
+- **Montants en dollars.** `jupiter_swap` accepte `amountUsd`, converti par le code en unités brutes pour USDC et SOL.
 - **Montants lisibles.** Le journal affiche SOL et USDC en vraies unités (529 000 lamports = 0,000529 SOL, pas 529 000 SOL). Pour les autres tokens, il indique « unités brutes ».
 - **Valorisation corrigée.**
   - Le token du créateur ne compte plus dans la valeur du wallet.
@@ -582,7 +582,7 @@ Constat sur 10 heures de logs : SHUI trouvait des setups valides (ORCA R/R 4,35,
 - **Décision obligatoire.**
   - Chaque setup de tendance réel trouvé par `setup_scan` devient une décision en attente.
   - Sa taille est déjà ajustée aux limites du code : 20 % du capital au maximum, 5 $ au minimum.
-  - Le scan affiche une ligne « DECIDE » : acheter avec `solana_swap … amountUsd=X` puis `protect_position`, ou noter avec `journal_add` pourquoi il passe.
+  - Le scan affiche une ligne « DECIDE » : acheter avec `jupiter_swap … amountUsd=X` puis `protect_position`, ou noter avec `journal_add` pourquoi il passe.
   - Tant qu'un setup n'a ni achat ni note pour son token, `sleep` est refusé, deux fois au maximum par scan.
 - **Sommeil plafonné par le code** en mode trading : 2 h au maximum, 1 h avec une position ouverte.
 - **`setup_scan` réutilisé pendant 15 minutes** : un réveil rapproché ne refait pas un scan de 1 à 3 minutes.
