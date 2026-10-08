@@ -603,3 +603,19 @@ Patch : `2026-10-08-trading-lot8c.patch`, à appliquer après `2026-10-08-tradin
 - **Temps GPU restant** :
   - calculé sur le coût moyen des derniers jours, pas sur le coût instantané du serverless (1,22 $/h quand une requête tourne) ;
   - l'alerte de solde bas ne réveille plus SHUI : il la lit à son tour suivant.
+
+## Control Center : historique des swaps lu dans le journal de SHUI (lot 8d)
+
+Script : `control-center/2026-10-08-trades-from-ledger.py`, à lancer depuis `/home/ubuntu/shui-control-center`. L'option `--dry-run` vérifie sans rien écrire. Le script fait une copie des deux fichiers avant de les modifier.
+
+**Le problème :**
+- L'agrégateur datait chaque swap avec l'heure à laquelle il voyait passer l'événement (`ts = ev.ts`).
+- Il remplaçait la ligne quand le même swap revenait. Un redémarrage a ainsi daté au 08/10 06:40 l'achat d'ORCA du 07/10 à 16:44 UTC.
+- Les événements ne contiennent ni P&L ni montants lisibles.
+
+**La correction :** `/api/trades` construit les swaps confirmés à partir de `shui_ledger`, en lecture seule, avec :
+- l'heure réelle de la blockchain ;
+- les montants lisibles (0,1086 USDC) ;
+- le P&L réalisé sur les ventes. Un achat reste UNKNOWN jusqu'à sa revente, jamais 0.
+
+Les tentatives échouées ou en cours viennent toujours de la télémétrie. Le format de réponse ne change pas, donc la page n'a pas à être modifiée.
