@@ -1,0 +1,385 @@
+diff --git a/src/__tests__/lot8b-decisions.test.ts b/src/__tests__/lot8b-decisions.test.ts
+new file mode 100644
+index 0000000..ed37054
+--- /dev/null
++++ b/src/__tests__/lot8b-decisions.test.ts
+@@ -0,0 +1,73 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { clampBuyUsd, recordPendingSetups, sleepGuard, undecidedSetups, type PendingSetup } from "../solana/decisions.js";
++import { addJournalEntry, tradingFocusPrompt } from "../solana/trading-desk.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot8b-")), "s.db")).raw;
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const RAY = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
++const setup = (symbol: string, mint: string): PendingSetup => ({ symbol, mint, entry: 2.9, stop: 2.76, target: 3.47, rr: 4.3, amountUsd: 11.55 });
++const t0 = new Date("2026-10-08T02:00:00Z");
++const later = (min: number) => new Date(t0.getTime() + min * 60_000);
++
++describe("buy size within the limits", () => {
++  it("clamps to 20% of capital and drops sizes under $5", () => {
++    expect(clampBuyUsd(25.3, 57.76)).toBe(11.55);
++    expect(clampBuyUsd(8, 57.76)).toBe(8);
++    expect(clampBuyUsd(null, 57.76)).toBe(11.55);
++    expect(clampBuyUsd(25, 20)).toBeNull(); // 20% of $20 = $4 < $5
++    expect(clampBuyUsd(10, null)).toBeNull();
++  });
++});
++
++describe("SHUI must decide before sleeping", () => {
++  it("refuses sleep twice while a setup has no decision, then lets it sleep", () => {
++    const db = freshDb();
++    recordPendingSetups(db, [setup("ORCA", ORCA), setup("RAY", RAY)], t0);
++    const first = sleepGuard(db, 14400, true, later(5));
++    expect("blocked" in first && first.blocked).toMatch(/2 valid setup\(s\).*\n- ORCA: BUY → solana_swap .*amountUsd=11.55.*SKIP → journal_add kind=note mint=orcaE/s);
++    expect("blocked" in sleepGuard(db, 14400, true, later(6))).toBe(true);
++    expect(sleepGuard(db, 14400, true, later(7))).toMatchObject({ durationS: 7200 });
++  });
++
++  it("counts a journal entry or a buy of the mint as a decision", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db);
++    recordPendingSetups(db, [setup("ORCA", ORCA), setup("RAY", RAY)], t0);
++    addJournalEntry(db, { kind: "note", mint: RAY, text: "skip: stop too wide" }, later(3));
++    expect(undecidedSetups(db, later(4))!.setups.map((s) => s.symbol)).toEqual(["ORCA"]);
++    db.prepare(
++      `INSERT INTO shui_ledger (signature, ts, day, kind, input_mint, input_amount_raw, output_mint, output_amount_raw, revenue_usd, realized_pnl_usd, incomplete, details)
++       VALUES ('sig1', ?, '2026-10-08', 'swap', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', '11550000', ?, '4000000', 0, 0, 0, '{}')`,
++    ).run(later(4).toISOString(), ORCA);
++    expect(undecidedSetups(db, later(5))).toBeNull();
++    expect(sleepGuard(db, 3600, true, later(5))).toMatchObject({ durationS: 3600 });
++  });
++
++  it("ignores a journal entry written before the scan and forgets scans older than 6 h", () => {
++    const db = freshDb();
++    addJournalEntry(db, { kind: "note", mint: ORCA, text: "old note" }, new Date(t0.getTime() - 60_000));
++    recordPendingSetups(db, [setup("ORCA", ORCA)], t0);
++    expect(undecidedSetups(db, later(1))).not.toBeNull();
++    expect(undecidedSetups(db, later(7 * 60))).toBeNull();
++  });
++
++  it("caps sleep at 1 h with an open position, and does nothing outside trading focus", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db);
++    expect(sleepGuard(db, 14400, true, t0)).toMatchObject({ durationS: 7200 });
++    db.prepare("INSERT INTO shui_cost_basis (mint, amount_raw, cost_usd) VALUES (?, '4000000', 11.5)").run(ORCA);
++    expect(sleepGuard(db, 14400, true, t0)).toMatchObject({ durationS: 3600 });
++    recordPendingSetups(db, [setup("RAY", RAY)], t0);
++    expect(sleepGuard(db, 14400, false, later(1))).toMatchObject({ durationS: 14400 });
++  });
++
++  it("tells SHUI in its prompt", () => {
++    expect(tradingFocusPrompt({})).toMatch(/Sleep is refused until you decide/);
++    expect(tradingFocusPrompt({})).toMatch(/capped by code at 2 h/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index b4d1cf9..445cbc7 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -104,6 +104,7 @@ import { UnifiedInferenceClient } from "../inference/inference-client.js";
+ import { isIdleOnlyTool } from "./idle-only-tools.js";
+ import { formatCreatorChatMessage, hasPendingCreatorMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
+ import { checkGpuCap } from "../integration/runpod.js";
++import { isTradingFocus } from "../solana/trading-desk.js";
+ 
+ const logger = createLogger("loop");
+ const MAX_TOOL_CALLS_PER_TURN = 10;
+@@ -703,6 +704,7 @@ export async function runAgentLoop(
+ 
+   const MAX_IDLE_TURNS = 10; // Force sleep after N turns with no real work
+   let idleTurnCount = 0;
++  let apiUnreachableLogged = false;
+ 
+   const maxCycleTurns = config.maxTurnsPerCycle ?? 25;
+   let cycleTurnCount = 0;
+@@ -791,7 +793,10 @@ export async function runAgentLoop(
+       // api_unreachable: creditsCents === -1 means API failed with no cache.
+       // Do NOT kill the agent; continue in low-compute mode and retry next tick.
+       if (financial.creditsCents === -1) {
+-        log(config, "[API_UNREACHABLE] Balance API unreachable, continuing in low-compute mode.");
++        if (!apiUnreachableLogged) {
++          apiUnreachableLogged = true;
++          log(config, "[API_UNREACHABLE] Conway balance unknown (not used in trading focus); continuing.");
++        }
+         inference.setLowComputeMode(true);
+       } else {
+         const tier = getSurvivalTier(financial.creditsCents);
+@@ -1500,7 +1505,7 @@ export async function runAgentLoop(
+ 
+       // ── Check for sleep command ──
+       const sleepTool = turn.toolCalls.find((tc) => tc.name === "sleep");
+-      if (sleepTool && !sleepTool.error) {
++      if (sleepTool && !sleepTool.error && !sleepTool.result.startsWith("Blocked:")) {
+         log(config, "[SLEEP] Agent chose to sleep.");
+         db.setAgentState("sleeping");
+         onStateChange?.("sleeping");
+@@ -1678,6 +1683,8 @@ async function getFinancialState(
+   let walletValuationFresh = false;
+ 
+   try {
++    // Lot 8b: a trading-only SHUI runs on its own GPU and never uses Conway credits.
++    if (isTradingFocus()) throw new Error("not used in trading focus");
+     creditsCents = await conway.getCreditsBalance();
+     if (creditsCents > 0) _lastKnownCredits = creditsCents;
+     if (conwayCreditsUnavailableSince !== null) {
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index 9054287..a5fd6a6 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -13,6 +13,7 @@ import { createMarketRegimeTool } from "../solana/market-regime.js";
+ import { createTradingExtraTools } from "../solana/trading-extras.js";
+ import { createPerpTools, perpsEnabled } from "../solana/perps.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
++import { sleepGuard } from "../solana/decisions.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+ import { createServiceTools } from "../services/service-tools.js";
+@@ -984,15 +985,18 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+         required: ["duration_seconds"],
+       },
+       execute: async (args, ctx) => {
+-        const duration = args.duration_seconds as number;
+         const reason = (args.reason as string) || "No reason given";
++        // Lot 8b: in trading focus, decide pending setups first, and sleep 2 h at most.
++        const guard = sleepGuard(ctx.db.raw, Number(args.duration_seconds), isTradingFocus());
++        if ("blocked" in guard) return guard.blocked;
++        const duration = guard.durationS;
+         ctx.db.setAgentState("sleeping");
+         ctx.db.setKV(
+           "sleep_until",
+           new Date(Date.now() + duration * 1000).toISOString(),
+         );
+         ctx.db.setKV("sleep_reason", reason);
+-        return `Entering sleep mode for ${duration}s. Reason: ${reason}. Heartbeat will continue.`;
++        return `Entering sleep mode for ${duration}s${guard.note}. Reason: ${reason}. Heartbeat will continue.`;
+       },
+     },
+     {
+diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
+new file mode 100644
+index 0000000..6ddb4a0
+--- /dev/null
++++ b/src/solana/decisions.ts
+@@ -0,0 +1,131 @@
++/**
++ * Lot 8b — SHUI must decide. The code never buys for it, but:
++ *   - every live trend setup found by setup_scan becomes a pending decision,
++ *     with a size already clamped to the code limits (amountUsd);
++ *   - sleep refuses (twice at most per scan) while a pending setup has
++ *     neither a buy nor a journal entry for its mint;
++ *   - in trading focus, sleep lasts 2 h at most (1 h with an open position).
++ */
++import type { Database } from "better-sqlite3";
++import { tradeLimits } from "./trade-limits.js";
++import { isCreatorToken } from "./token-policy.js";
++
++const PENDING_KEY = "decision.pending";
++const REFUSALS_PREFIX = "decision.sleep_refusals.";
++export const PENDING_TTL_MS = 6 * 3_600_000;
++export const MAX_SLEEP_REFUSALS = 2;
++export const MAX_SLEEP_S = 2 * 3600;
++export const MAX_SLEEP_WITH_POSITION_S = 3600;
++
++const SOL_MINT = "So11111111111111111111111111111111111111112";
++const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const JITOSOL = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
++
++export interface PendingSetup {
++  symbol: string;
++  mint: string;
++  entry: number;
++  stop: number;
++  target: number;
++  rr: number;
++  amountUsd: number;
++}
++
++const getKv = (db: Database, key: string): string | null =>
++  (db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
++const setKv = (db: Database, key: string, value: string): void => {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, value);
++};
++
++/** Buy size within the code limits, or null when the limits leave less than the minimum. */
++export function clampBuyUsd(sizeUsd: number | null | undefined, capitalUsd: number | null, env: NodeJS.ProcessEnv = process.env): number | null {
++  if (!capitalUsd || capitalUsd <= 0) return null;
++  const L = tradeLimits(env);
++  const cap = (capitalUsd * L.maxTradePct) / 100;
++  const size = Math.min(sizeUsd && sizeUsd > 0 ? sizeUsd : cap, cap);
++  const rounded = Math.floor(size * 100) / 100;
++  return rounded >= L.minTradeUsd ? rounded : null;
++}
++
++export function recordPendingSetups(db: Database, setups: PendingSetup[], now: Date = new Date()): void {
++  if (!setups.length) return;
++  setKv(db, PENDING_KEY, JSON.stringify({ at: now.toISOString(), setups }));
++}
++
++/** Mints SHUI holds as positions (cost basis), without SOL, USDC, jitoSOL and the creator token. */
++export function openPositionMints(db: Database): string[] {
++  try {
++    return (db.prepare("SELECT mint FROM shui_cost_basis").all() as Array<{ mint: string }>)
++      .map((r) => r.mint)
++      .filter((m) => m !== SOL_MINT && m !== USDC_MINT && m !== JITOSOL && !isCreatorToken(m));
++  } catch {
++    return [];
++  }
++}
++
++function decidedSince(db: Database, mint: string, since: string): boolean {
++  const journaled = (db.prepare("SELECT value FROM kv WHERE key LIKE 'journal.%' AND key >= ?").all(`journal.${since}`) as Array<{ value: string }>)
++    .some((r) => {
++      try {
++        return (JSON.parse(r.value) as { mint?: string | null }).mint === mint;
++      } catch {
++        return false;
++      }
++    });
++  if (journaled) return true;
++  try {
++    return !!db.prepare("SELECT 1 FROM shui_ledger WHERE kind = 'swap' AND output_mint = ? AND ts >= ? LIMIT 1").get(mint, since);
++  } catch {
++    return false;
++  }
++}
++
++export function undecidedSetups(db: Database, now: Date = new Date()): { at: string; setups: PendingSetup[] } | null {
++  const raw = getKv(db, PENDING_KEY);
++  if (!raw) return null;
++  let pending: { at: string; setups: PendingSetup[] };
++  try {
++    pending = JSON.parse(raw);
++  } catch {
++    return null;
++  }
++  if (now.getTime() - Date.parse(pending.at) > PENDING_TTL_MS) return null;
++  const held = new Set(openPositionMints(db));
++  const setups = pending.setups.filter((s) => !held.has(s.mint) && !decidedSince(db, s.mint, pending.at));
++  return setups.length ? { at: pending.at, setups } : null;
++}
++
++const fmt = (x: number) => (x >= 100 ? x.toFixed(2) : x >= 1 ? x.toFixed(4) : x.toPrecision(4));
++
++export function decisionLine(s: PendingSetup): string {
++  return `${s.symbol}: BUY → solana_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
++    `then protect_position stop ${fmt(s.stop)} target ${fmt(s.target)}; ` +
++    `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
++}
++
++/**
++ * Called by the sleep tool. Returns a refusal (string starting with "Blocked:")
++ * or the duration actually allowed.
++ */
++export function sleepGuard(db: Database, requestedS: number, trading: boolean, now: Date = new Date()):
++  { blocked: string } | { durationS: number; note: string } {
++  const requested = Number.isFinite(requestedS) && requestedS > 0 ? requestedS : 600;
++  if (!trading) return { durationS: requested, note: "" };
++  const pending = undecidedSetups(db, now);
++  if (pending) {
++    const key = `${REFUSALS_PREFIX}${pending.at}`;
++    const refusals = Number(getKv(db, key) ?? 0) || 0;
++    if (refusals < MAX_SLEEP_REFUSALS) {
++      setKv(db, key, String(refusals + 1));
++      return {
++        blocked: `Blocked: ${pending.setups.length} valid setup(s) from setup_scan have no decision. Decide each one now, then sleep:\n` +
++          pending.setups.map((s) => `- ${decisionLine(s)}`).join("\n") +
++          "\nThe size is already within the code limits. Buying or skipping is your choice, but you must choose.",
++      };
++    }
++  }
++  const max = openPositionMints(db).length ? MAX_SLEEP_WITH_POSITION_S : MAX_SLEEP_S;
++  return requested > max
++    ? { durationS: max, note: ` (capped from ${requested}s: in trading focus you sleep at most ${max / 3600} h)` }
++    : { durationS: requested, note: "" };
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 81ad985..da024bf 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -22,6 +22,7 @@ import { tokenSafety as tokenSafetyText } from "./portfolio.js";
+ import { listPaperTrades } from "./orders.js";
+ import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "./quant.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
++import { clampBuyUsd, decisionLine, recordPendingSetups, type PendingSetup } from "./decisions.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
+@@ -46,9 +47,11 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ 2. setup_scan: find setups that follow the playbook (long in a 4h uptrend, 1h entry, reward/risk >= 2). It also
+    scans the most active liquid tokens of the moment, and RANGE setups (rebound at the bottom of a trendless
+    4h range, R/R >= 1.5). The "20 paper trades first" rule applies ONLY to RANGE setups (paper_trade setup="range").
+-   A trend SETUP line is a REAL trade, allowed now. For every valid setup write journal_add: taken or skipped, and why.
++   A trend SETUP line is a REAL trade, allowed now. setup_scan gives each one a DECIDE line: either buy it with the
++   amountUsd shown, or journal_add kind=note with its mint and why you skip it. Sleep is refused until you decide.
++   "Waiting for a clean setup" is not a reason when setup_scan just gave you one.
+    No real setup = stay in USDC, but use the wait to learn: keep at
+-   least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
++   least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-2 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+ 5. Buy with jupiter_swap using amountUsd = the size setup_scan gives (e.g. amountUsd=12 spends $12; never raw amounts
+@@ -57,7 +60,7 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+    among several setups, take the first one (strongest steady momentum).
+ 6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+ 7. When an order executes or a paper position closes you get an inbox notice: only then write journal_add kind=lesson.
+-Orders, stops and paper trades run in code: never sleep "to wait for results". With no setup, sleep 1-2 h, not more.
++Orders, stops and paper trades run in code: never sleep "to wait for results". Sleep is capped by code at 2 h (1 h with a position).
+ Amounts: SOL has 9 decimals (1 SOL = 1,000,000,000 lamports), USDC 6. Read positions before claiming what you hold.
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+@@ -367,10 +370,22 @@ export async function setupScan(
+       `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}` +
+       (s.trending ? " (trending token: token_safety passed; size small)" : "") + sizingText(s));
+   const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
++  // Lot 8b: live trend setups become pending decisions, sized within the code limits.
++  const live: PendingSetup[] = [];
++  for (const s of setups) {
++    if (s.side === "range" || s.side === "short" || !s.plan) continue;
++    const amountUsd = clampBuyUsd(s.sizeUsd, capitalUsd);
++    if (amountUsd === null) continue;
++    live.push({ symbol: s.symbol, mint: s.mint, entry: s.plan.entry, stop: s.plan.stop, target: s.plan.target, rr: s.plan.rr, amountUsd });
++  }
++  if (options.db) recordPendingSetups(options.db, live);
++  const decide = live.length
++    ? `\nDECIDE NOW for each live setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}`
++    : "";
+   return (setups.length
+-    ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before entering.`
++    ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}${decide}`
+     : "No real setup right now: stay in USDC. Do not just sleep: keep a paper strategy running (backtest, then strategy_create paper=true) " +
+-      "or paper_trade the closest near-setup, then check again in 1-4 h.") +
++      "or paper_trade the closest near-setup, then check again in 1-2 h.") +
+     `${trendingNote}\nSkipped:\n${skipped.join("\n")}`;
+ }
+ 
+@@ -476,6 +491,9 @@ export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recen
+   return lines.join("\n");
+ }
+ 
++const SCAN_CACHE_MS = 15 * 60_000;
++let scanCache: { key: string; at: number; text: string } | null = null;
++
+ export function createTradingDeskTools(): AutomatonTool[] {
+   return [
+     {
+@@ -491,7 +509,14 @@ export function createTradingDeskTools(): AutomatonTool[] {
+       parameters: { type: "object", properties: { mints: { type: "array", items: { type: "string" }, description: "Optional token mints (max 12)." } } },
+       execute: async (args, ctx) => {
+         try {
+-          return await setupScan(args as { mints?: string[] }, defaultFetcher, 400, perpsEnabled(), { db: ctx.db.raw });
++          // Lot 8b: a wake minutes after a scan reuses it instead of redoing 1-3 min of market data.
++          const key = JSON.stringify((args as { mints?: string[] }).mints ?? []);
++          if (scanCache && scanCache.key === key && Date.now() - scanCache.at < SCAN_CACHE_MS) {
++            return `(same scan as ${Math.round((Date.now() - scanCache.at) / 60_000)} min ago; markets move slowly on 4h/1h)\n${scanCache.text}`;
++          }
++          const text = await setupScan(args as { mints?: string[] }, defaultFetcher, 400, perpsEnabled(), { db: ctx.db.raw });
++          scanCache = { key, at: Date.now(), text };
++          return text;
+         } catch (error) {
+           return `setup_scan failed: ${error instanceof Error ? error.message : String(error)}`;
+         }

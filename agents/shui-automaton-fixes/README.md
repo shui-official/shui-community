@@ -572,3 +572,18 @@ Patch : `2026-10-07-trading-lot8.patch`, à appliquer après `2026-10-07-compute
 - **Janitor.**
   - Les messages bloqués « en cours » depuis plus de 2 h sont expirés, pas rejoués.
   - Une sauvegarde de `state.db` est faite chaque jour dans `~/backups/state-daily/` ; les 14 dernières sont gardées.
+
+## Lot 8b : SHUI doit décider
+
+Patch : `2026-10-08-trading-lot8b.patch`, à appliquer après `2026-10-07-trading-lot8.patch`. Le code n'achète toujours rien à la place de SHUI.
+
+Constat sur 10 heures de logs : SHUI trouvait des setups valides (ORCA R/R 4,35, RAY R/R 3,72), écrivait « j'attends un setup propre », puis dormait 4 heures.
+
+- **Décision obligatoire.**
+  - Chaque setup de tendance réel trouvé par `setup_scan` devient une décision en attente.
+  - Sa taille est déjà ajustée aux limites du code : 20 % du capital au maximum, 5 $ au minimum.
+  - Le scan affiche une ligne « DECIDE » : acheter avec `solana_swap … amountUsd=X` puis `protect_position`, ou noter avec `journal_add` pourquoi il passe.
+  - Tant qu'un setup n'a ni achat ni note pour son token, `sleep` est refusé, deux fois au maximum par scan.
+- **Sommeil plafonné par le code** en mode trading : 2 h au maximum, 1 h avec une position ouverte.
+- **`setup_scan` réutilisé pendant 15 minutes** : un réveil rapproché ne refait pas un scan de 1 à 3 minutes.
+- **Conway n'est plus interrogé** en mode trading. Le message `[API_UNREACHABLE]` n'apparaît plus qu'une fois au lieu de chaque tour.
