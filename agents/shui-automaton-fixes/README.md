@@ -619,3 +619,22 @@ Script : `control-center/2026-10-08-trades-from-ledger.py`, à lancer depuis `/h
 - le P&L réalisé sur les ventes. Un achat reste UNKNOWN jusqu'à sa revente, jamais 0.
 
 Les tentatives échouées ou en cours viennent toujours de la télémétrie. Le format de réponse ne change pas, donc la page n'a pas à être modifiée.
+
+## Lot 8e : les stops s'exécutent toujours
+
+Patch : `2026-10-08-trading-lot8e.patch`, à appliquer après `2026-10-08-trading-lot8c.patch`.
+
+**Le problème :** avec 0,00987 SOL, la réserve de 0,01 SOL refusait tous les swaps, y compris :
+- les stop-loss des positions réelles ORCA et MET ;
+- l'échange USDC → SOL qui aurait permis de se débloquer.
+
+**SOL nécessaire selon le swap :**
+- **vente vers USDC** (stops, objectifs) : 0,002 SOL. Les frais réels sont d'environ 0,00001 SOL.
+- **échange vers SOL** (recharge) : 0,003 SOL, pour le compte temporaire de SOL « wrappé ».
+- **achat d'un token** : 0,0125 SOL, pour que la réserve de 0,01 SOL survive au dépôt d'environ 0,002 SOL d'un nouveau compte de token.
+
+**Alertes :**
+- sous 0,01 SOL, SHUI reçoit une fois par jour la commande exacte pour recharger (USDC → SOL, 2 $) ;
+- sous 0,003 SOL, le créateur est prié d'envoyer du SOL.
+
+**Prompt :** les pertes papier ne bloquent jamais le trading réel.
