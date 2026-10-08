@@ -587,3 +587,19 @@ Constat sur 10 heures de logs : SHUI trouvait des setups valides (ORCA R/R 4,35,
 - **Sommeil plafonné par le code** en mode trading : 2 h au maximum, 1 h avec une position ouverte.
 - **`setup_scan` réutilisé pendant 15 minutes** : un réveil rapproché ne refait pas un scan de 1 à 3 minutes.
 - **Conway n'est plus interrogé** en mode trading. Le message `[API_UNREACHABLE]` n'apparaît plus qu'une fois au lieu de chaque tour.
+
+## Lot 8c : setups de range en papier, tailles adaptées aux memecoins, vrai temps GPU restant
+
+Patch : `2026-10-08-trading-lot8c.patch`, à appliquer après `2026-10-08-trading-lot8b.patch`.
+
+- **Les setups de range deviennent des décisions** tant que la méthode n'est pas validée en papier :
+  - soit `paper_trade setup="range"` avec le stop et l'objectif donnés (aucun fonds ne bouge) ;
+  - soit une note pour passer.
+
+  Une position papier ouverte sur le token compte comme décision.
+- **Taille proposée adaptée aux memecoins** : la limite de 5 % du capital s'applique. Un setup que les limites rendent impossible à acheter est indiqué comme tel et ne bloque pas le sommeil. Avec moins de 100 $ de capital, aucun memecoin n'est achetable : 5 % du capital, c'est moins que le minimum de 5 $.
+- **Poussières ignorées** : une position de moins de 1 $ (au prix d'achat) ne réduit plus le sommeil à 1 h.
+- **Objectif de range plafonné à +30 %** : un ancien pic isolé donnait +132 %.
+- **Temps GPU restant** :
+  - calculé sur le coût moyen des derniers jours, pas sur le coût instantané du serverless (1,22 $/h quand une requête tourne) ;
+  - l'alerte de solde bas ne réveille plus SHUI : il la lit à son tour suivant.
