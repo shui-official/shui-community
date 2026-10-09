@@ -686,3 +686,14 @@ Patch : `2026-10-09-trading-lot9b.patch`, à appliquer après `2026-10-09-tradin
 - **Petits correctifs** :
   - les simulations papier expirent après 72 h ;
   - le prix de revient du SOL est recalé sur le solde réel (frais et dépôts de comptes).
+
+## Lot 9c : la taille proposée tient compte de ce qui est déjà détenu
+
+Patch : `2026-10-09-trading-lot9c.patch`, à appliquer après `2026-10-09-trading-lot9b.patch`.
+
+**Le problème :** le 09/10 à 13:24, `setup_scan` a proposé 13,03 $ d'ORCA en plus, alors qu'ORCA représentait déjà 22 % du capital. Le swap a été refusé par la limite de 35 % par token.
+
+**La correction :**
+- La taille proposée ne laisse plus que la place restante sous la limite par token.
+- Un token déjà détenu, avec moins de 5 $ de place, est classé « not tradable now » : sa position est protégée et aucune décision n'est demandée.
+- Sinon, sa ligne DECIDE indique « already held ».
