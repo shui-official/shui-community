@@ -1,0 +1,372 @@
+diff --git a/src/__tests__/lot5-trading.test.ts b/src/__tests__/lot5-trading.test.ts
+index 8dfad8a..697e711 100644
+--- a/src/__tests__/lot5-trading.test.ts
++++ b/src/__tests__/lot5-trading.test.ts
+@@ -91,8 +91,8 @@ describe("loss-streak stop", () => {
+ describe("market data rate limit", () => {
+   it("caches candles and spaces GeckoTerminal calls (~30/min limit)", async () => {
+     const { cacheTtlMs, defaultFetcher } = await import("../solana/technical-analysis.js");
+-    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=4&limit=300")).toBe(600_000);
+-    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=1&limit=300")).toBe(180_000);
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=4&limit=300")).toBe(1_800_000);
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=1&limit=300")).toBe(600_000);
+     expect(cacheTtlMs("https://api.dexscreener.com/tokens/v1/solana/M")).toBe(300_000);
+     const calls: number[] = [];
+     const realFetch = globalThis.fetch;
+diff --git a/src/__tests__/lot9b-landing.test.ts b/src/__tests__/lot9b-landing.test.ts
+new file mode 100644
+index 0000000..0f07c16
+--- /dev/null
++++ b/src/__tests__/lot9b-landing.test.ts
+@@ -0,0 +1,88 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { SolanaTradingService, SolanaTransactionExpiredError, SolanaTransactionUncertainError } from "../solana/trading.js";
++import { classifySwapResult, listOrders, runOrderTick, saveOrder, PAPER_MAX_AGE_MS, type Order } from "../solana/orders.js";
++import { cacheTtlMs } from "../solana/technical-analysis.js";
++import { ensureLedgerSchema, syncSolBasisToBalance } from "../solana/ledger.js";
++import { QWEN_MEMORY_BUDGET } from "../agent/loop.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot9b-")), "s.db"));
++const fakeTx = () => ({ signatures: [new Uint8Array(64).fill(7)], message: { recentBlockhash: "BH" }, serialize: () => new Uint8Array([1, 2, 3]) }) as any;
++const broadcast = (connection: any, timeoutMs = 3_000) =>
++  SolanaTradingService.prototype.broadcastAndConfirm.call({ connection } as any, fakeTx(), timeoutMs, 10);
++
++describe("transactions that land", () => {
++  it("re-sends the same transaction until it is confirmed", async () => {
++    let polls = 0;
++    const connection = {
++      sendRawTransaction: vi.fn(async () => "sig"),
++      getSignatureStatuses: vi.fn(async () => ({ value: [++polls >= 3 ? { slot: 9, confirmationStatus: "confirmed", err: null } : null] })),
++      isBlockhashValid: vi.fn(async () => ({ value: true })),
++    };
++    const res = await broadcast(connection, 10_000);
++    expect(res.confirmationStatus).toBe("confirmed");
++    expect(connection.sendRawTransaction.mock.calls.length).toBeGreaterThanOrEqual(2);
++    expect(connection.sendRawTransaction.mock.calls[1][1]).toMatchObject({ skipPreflight: true, maxRetries: 0 });
++  }, 15_000);
++
++  it("reports a transaction that can no longer land as expired, not uncertain", async () => {
++    const connection = {
++      sendRawTransaction: vi.fn(async () => "sig"),
++      getSignatureStatuses: vi.fn(async () => ({ value: [null] })),
++      isBlockhashValid: vi.fn(async () => ({ value: false })),
++    };
++    await expect(broadcast(connection, 15_000)).rejects.toBeInstanceOf(SolanaTransactionExpiredError);
++  }, 20_000);
++
++  it("stays uncertain while the blockhash is still valid at the deadline", async () => {
++    const connection = {
++      sendRawTransaction: vi.fn(async () => "sig"),
++      getSignatureStatuses: vi.fn(async () => ({ value: [null] })),
++      isBlockhashValid: vi.fn(async () => ({ value: true })),
++    };
++    await expect(broadcast(connection, 2_000)).rejects.toBeInstanceOf(SolanaTransactionUncertainError);
++  }, 10_000);
++
++  it("lets an order retry after an expired transaction without spending an attempt", () => {
++    expect(classifySwapResult("error: TRANSACTION_EXPIRED: abc did not land")).toMatchObject({ done: false, transient: true });
++  });
++});
++
++describe("lighter scans and context", () => {
++  it("keeps 4h candles 30 min and 1h candles 10 min", () => {
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/x/ohlcv/hour?aggregate=4&limit=300")).toBe(30 * 60_000);
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/x/ohlcv/hour?aggregate=1&limit=300")).toBe(10 * 60_000);
++  });
++  it("injects at most 3,200 tokens of memory", () => {
++    expect(Object.values(QWEN_MEMORY_BUDGET).reduce((a, b) => a + b, 0)).toBe(3_200);
++  });
++});
++
++describe("small fixes", () => {
++  it("scales the SOL cost basis down to the real balance, never up", () => {
++    const db = freshDb().raw;
++    ensureLedgerSchema(db);
++    const SOL = "So11111111111111111111111111111111111111112";
++    db.prepare("INSERT INTO shui_cost_basis (mint, amount_raw, cost_usd) VALUES (?, '111413264', 12.0)").run(SOL);
++    expect(syncSolBasisToBalance(db, 109_859_184n)).toBe(true);
++    const row = db.prepare("SELECT amount_raw, cost_usd FROM shui_cost_basis WHERE mint = ?").get(SOL) as any;
++    expect(row.amount_raw).toBe("109859184");
++    expect(row.cost_usd).toBeCloseTo(12 * 109_859_184 / 111_413_264);
++    expect(syncSolBasisToBalance(db, 200_000_000n)).toBe(false);
++  });
++
++  it("expires paper simulations left open for 72 h", async () => {
++    const db = freshDb();
++    const old = new Date(Date.now() - PAPER_MAX_AGE_MS - 60_000).toISOString();
++    saveOrder(db.raw, {
++      id: "paper_x_stop", group: "paper_x", kind: "stop_loss", condition: "below", triggerPriceUsd: 1, inputMint: "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE",
++      outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: "0", watchMint: "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE", slippageBps: 0,
++      venue: "jupiter", note: "paper", createdAt: old, expiresAt: null, status: "open", attempts: 0, updatedAt: old, paper: true, paperUnits: 1, paperEntryUsd: 2,
++    } as Order);
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({}), swap: vi.fn(), now: () => new Date() });
++    expect(listOrders(db.raw)[0].status).toBe("expired");
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index f6d2099..c1d3f7b 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -107,6 +107,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
+ import { checkGpuCap } from "../integration/runpod.js";
+ import { checkSolReserve } from "../solana/sol-reserve.js";
+ import { quarantineStaleMemoriesOnce } from "../memory/stale.js";
++import { syncSolBasisToBalance } from "../solana/ledger.js";
+ import { buyStatus } from "../solana/decisions.js";
+ import { isTradingFocus } from "../solana/trading-desk.js";
+ 
+@@ -897,7 +898,9 @@ export async function runAgentLoop(
+       let memoryBlock: string | undefined;
+       try {
+         const sessionId = db.getKV("session_id") || "default";
+-        const retriever = new MemoryRetriever(db.raw, DEFAULT_MEMORY_BUDGET);
++        // Lot 9b: the default budget (10,000 tokens) suits a 100k-token model;
++        // Qwen has 32,768 in all, and turns reached 28,753. Keep memory small.
++        const retriever = new MemoryRetriever(db.raw, QWEN_MEMORY_BUDGET);
+         const memories = retriever.retrieve(sessionId, pendingInput?.content);
+         if (memories.totalTokens > 0) {
+           memoryBlock = formatMemoryBlock(memories);
+@@ -1685,6 +1688,14 @@ export function alignLocalProvidersWithEndpoint(registry: { alignLoopbackProvide
+   return registry.alignLoopbackProviders(base, env.OLLAMA_API_KEY);
+ }
+ 
++export const QWEN_MEMORY_BUDGET = {
++  workingMemoryTokens: 800,
++  episodicMemoryTokens: 1000,
++  semanticMemoryTokens: 800,
++  proceduralMemoryTokens: 400,
++  relationshipMemoryTokens: 200,
++};
++
+ /** Lot 9a: errors that mean the model could not be reached (not a bad answer). */
+ export function isInferenceOutage(err: unknown): boolean {
+   const msg = String((err as { message?: string })?.message ?? err ?? "");
+@@ -1793,6 +1804,7 @@ async function getFinancialState(
+         try {
+           initUntrackedSolBasisOnce(db.raw, BigInt(Math.round(balances.sol * 1e9)), solPriceUsd);
+           checkSolReserve(db.raw, BigInt(Math.round(balances.sol * 1e9)));
++          syncSolBasisToBalance(db.raw, BigInt(Math.round(balances.sol * 1e9)));
+         } catch {
+           // basis init is best-effort
+         }
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index 7ffefb8..4d6e1a4 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -188,7 +188,7 @@ export const jupiterVenue: SwapVenue = {
+         userPublicKey: service.address,
+         wrapAndUnwrapSol: true,
+         dynamicComputeUnitLimit: true,
+-        prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: MAX_PRIORITY_FEE_LAMPORTS, priorityLevel: "medium" } },
++        prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: MAX_PRIORITY_FEE_LAMPORTS, priorityLevel: "high" } },
+       }),
+     }, { timeoutMs: 20_000 }).catch(explainRateLimit);
+     const body = response.body as { swapTransaction?: string; error?: string };
+diff --git a/src/solana/ledger.ts b/src/solana/ledger.ts
+index d6a18fe..1bcc106 100644
+--- a/src/solana/ledger.ts
++++ b/src/solana/ledger.ts
+@@ -436,6 +436,20 @@ export function initUntrackedSolBasisOnce(db: Database, heldLamports: bigint, so
+   return true;
+ }
+ 
++/**
++ * Lot 9b: fees and rent lower the SOL balance without a journal entry, so the
++ * SOL cost basis drifted above the real balance. Scale it down to what the
++ * wallet really holds (never up: deposits are journaled separately).
++ */
++export function syncSolBasisToBalance(db: Database, heldLamports: bigint): boolean {
++  ensureLedgerSchema(db);
++  const basis = getBasis(db, SOL_MINT);
++  if (basis.amountRaw <= heldLamports || basis.amountRaw === 0n) return false;
++  const costUsd = basis.costUsd * (Number(heldLamports) / Number(basis.amountRaw));
++  setBasis(db, SOL_MINT, { amountRaw: heldLamports, costUsd });
++  return true;
++}
++
+ export interface WalletHistorySource {
+   /** Signatures newer than `until`, newest first (Solana RPC order). */
+   getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 9cbc577..23b0ddd 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -133,6 +133,8 @@ function venueOf(order: Order): SwapVenue {
+ }
+ 
+ /** Outcome of one swap attempt from the engine's text result. */
++export const PAPER_MAX_AGE_MS = 72 * 3_600_000;
++
+ export function classifySwapResult(text: string): { done: boolean; transient: boolean; message: string } {
+   let parsed: Record<string, unknown> | null = null;
+   try {
+@@ -141,6 +143,8 @@ export function classifySwapResult(text: string): { done: boolean; transient: bo
+     parsed = null;
+   }
+   if (parsed?.success === true) return { done: true, transient: false, message: `filled, signature ${String(parsed.signature)}` };
++  // Lot 9b: the transaction expired without landing: nothing happened, retry on the next tick.
++  if (/TRANSACTION_EXPIRED/.test(text)) return { done: false, transient: true, message: "transaction expired without landing; retrying" };
+   // A previous transaction still unresolved: try again on a later tick.
+   if (typeof parsed?.reason === "string" && (parsed.reason.startsWith("PREVIOUS_TRANSACTION") || parsed.reason === "DRAWDOWN_PAUSE" || parsed.reason === "LOSS_STREAK_STOP")) {
+     return { done: false, transient: true, message: String(parsed.message ?? parsed.reason) };
+@@ -216,7 +220,9 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+       changed.push(order.id);
+       continue;
+     }
+-    if (order.expiresAt && Date.parse(order.expiresAt) <= now.getTime()) {
++    // Lot 9b: a paper simulation left open for 72 h teaches nothing more; close it.
++    const paperTooOld = order.paper && !order.expiresAt && now.getTime() - Date.parse(order.createdAt) > PAPER_MAX_AGE_MS;
++    if (paperTooOld || (order.expiresAt && Date.parse(order.expiresAt) <= now.getTime())) {
+       saveOrder(db, { ...order, status: "expired", updatedAt: now.toISOString() });
+       queueSystemNotice(db, "system:orders", `Order ${order.id} (${order.kind}) expired without triggering.`);
+       changed.push(order.id);
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 335d6bc..618b24c 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -329,7 +329,8 @@ export function cacheTtlMs(url: string): number {
+   if (!m) return 60_000;
+   if (m[1] === "minute") return 60_000;
+   if (m[1] === "day") return 30 * 60_000;
+-  return Number(m[2]) >= 4 ? 10 * 60_000 : 3 * 60_000;
++  // Lot 9b: a 4h candle barely moves in 30 min; reuse avoids GeckoTerminal's 2.2 s/call limit.
++  return Number(m[2]) >= 4 ? 30 * 60_000 : 10 * 60_000;
+ }
+ 
+ function geckoSlot(): Promise<void> {
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index c834c24..dad6f48 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -250,7 +250,8 @@ export function rangePaperRecord(db: Database | null): { trades: number; pnlUsd:
+ 
+ const TRENDING_MIN_LIQUIDITY_USD = 250_000;
+ const TRENDING_MIN_AGE_MS = 7 * 24 * 3_600_000;
+-const TRENDING_MAX = 6;
++// Lot 9b: 6 extra tokens made setup_scan take ~5 min (GeckoTerminal allows ~1 call / 2.2 s).
++const TRENDING_MAX = 3;
+ const STABLES = new Set([USDC_MINT, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]);
+ 
+ /** 5a: the most active liquid tokens of the moment, outside the default watchlist. */
+@@ -374,7 +375,8 @@ export async function setupScan(
+     : `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
+       `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}` +
+       (s.trending ? " (trending token: token_safety passed; size small)" : "") + sizingText(s));
+-  const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
++  // Lot 9b: short reasons keep the result (and the context) small.
++  const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason.slice(0, 90)}`);
+   // Lot 8b: live trend setups become pending decisions, sized within the code limits.
+   // Lot 8c: range setups still in paper validation are decisions too (paper_trade or skip).
+   const live: PendingSetup[] = [];
+@@ -530,7 +532,7 @@ export function createTradingDeskTools(): AutomatonTool[] {
+           if (scanCache && scanCache.key === key && Date.now() - scanCache.at < SCAN_CACHE_MS) {
+             return `(same scan as ${Math.round((Date.now() - scanCache.at) / 60_000)} min ago; markets move slowly on 4h/1h)\n${scanCache.text}`;
+           }
+-          const text = await setupScan(args as { mints?: string[] }, defaultFetcher, 400, perpsEnabled(), { db: ctx.db.raw });
++          const text = await setupScan(args as { mints?: string[] }, defaultFetcher, 0, perpsEnabled(), { db: ctx.db.raw });
+           scanCache = { key, at: Date.now(), text };
+           return text;
+         } catch (error) {
+diff --git a/src/solana/trading-extras.ts b/src/solana/trading-extras.ts
+index 4f0ead2..5d07ac4 100644
+--- a/src/solana/trading-extras.ts
++++ b/src/solana/trading-extras.ts
+@@ -8,7 +8,7 @@ import { PublicKey } from "@solana/web3.js";
+ import type { AutomatonTool } from "../types.js";
+ import { USDC_MINT } from "./raydium.js";
+ import { NATIVE_SOL_MINT } from "./trading.js";
+-import { jupiterPrices, listOrders, listPaperTrades, saveOrder, type Order } from "./orders.js";
++import { jupiterPrices, listOrders, listPaperTrades, PAPER_MAX_AGE_MS, saveOrder, type Order } from "./orders.js";
+ import { runSwap } from "./swap-engine.js";
+ import { jupiterVenue } from "./jupiter.js";
+ 
+@@ -120,7 +120,8 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         const units = size / price;
+         const base = {
+           inputMint: mint, outputMint: USDC_MINT, amount: "0", watchMint: mint, slippageBps: 0, venue: "jupiter" as const,
+-          note: `${args.setup === "range" ? "[range] " : ""}${String(args.note ?? "paper")}`.slice(0, 200), createdAt: now.toISOString(), expiresAt: null, status: "open" as const,
++          note: `${args.setup === "range" ? "[range] " : ""}${String(args.note ?? "paper")}`.slice(0, 200), createdAt: now.toISOString(),
++          expiresAt: new Date(now.getTime() + PAPER_MAX_AGE_MS).toISOString(), status: "open" as const,
+           attempts: 0, updatedAt: now.toISOString(), group, paper: true, paperUnits: units, paperEntryUsd: price,
+         };
+         const stopOrder: Order = trail > 0 && !(stop > 0)
+diff --git a/src/solana/trading.ts b/src/solana/trading.ts
+index fb44f9e..dfb4adb 100644
+--- a/src/solana/trading.ts
++++ b/src/solana/trading.ts
+@@ -36,6 +36,19 @@ export const SOL_FEE_RESERVE_LAMPORTS = 10_000_000n;
+  * This MUST NOT be treated as a normal retryable failure: rebroadcasting a
+  * newly-built swap could execute the financial action twice.
+  */
++/**
++ * Lot 9b: the transaction provably did not land (its blockhash expired while
++ * it was still unknown to the network). Nothing was spent; retrying is safe.
++ */
++export class SolanaTransactionExpiredError extends Error {
++  readonly signature: string;
++  constructor(signature: string) {
++    super(`TRANSACTION_EXPIRED: ${signature} did not land on-chain (its blockhash expired). Nothing was spent; it is safe to retry.`);
++    this.name = "SolanaTransactionExpiredError";
++    this.signature = signature;
++  }
++}
++
+ export class SolanaTransactionUncertainError extends Error {
+   readonly signature: string;
+   /** Blockhash the transaction was built with; once it expires the
+@@ -489,7 +502,8 @@ export class SolanaTradingService {
+ 
+   async broadcastAndConfirm(
+     transaction: VersionedTransaction,
+-    timeoutMs = 60_000,
++    timeoutMs = 90_000,
++    rebroadcastMs = 2_000,
+   ): Promise<{
+     signature: string;
+     slot: number;
+@@ -520,8 +534,18 @@ export class SolanaTradingService {
+     }
+ 
+     const deadline = Date.now() + timeoutMs;
++    const raw = transaction.serialize();
++    let lastSend = Date.now();
++    let lastBlockhashCheck = Date.now();
+ 
+     while (Date.now() < deadline) {
++      // Lot 9b: a single send was dropped under load (ORCA buy, 09/10 07:56).
++      // Re-send the same signed bytes until it lands or its blockhash expires;
++      // the signature is identical, so it can only execute once.
++      if (Date.now() - lastSend >= rebroadcastMs) {
++        lastSend = Date.now();
++        this.connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => undefined);
++      }
+       let status;
+       try {
+         const statuses =
+@@ -555,6 +579,22 @@ export class SolanaTradingService {
+         };
+       }
+ 
++      // Unknown to the network and its blockhash expired: it can no longer land.
++      if (!status && recentBlockhash && Date.now() - lastBlockhashCheck >= 4_000) {
++        lastBlockhashCheck = Date.now();
++        const valid = await this.connection
++          .isBlockhashValid(recentBlockhash, { commitment: "confirmed" })
++          .then((r) => r.value)
++          .catch(() => true);
++        if (!valid) {
++          const final = await this.connection
++            .getSignatureStatuses([signature], { searchTransactionHistory: true })
++            .then((r) => r.value[0])
++            .catch(() => undefined);
++          if (final === null) throw new SolanaTransactionExpiredError(signature);
++        }
++      }
++
+       await new Promise((resolve) => setTimeout(resolve, 1500));
+     }
+ 

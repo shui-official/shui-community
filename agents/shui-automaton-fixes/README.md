@@ -667,3 +667,22 @@ Patch : `2026-10-09-trading-lot9a.patch`, à appliquer après `2026-10-09-tradin
 - **Avis jamais perdus.**
   - Si un tour échoue parce que le modèle est injoignable, les notifications sont remises en attente sans consommer d'essai. Pendant la panne du 08/10, les avis de stop exécuté avaient été perdus.
   - Le créateur est prévenu après 3 tours en échec de suite, puis quand le modèle répond de nouveau.
+
+## Lot 9b : transactions qui arrivent, scans plus rapides, contexte allégé
+
+Patch : `2026-10-09-trading-lot9b.patch`, à appliquer après `2026-10-09-trading-lot9a.patch`.
+
+- **Transactions.**
+  - La même transaction signée est renvoyée toutes les 2 s jusqu'à ce qu'elle arrive. Comme la signature est identique, elle ne peut s'exécuter qu'une fois.
+  - Si son blockhash expire alors que le réseau ne la connaît toujours pas, le code répond `TRANSACTION_EXPIRED` : rien n'a été dépensé et on peut réessayer. Avant, elle restait « incertaine » et verrouillée.
+  - La priorité Jupiter passe à « high », avec le même plafond de frais.
+  - Un ordre automatique retente une transaction expirée sans consommer d'essai.
+- **`setup_scan` plus rapide** :
+  - 3 tokens « tendance » au lieu de 6 ;
+  - plus de pause inutile entre les tokens ;
+  - bougies 4 h gardées en cache 30 min, bougies 1 h 10 min ;
+  - raisons de rejet raccourcies.
+- **Contexte allégé** : la mémoire injectée dans Qwen est plafonnée à 3 200 tokens, contre 10 000 avant.
+- **Petits correctifs** :
+  - les simulations papier expirent après 72 h ;
+  - le prix de revient du SOL est recalé sur le solde réel (frais et dépôts de comptes).
