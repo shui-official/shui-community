@@ -1,0 +1,199 @@
+diff --git a/src/__tests__/lot8f-truth.test.ts b/src/__tests__/lot8f-truth.test.ts
+new file mode 100644
+index 0000000..22088d2
+--- /dev/null
++++ b/src/__tests__/lot8f-truth.test.ts
+@@ -0,0 +1,79 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { buyStatus, falseStopClaim } from "../solana/decisions.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++import { createTradingDeskTools } from "../solana/trading-desk.js";
++import { listOrders, runOrderTick, saveOrder, type Order } from "../solana/orders.js";
++
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot8f-")), "s.db"));
++const setKv = (db: any, k: string, v: string) =>
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(k, v);
++const now = new Date("2026-10-09T05:30:00Z");
++const NIGHT_NOTE = "skip: After 2 losing trades today, I must stop trading today. New buys are blocked until 00:00 UTC.";
++
++function sale(db: any, sig: string, ts: string, pnl: number) {
++  db.prepare(
++    `INSERT INTO shui_ledger (signature, ts, day, kind, input_mint, input_amount_raw, output_mint, output_amount_raw, revenue_usd, realized_pnl_usd, incomplete, details)
++     VALUES (?, ?, ?, 'swap', ?, '1', ?, '1', 0, ?, 0, '{}')`,
++  ).run(sig, ts, ts.slice(0, 10), ORCA, USDC, pnl);
++}
++
++describe("the code's answer on buys", () => {
++  it("says buys are allowed when only paper or tiny losses happened, and refuses a false stop reason", () => {
++    const db = freshDb().raw;
++    ensureLedgerSchema(db);
++    setKv(db, "last_known_balance", JSON.stringify({ walletValueUsd: 56, walletValueComplete: true }));
++    sale(db, "met", "2026-10-09T00:39:05.000Z", -0.21); // 0.37% of capital: does not count
++    expect(buyStatus(db, now)).toMatchObject({ allowed: true });
++    expect(buyStatus(db, now).line).toMatch(/BUYS ALLOWED now .* 0\/2/);
++    expect(falseStopClaim(db, "note", NIGHT_NOTE, now)).toMatch(/^Blocked: this reason is false\. BUYS ALLOWED/);
++    expect(falseStopClaim(db, "note", "skip: stop inside normal 4h noise, R/R too low", now)).toBeNull();
++    expect(falseStopClaim(db, "lesson", "After 2 losing trades I stopped, which was right", now)).toBeNull();
++  });
++
++  it("accepts the reason when the code really blocks buys", () => {
++    const db = freshDb().raw;
++    ensureLedgerSchema(db);
++    setKv(db, "last_known_balance", JSON.stringify({ walletValueUsd: 56, walletValueComplete: true }));
++    sale(db, "a", "2026-10-09T01:00:00.000Z", -0.92);
++    sale(db, "b", "2026-10-09T02:00:00.000Z", -0.8);
++    expect(buyStatus(db, now)).toMatchObject({ allowed: false });
++    expect(buyStatus(db, now).line).toMatch(/BUYS BLOCKED until 2026-10-10T00:00/);
++    expect(falseStopClaim(db, "note", NIGHT_NOTE, now)).toBeNull();
++  });
++
++  it("journal_add rejects the false note and trade_stats starts with the truth", async () => {
++    const db = freshDb();
++    ensureLedgerSchema(db.raw);
++    const tools = createTradingDeskTools();
++    const ctx = { db } as any;
++    const journal = tools.find((t) => t.name === "journal_add")!;
++    expect(await journal.execute({ kind: "note", mint: ORCA, text: NIGHT_NOTE }, ctx)).toMatch(/^Blocked: this reason is false/);
++    expect(await journal.execute({ kind: "note", mint: ORCA, text: "skip: RSI overbought" }, ctx)).toBe("Journal note saved.");
++    const stats = await tools.find((t) => t.name === "trade_stats")!.execute({}, ctx);
++    expect(stats.split("\n")[0]).toMatch(/^BUYS ALLOWED now/);
++  });
++});
++
++describe("orphan orders", () => {
++  it("cancels the linked take-profit when the stop finds nothing left to sell", async () => {
++    const db = freshDb();
++    const base: Order = {
++      id: "", group: "oco_x", kind: "stop_loss", condition: "below", triggerPriceUsd: 2.43, inputMint: ORCA, outputMint: USDC,
++      amount: "0", watchMint: ORCA, slippageBps: 100, venue: "jupiter", note: "test", createdAt: now.toISOString(), expiresAt: null,
++      status: "open", attempts: 0, updatedAt: now.toISOString(),
++    } as Order;
++    saveOrder(db.raw, { ...base, id: "oco_x_stop" });
++    saveOrder(db.raw, { ...base, id: "oco_x_tp", kind: "take_profit", condition: "above", triggerPriceUsd: 3.08 });
++    const swap = vi.fn();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [ORCA]: 2.32 }), swap, now: () => now });
++    expect(swap).not.toHaveBeenCalled();
++    const status = Object.fromEntries(listOrders(db.raw).map((o) => [o.id, o.status]));
++    expect(status).toEqual({ oco_x_stop: "failed", oco_x_tp: "cancelled" });
++  });
++});
+diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
+index 703b9b3..1dc7a39 100644
+--- a/src/solana/decisions.ts
++++ b/src/solana/decisions.ts
+@@ -9,6 +9,7 @@
+ import type { Database } from "better-sqlite3";
+ import { isMemecoin, tradeLimits } from "./trade-limits.js";
+ import { listOrders } from "./orders.js";
++import { lossStopUntil, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT, tradingPausedUntil } from "../survival/risk-guard.js";
+ import { isCreatorToken } from "./token-policy.js";
+ 
+ const PENDING_KEY = "decision.pending";
+@@ -148,3 +149,32 @@ export function sleepGuard(db: Database, requestedS: number, trading: boolean, n
+     ? { durationS: max, note: ` (capped from ${requested}s: in trading focus you sleep at most ${max / 3600} h)` }
+     : { durationS: requested, note: "" };
+ }
++
++/**
++ * Lot 8f: SHUI kept writing "after 2 losing trades I must stop" all night
++ * while the code allowed buys (paper losses and tiny losses never count).
++ * This is the code's own answer, shown with every decision.
++ */
++export function buyStatus(db: Database, now: Date = new Date()): { allowed: boolean; line: string } {
++  const paused = tradingPausedUntil(db, now);
++  if (paused) return { allowed: false, line: `BUYS BLOCKED by the drawdown pause until ${paused} (sales and stops still work).` };
++  const stop = lossStopUntil(db, now);
++  if (stop) return { allowed: false, line: `BUYS BLOCKED until ${stop}: ${MAX_LOSS_STREAK} real losing trades today (sales and stops still work).` };
++  const n = lossStreakToday(db, now);
++  return {
++    allowed: true,
++    line: `BUYS ALLOWED now (code check): real losing trades counted today ${n}/${MAX_LOSS_STREAK}. ` +
++      `Paper trades never count; real losses under ${MEANINGFUL_LOSS_PCT}% of capital do not count; the count restarts at 00:00 UTC.`,
++  };
++}
++
++const FALSE_STOP_RE = /(losing trades?|losses?)\b.{0,60}\b(stop|no more|cannot|can't|must not|blocked|not allowed)|stop(ped)? trading (for )?today|buys? (are )?(blocked|paused)|not tradable today/i;
++
++/** A skip or plan that claims a loss-streak stop the code does not apply. */
++export function falseStopClaim(db: Database, kind: string, text: string, now: Date = new Date()): string | null {
++  if (kind === "lesson" || !FALSE_STOP_RE.test(text)) return null;
++  const status = buyStatus(db, now);
++  return status.allowed
++    ? `Blocked: this reason is false. ${status.line} Decide again on the real merits of the setup (buy it, or skip for a market reason).`
++    : null;
++}
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 378aaa9..85e3a6b 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -283,7 +283,9 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     }
+     const outcome = classifySwapResult(text);
+     const attempts = order.attempts + 1;
+-    const status: OrderStatus = outcome.done ? "filled" : outcome.transient || attempts < MAX_ATTEMPTS ? "open" : "failed";
++    // Lot 8f: nothing left to sell = the position is gone; retrying is pointless and the linked order is an orphan.
++    const nothingLeft = text.startsWith("Blocked: nothing left to sell");
++    const status: OrderStatus = outcome.done ? "filled" : nothingLeft ? "failed" : outcome.transient || attempts < MAX_ATTEMPTS ? "open" : "failed";
+     saveOrder(db, {
+       ...order,
+       status,
+@@ -296,10 +298,10 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     changed.push(order.id);
+     deps.log?.(`[ORDERS] ${order.id} ${order.kind} at $${price}: ${status} (${outcome.message.slice(0, 120)})`);
+     let siblingsNote = "";
+-    if (status === "filled" && order.group) {
++    if ((status === "filled" || nothingLeft) && order.group) {
+       const siblings = listOrders(db).filter((o) => o.group === order.group && o.id !== order.id && o.status === "open");
+       for (const sibling of siblings) {
+-        saveOrder(db, { ...sibling, status: "cancelled", lastError: `OCO: ${order.id} filled`, updatedAt: now.toISOString() });
++        saveOrder(db, { ...sibling, status: "cancelled", lastError: `OCO: ${order.id} ${nothingLeft ? "found nothing left to sell" : "filled"}`, updatedAt: now.toISOString() });
+         closedByGroup.add(sibling.id);
+         changed.push(sibling.id);
+       }
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 22aa81e..95ad338 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -22,7 +22,7 @@ import { tokenSafety as tokenSafetyText } from "./portfolio.js";
+ import { listPaperTrades } from "./orders.js";
+ import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "./quant.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+-import { clampBuyUsd, decisionLine, recordPendingSetups, type PendingSetup } from "./decisions.js";
++import { buyStatus, clampBuyUsd, decisionLine, falseStopClaim, recordPendingSetups, type PendingSetup } from "./decisions.js";
+ import { isMemecoin, tradeLimits } from "./trade-limits.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+@@ -391,7 +391,8 @@ export async function setupScan(
+   }
+   if (options.db) recordPendingSetups(options.db, live);
+   const decide = (live.length
+-    ? `\nDECIDE NOW for each setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}`
++    ? `\nDECIDE NOW for each setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}` +
++      (options.db ? `\n${buyStatus(options.db).line}` : "")
+     : "") + (notBuyable.length ? `\nNot tradable with your capital:\n${notBuyable.join("\n")}` : "");
+   return (setups.length
+     ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}${decide}`
+@@ -552,6 +553,8 @@ export function createTradingDeskTools(): AutomatonTool[] {
+         const kind = ["plan", "lesson", "note"].includes(String(args.kind)) ? String(args.kind) : "note";
+         const text = String(args.text ?? "").trim();
+         if (!text) return "Blocked: text is required.";
++        const falseStop = falseStopClaim(ctx.db.raw, kind, text);
++        if (falseStop) return falseStop;
+         addJournalEntry(ctx.db.raw, { kind, text, mint: args.mint ? String(args.mint) : undefined });
+         return `Journal ${kind} saved.`;
+       },
+@@ -562,7 +565,7 @@ export function createTradingDeskTools(): AutomatonTool[] {
+       category: "financial",
+       riskLevel: "safe",
+       parameters: { type: "object", properties: {} },
+-      execute: async (_args, ctx) => formatTradeStats(computeTradeStats(ctx.db.raw), recentJournal(ctx.db.raw)),
++      execute: async (_args, ctx) => `${buyStatus(ctx.db.raw).line}\n${formatTradeStats(computeTradeStats(ctx.db.raw), recentJournal(ctx.db.raw))}`,
+     },
+   ];
+ }

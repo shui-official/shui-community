@@ -638,3 +638,13 @@ Patch : `2026-10-08-trading-lot8e.patch`, à appliquer après `2026-10-08-tradin
 - sous 0,003 SOL, le créateur est prié d'envoyer du SOL.
 
 **Prompt :** les pertes papier ne bloquent jamais le trading réel.
+
+## Lot 8f : le code dit à SHUI si les achats sont permis
+
+Patch : `2026-10-09-trading-lot8f.patch`, à appliquer après `2026-10-08-trading-lot8e.patch`.
+
+**Constat :** toute la nuit du 08 au 09/10, SHUI a écarté chaque setup en écrivant « after 2 losing trades I must stop ». Le code autorisait pourtant les achats : les pertes papier, et les pertes réelles de moins de 0,5 % du capital, ne comptent jamais. SHUI recopiait sa propre note, que `trade_stats` lui remontait à chaque tour.
+
+- **Réponse du code :** `trade_stats` commence par « BUYS ALLOWED now… N/2 », ou « BUYS BLOCKED until … », et la même ligne suit chaque liste « DECIDE » de `setup_scan`.
+- **Raison fausse refusée :** `journal_add` rejette une note de refus qui invoque un arrêt pour pertes que le code n'applique pas. Le rejet donne la vérité, et SHUI doit redécider sur le fond.
+- **Ordres orphelins :** un ordre qui ne trouve plus rien à vendre échoue tout de suite et annule l'ordre lié (OCO). Un objectif ORCA était resté ouvert sans position.
