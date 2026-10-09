@@ -648,3 +648,22 @@ Patch : `2026-10-09-trading-lot8f.patch`, à appliquer après `2026-10-08-tradin
 - **Réponse du code :** `trade_stats` commence par « BUYS ALLOWED now… N/2 », ou « BUYS BLOCKED until … », et la même ligne suit chaque liste « DECIDE » de `setup_scan`.
 - **Raison fausse refusée :** `journal_add` rejette une note de refus qui invoque un arrêt pour pertes que le code n'applique pas. Le rejet donne la vérité, et SHUI doit redécider sur le fond.
 - **Ordres orphelins :** un ordre qui ne trouve plus rien à vendre échoue tout de suite et annule l'ordre lié (OCO). Un objectif ORCA était resté ouvert sans position.
+
+## Lot 9a : mémoire assainie, protection honnête, avis jamais perdus
+
+Patch : `2026-10-09-trading-lot9a.patch`, à appliquer après `2026-10-09-trading-lot8f.patch`. Il répond à l'audit en lecture seule du 09/10.
+
+- **Mémoire assainie.** Les croyances fausses sont mises en quarantaine une seule fois, avec une copie gardée dans `memory_quarantine` :
+  - « after 2 losing trades I must stop » ;
+  - « 529,000 SOL » ;
+  - le token du créateur vu comme une position ;
+  - une phrase recopiée dans 251 réflexions.
+
+  Elles sont filtrées de la mémoire, de l'historique des tours et du journal que SHUI relit. Le refus des fausses règles d'arrêt s'applique aussi aux leçons. En mode trading, la réponse du code sur les achats (`BUYS ALLOWED` ou `BLOCKED`) est placée en tête de chaque tour.
+- **Protection honnête.** `protect_position` refuse dans trois cas :
+  - un swap n'est pas encore confirmé ;
+  - le token est déjà protégé ;
+  - le wallet n'en détient pas on-chain. C'était le cas de l'achat ORCA du 09/10, qui n'est jamais arrivé.
+- **Avis jamais perdus.**
+  - Si un tour échoue parce que le modèle est injoignable, les notifications sont remises en attente sans consommer d'essai. Pendant la panne du 08/10, les avis de stop exécuté avaient été perdus.
+  - Le créateur est prévenu après 3 tours en échec de suite, puis quand le modèle répond de nouveau.
