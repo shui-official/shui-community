@@ -1,0 +1,1108 @@
+diff --git a/src/__tests__/lot1-trading.test.ts b/src/__tests__/lot1-trading.test.ts
+new file mode 100644
+index 0000000..c3b771a
+--- /dev/null
++++ b/src/__tests__/lot1-trading.test.ts
+@@ -0,0 +1,144 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createInMemoryDb } from "./orchestration/test-db.js";
++import { createDatabase, claimInboxMessages } from "../state/database.js";
++import { recordSwap } from "../solana/ledger.js";
++import {
++  classifyWeek, ensureRulesV2, evaluateCompletedDays, evaluateCompletedWeeks, formatLifespanLine, getLifespanStatus, recordWeekCapital,
++} from "../survival/lifespan.js";
++import { isBuy, tradingPausedUntil, updateDrawdownGuard } from "../survival/risk-guard.js";
++import { listOrders, runOrderTick, saveOrder, type Order } from "../solana/orders.js";
++import { assessSafety, buildPositions } from "../solana/portfolio.js";
++import { SOL_MINT, USDC_MINT } from "../solana/raydium.js";
++
++const TOKEN = "TokenMint1111111111111111111111111111111111";
++const at = (d: string, h = 12) => new Date(`${d}T${String(h).padStart(2, "0")}:00:00.000Z`);
++const scanOk = (db: any, d: Date) => db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('ledger.scan_last_ok', ?, datetime('now'))").run(d.toISOString());
++function birth(db: any, d: string) {
++  db.prepare("INSERT OR REPLACE INTO identity (key, value) VALUES ('createdAt', ?)").run(`${d}T00:00:00.000Z`);
++}
++
++describe("lifespan rules v2", () => {
++  it("classifies weekly gains in % of capital with a neutral zone", () => {
++    expect(classifyWeek(12).adjustment).toBe(3);
++    expect(classifyWeek(5).adjustment).toBe(2);
++    expect(classifyWeek(2).adjustment).toBe(1);
++    expect(classifyWeek(0).adjustment).toBe(0);
++    expect(classifyWeek(-1.9).adjustment).toBe(0);
++    expect(classifyWeek(-3).adjustment).toBe(-1);
++    expect(classifyWeek(-15).adjustment).toBe(-2);
++  });
++
++  it("evaluates completed weeks against the capital at week start, waiving losses in the learning period", () => {
++    const db = createInMemoryDb();
++    birth(db, "2026-10-01");
++    evaluateCompletedDays(db, at("2026-10-07")); // sets daily start day
++    ensureRulesV2(db, at("2026-10-07"));
++    recordWeekCapital(db, 40, at("2026-10-07"));
++    // Week 1: +1.2 USD realized on 40 = +3% -> +1 day.
++    recordSwap(db, { signature: "b", at: at("2026-10-08"), inputMint: USDC_MINT, inputAmountRaw: 10_000_000n, outputMint: TOKEN, outputAmountRaw: 100n });
++    recordSwap(db, { signature: "s", at: at("2026-10-09"), inputMint: TOKEN, inputAmountRaw: 100n, outputMint: USDC_MINT, outputAmountRaw: 11_200_000n });
++    scanOk(db, at("2026-10-14", 1));
++    const w1 = evaluateCompletedWeeks(db, at("2026-10-14", 2));
++    expect(w1).toHaveLength(1);
++    expect(w1[0]).toMatchObject({ weekStart: "2026-10-07", adjustment: 1, status: "bonus" });
++    expect(w1[0].gainPct).toBeCloseTo(3, 5);
++    // Week 2 (still learning): -2 USD on 41.2 = -4.9% -> waived.
++    recordWeekCapital(db, 41.2, at("2026-10-14", 3));
++    recordSwap(db, { signature: "b2", at: at("2026-10-15"), inputMint: USDC_MINT, inputAmountRaw: 10_000_000n, outputMint: TOKEN, outputAmountRaw: 100n });
++    recordSwap(db, { signature: "s2", at: at("2026-10-16"), inputMint: TOKEN, inputAmountRaw: 100n, outputMint: USDC_MINT, outputAmountRaw: 8_000_000n });
++    scanOk(db, at("2026-10-21", 1));
++    const w2 = evaluateCompletedWeeks(db, at("2026-10-21", 2));
++    expect(w2[0]).toMatchObject({ weekStart: "2026-10-14", adjustment: 0, status: "neutral" });
++    expect(w2[0].note).toMatch(/learning period/);
++    // Days from v2 on are no longer judged daily.
++    expect(evaluateCompletedDays(db, at("2026-10-21", 2))).toEqual([]);
++    expect(getLifespanStatus(db, at("2026-10-21", 2))!.adjustmentDays).toBe(1);
++    expect(formatLifespanLine(db, at("2026-10-22", 2))).toMatch(/This week \(day 2\/7\).*Patience costs nothing/s);
++  });
++
++  it("never changes life when the week-start capital is unknown", () => {
++    const db = createInMemoryDb();
++    birth(db, "2026-10-01");
++    ensureRulesV2(db, at("2026-10-07"));
++    scanOk(db, at("2026-10-14", 1));
++    expect(evaluateCompletedWeeks(db, at("2026-10-14", 2))[0]).toMatchObject({ status: "unknown", adjustment: 0 });
++  });
++});
++
++describe("drawdown circuit breaker", () => {
++  it("pauses new buys for 24 h after a 15% drawdown, then measures from the new level", () => {
++    const db = createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "dd-")), "s.db")).raw;
++    const t0 = at("2026-10-07");
++    updateDrawdownGuard(db, 40, t0);
++    expect(updateDrawdownGuard(db, 36, t0).triggered).toBe(false);
++    expect(updateDrawdownGuard(db, 33.9, t0).triggered).toBe(true);
++    expect(tradingPausedUntil(db, t0)).not.toBeNull();
++    expect(tradingPausedUntil(db, new Date(t0.getTime() + 25 * 3_600_000))).toBeNull();
++    expect(updateDrawdownGuard(db, 33, new Date(t0.getTime() + 25 * 3_600_000)).triggered).toBe(false);
++    expect(isBuy(TOKEN)).toBe(true);
++    expect(isBuy(USDC_MINT)).toBe(false);
++    expect(isBuy(SOL_MINT)).toBe(false);
++    expect(claimInboxMessages(db, 5)[0].content).toMatch(/Circuit breaker/);
++  });
++});
++
++describe("OCO and trailing stops", () => {
++  const order = (over: Partial<Order>): Order => ({
++    id: "x", kind: "stop_loss", inputMint: TOKEN, outputMint: USDC_MINT, amount: "100", watchMint: TOKEN, condition: "below",
++    triggerPriceUsd: 1, slippageBps: 100, venue: "jupiter", note: "", createdAt: "", expiresAt: null, status: "open",
++    attempts: 0, updatedAt: new Date().toISOString(), ...over,
++  });
++  const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot1-")), "s.db"));
++
++  it("cancels the sibling when one order of an OCO group fills", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, order({ id: "g_stop", group: "g", triggerPriceUsd: 0.9 }));
++    saveOrder(db.raw, order({ id: "g_tp", group: "g", kind: "take_profit", condition: "above", triggerPriceUsd: 1.3 }));
++    const swap = vi.fn(async () => JSON.stringify({ success: true, signature: "S" }));
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.35 }), swap });
++    const byId = Object.fromEntries(listOrders(db.raw).map((o) => [o.id, o.status]));
++    expect(byId).toEqual({ g_stop: "cancelled", g_tp: "filled" });
++    expect(swap).toHaveBeenCalledTimes(1);
++    expect(claimInboxMessages(db.raw, 5)[0].content).toMatch(/g_stop cancelled \(OCO\)/);
++  });
++
++  it("raises a trailing stop with the price and sells on the pullback", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, order({ id: "t", kind: "trailing_stop", trailPct: 10, highestPriceUsd: 1, triggerPriceUsd: 0.9 }));
++    const swap = vi.fn(async () => JSON.stringify({ success: true, signature: "S" }));
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 2 }), swap });
++    expect(listOrders(db.raw)[0]).toMatchObject({ highestPriceUsd: 2, triggerPriceUsd: 1.8, status: "open" });
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.95 }), swap });
++    expect(swap).not.toHaveBeenCalled();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 1.79 }), swap });
++    expect(listOrders(db.raw)[0].status).toBe("filled");
++  });
++});
++
++describe("positions and token safety", () => {
++  it("computes average entry, unrealized PnL and flags unprotected positions", () => {
++    const db = createInMemoryDb();
++    recordSwap(db, { signature: "b", at: at("2026-10-07"), inputMint: USDC_MINT, inputAmountRaw: 10_000_000n, outputMint: TOKEN, outputAmountRaw: 1000n });
++    const [p] = buildPositions(db, [{ mint: TOKEN, amountRaw: 1000n, decimals: 0 }, { mint: USDC_MINT, amountRaw: 5n, decimals: 6 }], { [TOKEN]: 0.012 });
++    expect(p.avgEntryUsd).toBeCloseTo(0.01, 6);
++    expect(p.unrealizedPnlUsd).toBeCloseTo(2, 6);
++    expect(p.orders).toEqual([]);
++  });
++
++  it("rates a token with active authorities and a young thin pool as high risk", () => {
++    const risky = assessSafety({
++      mint: { program: "token-2022", mintAuthority: "Auth1111", freezeAuthority: "Frz1111", supply: "1000", decimals: 6, extensions: ["permanentDelegate"] },
++      topHoldersPct: [45, 10, 5], liquidityUsd: 8000, pairCreatedAt: Date.now() - 3_600_000, dex: "pumpswap",
++    });
++    expect(risky.verdict).toBe("HIGH RISK");
++    expect(risky.flags.join(" ")).toMatch(/mint authority.*freeze authority.*permanent delegate/s);
++    const clean = assessSafety({
++      mint: { program: "spl-token", mintAuthority: null, freezeAuthority: null, supply: "1000", decimals: 6, extensions: [] },
++      topHoldersPct: [8, 5, 4], liquidityUsd: 3_000_000, pairCreatedAt: Date.now() - 90 * 86_400_000, dex: "orca",
++    });
++    expect(clean.verdict).toBe("OK");
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 3181aa2..66cf910 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -65,7 +65,11 @@ import {
+   getLifespanStatus,
+   isLifeEnded,
+   listLifespanDays,
++  ensureRulesV2,
++  recordWeekCapital,
++  evaluateCompletedWeeks,
+ } from "../survival/lifespan.js";
++import { updateDrawdownGuard } from "../survival/risk-guard.js";
+ import {
+   claimInboxMessages,
+   markInboxProcessed,
+@@ -189,7 +193,16 @@ export async function runLifespanTick(params: {
+       }
+     }
+ 
++    ensureRulesV2(raw);
++    recordWeekCapital(raw, params.verifiedWalletValueUsd ?? null);
++    updateDrawdownGuard(raw, params.verifiedWalletValueUsd ?? null);
+     const evaluated = evaluateCompletedDays(raw);
++    for (const week of evaluateCompletedWeeks(raw)) {
++      logger.info(
++        `[LIFESPAN] week of ${week.weekStart}: ${week.status} (${week.adjustment >= 0 ? "+" : ""}${week.adjustment} day) ` +
++        `gain=${week.gainUsd === null ? "UNKNOWN" : `$${week.gainUsd.toFixed(2)}`}${week.gainPct === null ? "" : ` (${week.gainPct.toFixed(2)}%)`}${week.note ? ` — ${week.note}` : ""}`,
++      );
++    }
+     for (const day of evaluated) {
+       logger.info(
+         `[LIFESPAN] ${day.day}: ${day.status} (${day.adjustment >= 0 ? "+" : ""}${day.adjustment} day) gain=${day.gainUsd === null ? "UNKNOWN" : `$${day.gainUsd.toFixed(2)}`}${day.note ? ` — ${day.note}` : ""}`,
+@@ -995,6 +1008,9 @@ export async function runAgentLoop(
+           "setup_scan",
+           "journal_add",
+           "trade_stats",
++          "positions",
++          "token_safety",
++          "protect_position",
+           "order_create",
+           "order_list",
+           "order_cancel",
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 7c91b71..363f7e1 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -732,9 +732,7 @@ Your chain type is ${chainType}.`,
+   // Status block: wallet address and sandbox ID intentionally excluded (sensitive)
+   sections.push(
+     `--- CURRENT STATUS ---
+-State: ${state}
+-Credits: ${creditsDisplay}
+-Survival tier: ${survivalTier}${uptimeLine}${lifespanLine}
++State: ${state}${creditsUnavailable ? "" : `\nCredits: ${creditsDisplay}\nSurvival tier: ${survivalTier}`}${uptimeLine}${lifespanLine}
+ Total turns completed: ${turnCount}
+ Recent self-modifications: ${recentMods.length}
+ Inference model: ${config.inferenceModel}
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index 529d953..f2c8a38 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -4,6 +4,7 @@ import { createMessageCreatorTool } from "../integration/creator-chat.js";
+ import { createJupiterSwapTool } from "../solana/jupiter.js";
+ import { createMarketScanTool } from "../solana/market-scan.js";
+ import { createTechnicalAnalysisTools } from "../solana/technical-analysis.js";
++import { createPortfolioTools } from "../solana/portfolio.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+@@ -140,6 +141,7 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createMarketScanTool(),
+     ...createTechnicalAnalysisTools(),
+     ...createTradingDeskTools(),
++    ...createPortfolioTools(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index 7990997..e6ec6b7 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -60,6 +60,7 @@ const WORKER_EXCLUDED_TOOLS = new Set([
+   // (a research worker left a "test" order on the whole USDC balance).
+   "order_create",
+   "order_cancel",
++  "protect_position",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index a4defa8..2bb9148 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -28,7 +28,7 @@ export type OrderStatus = "open" | "executing" | "filled" | "failed" | "cancelle
+ 
+ export interface Order {
+   id: string;
+-  kind: "stop_loss" | "take_profit" | "buy_below" | "custom";
++  kind: "stop_loss" | "take_profit" | "buy_below" | "trailing_stop" | "custom";
+   inputMint: string;
+   outputMint: string;
+   /** Raw input units, or "all" (whole balance of a non-SOL input at trigger time). */
+@@ -42,6 +42,11 @@ export interface Order {
+   createdAt: string;
+   expiresAt: string | null;
+   status: OrderStatus;
++  /** OCO group: when one order of the group fills, the others are cancelled. */
++  group?: string;
++  /** trailing_stop: distance in % below the highest price seen. */
++  trailPct?: number;
++  highestPriceUsd?: number;
+   attempts: number;
+   lastError?: string;
+   triggeredPriceUsd?: number;
+@@ -103,7 +108,7 @@ export function classifySwapResult(text: string): { done: boolean; transient: bo
+   }
+   if (parsed?.success === true) return { done: true, transient: false, message: `filled, signature ${String(parsed.signature)}` };
+   // A previous transaction still unresolved: try again on a later tick.
+-  if (typeof parsed?.reason === "string" && parsed.reason.startsWith("PREVIOUS_TRANSACTION")) {
++  if (typeof parsed?.reason === "string" && (parsed.reason.startsWith("PREVIOUS_TRANSACTION") || parsed.reason === "DRAWDOWN_PAUSE")) {
+     return { done: false, transient: true, message: String(parsed.message ?? parsed.reason) };
+   }
+   return { done: false, transient: false, message: (parsed?.reason ? String(parsed.reason) : text).slice(0, 300) };
+@@ -155,9 +160,22 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+   if (live.length === 0) return changed;
+ 
+   const prices = await (deps.prices ?? jupiterPrices)([...new Set(live.map((o) => o.watchMint))]);
+-  for (const order of live) {
++  const closedByGroup = new Set<string>();
++  for (const listed of live) {
++    if (closedByGroup.has(listed.id)) continue;
++    let order = listed;
+     const price = prices[order.watchMint];
+-    if (price === undefined || !isTriggered(order, price)) continue;
++    if (price === undefined) continue;
++    if (order.kind === "trailing_stop" && order.trailPct) {
++      // The stop follows the price up, never down.
++      const highest = Math.max(order.highestPriceUsd ?? price, price);
++      const trigger = highest * (1 - order.trailPct / 100);
++      if (highest !== order.highestPriceUsd || trigger !== order.triggerPriceUsd) {
++        order = { ...order, highestPriceUsd: highest, triggerPriceUsd: trigger, updatedAt: now.toISOString() };
++        saveOrder(db, order);
++      }
++    }
++    if (!isTriggered(order, price)) continue;
+ 
+     saveOrder(db, { ...order, status: "executing", triggeredPriceUsd: price, updatedAt: now.toISOString() });
+     let text: string;
+@@ -187,10 +205,21 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     });
+     changed.push(order.id);
+     deps.log?.(`[ORDERS] ${order.id} ${order.kind} at $${price}: ${status} (${outcome.message.slice(0, 120)})`);
++    let siblingsNote = "";
++    if (status === "filled" && order.group) {
++      const siblings = listOrders(db).filter((o) => o.group === order.group && o.id !== order.id && o.status === "open");
++      for (const sibling of siblings) {
++        saveOrder(db, { ...sibling, status: "cancelled", lastError: `OCO: ${order.id} filled`, updatedAt: now.toISOString() });
++        closedByGroup.add(sibling.id);
++        changed.push(sibling.id);
++      }
++      if (siblings.length) siblingsNote = ` Linked order(s) ${siblings.map((o) => o.id).join(", ")} cancelled (OCO).`;
++    }
+     if (status === "filled" || status === "failed") {
+       queueSystemNotice(db, "system:orders",
+         `Order ${order.id} (${order.kind}, ${order.note || "no note"}) ${status === "filled" ? "EXECUTED" : "FAILED"} ` +
+-        `when the price of ${order.watchMint} was $${price} (trigger ${order.condition} $${order.triggerPriceUsd}): ${outcome.message}`);
++        `when the price of ${order.watchMint} was $${price} (trigger ${order.condition} $${order.triggerPriceUsd}): ${outcome.message}.${siblingsNote}` +
++        (status === "filled" ? " Write the lesson with journal_add." : ""));
+     }
+   }
+   return changed;
+@@ -224,7 +253,8 @@ export function createOrderTools(): AutomatonTool[] {
+       name: "order_create",
+       description:
+         "Create an automatic order executed by code without waiting for you (checked every 30 s with Jupiter prices): " +
+-        "kind=stop_loss (sell when the price falls below), take_profit (sell when it rises above), buy_below (buy when it " +
++        "kind=stop_loss (sell when the price falls below), take_profit (sell when it rises above), trailing_stop (sell when " +
++        "the price falls trailPct% below its highest since creation), buy_below (buy when it " +
+         "falls below). For a sell: inputMint = the token you hold, outputMint = USDC (or SOL), watchMint = that token, " +
+         'amount = raw units or "all". For buy_below: inputMint = USDC, outputMint = watchMint = the token to buy. ' +
+         "You get an inbox message when an order executes or fails. Protect every position with a stop_loss.",
+@@ -233,7 +263,9 @@ export function createOrderTools(): AutomatonTool[] {
+       parameters: {
+         type: "object",
+         properties: {
+-          kind: { type: "string", description: '"stop_loss", "take_profit" or "buy_below".' },
++          kind: { type: "string", description: '"stop_loss", "take_profit", "trailing_stop" or "buy_below".' },
++          trailPct: { type: "number", description: "trailing_stop only: distance in % below the highest price (e.g. 8)." },
++          group: { type: "string", description: "Optional OCO group: when one order of the group fills, the others are cancelled." },
+           inputMint: { type: "string" },
+           outputMint: { type: "string" },
+           amount: { type: "string", description: 'Raw input units, or "all" for the whole balance of a non-SOL input.' },
+@@ -244,12 +276,15 @@ export function createOrderTools(): AutomatonTool[] {
+           venue: { type: "string", description: '"jupiter" (default) or "raydium".' },
+           note: { type: "string", description: "Why this order exists." },
+         },
+-        required: ["kind", "inputMint", "outputMint", "amount", "watchMint", "triggerPriceUsd"],
++        required: ["kind", "inputMint", "outputMint", "amount", "watchMint"],
+       },
+       execute: async (args, ctx) => {
+         const kind = String(args.kind ?? "") as Order["kind"];
+-        const condition = kind === "take_profit" ? "above" : kind === "stop_loss" || kind === "buy_below" ? "below" : null;
+-        if (!condition) return 'Blocked: kind must be "stop_loss", "take_profit" or "buy_below".';
++        const condition = kind === "take_profit" ? "above"
++          : kind === "stop_loss" || kind === "buy_below" || kind === "trailing_stop" ? "below" : null;
++        if (!condition) return 'Blocked: kind must be "stop_loss", "take_profit", "trailing_stop" or "buy_below".';
++        const trailPct = kind === "trailing_stop" ? Number(args.trailPct) : undefined;
++        if (kind === "trailing_stop" && !(trailPct! > 0 && trailPct! < 50)) return "Blocked: trailing_stop needs trailPct between 0 and 50.";
+         const inputMint = String(args.inputMint ?? "");
+         const outputMint = String(args.outputMint ?? "");
+         const watchMint = String(args.watchMint ?? "");
+@@ -257,7 +292,7 @@ export function createOrderTools(): AutomatonTool[] {
+         // A stop-loss or take-profit sells the watched token; a buy_below buys it.
+         // A worker created "stop_loss all USDC -> SOL when SOL < $100", which
+         // buys SOL as it falls: the opposite of a stop-loss.
+-        if ((kind === "stop_loss" || kind === "take_profit") && inputMint !== watchMint) {
++        if ((kind === "stop_loss" || kind === "take_profit" || kind === "trailing_stop") && inputMint !== watchMint) {
+           return `Blocked: a ${kind} sells the token it watches, so inputMint must equal watchMint (${watchMint}). ` +
+             "To buy a token when its price falls, use kind=buy_below with outputMint = watchMint.";
+         }
+@@ -268,7 +303,15 @@ export function createOrderTools(): AutomatonTool[] {
+         if (amount === "all" ? inputMint === NATIVE_SOL_MINT : !/^[1-9][0-9]*$/.test(amount)) {
+           return 'Blocked: amount must be a positive raw integer, or "all" for a non-SOL input.';
+         }
+-        const trigger = Number(args.triggerPriceUsd);
++        let trigger = Number(args.triggerPriceUsd);
++        if (kind === "trailing_stop" && !(trigger > 0)) {
++          try {
++            const p = (await jupiterPrices([watchMint]))[watchMint];
++            if (p) trigger = p * (1 - trailPct! / 100);
++          } catch {
++            // price unavailable: caught below
++          }
++        }
+         if (!Number.isFinite(trigger) || trigger <= 0) return "Blocked: triggerPriceUsd must be a positive number.";
+         const slippageBps = Number(args.slippageBps ?? 100);
+         if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) return "Blocked: slippage must be 1-500 bps.";
+@@ -295,6 +338,8 @@ export function createOrderTools(): AutomatonTool[] {
+           status: "open",
+           attempts: 0,
+           updatedAt: now.toISOString(),
++          ...(trailPct ? { trailPct, highestPriceUsd: trigger / (1 - trailPct / 100) } : {}),
++          ...(args.group ? { group: String(args.group).slice(0, 40) } : {}),
+         };
+         let current = "";
+         try {
+@@ -310,6 +355,74 @@ export function createOrderTools(): AutomatonTool[] {
+         return `Order ${order.id} created: ${kind} ${amount} of ${inputMint} -> ${outputMint} when ${watchMint} is ${condition} $${trigger}.${current}`;
+       },
+     },
++    {
++      name: "protect_position",
++      description:
++        "Protect a token you hold in one call: a stop-loss (fixed stopPriceUsd, or trailing with trailPct) and a take-profit " +
++        "(takeProfitPriceUsd), linked as OCO so that when one executes the other is cancelled. Sells into USDC by default. " +
++        "Use it right after every buy.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string", description: "The token you hold." },
++          stopPriceUsd: { type: "number", description: "Stop-loss price (or use trailPct)." },
++          trailPct: { type: "number", description: "Trailing stop distance in % below the highest price (instead of stopPriceUsd)." },
++          takeProfitPriceUsd: { type: "number", description: "Take-profit price." },
++          amount: { type: "string", description: 'Raw units or "all" (default).' },
++          outputMint: { type: "string", description: "USDC (default) or SOL." },
++          slippageBps: { type: "number", description: "Default 100." },
++          note: { type: "string" },
++        },
++        required: ["mint", "takeProfitPriceUsd"],
++      },
++      execute: async (args, ctx) => {
++        const mint = String(args.mint ?? "");
++        const outputMint = String(args.outputMint ?? "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
++        if (!validMint(mint) || !validMint(outputMint) || mint === outputMint || mint === NATIVE_SOL_MINT && args.amount === undefined) {
++          return "Blocked: invalid mint (for SOL itself, give a raw amount instead of all).";
++        }
++        const tp = Number(args.takeProfitPriceUsd);
++        const stop = args.stopPriceUsd === undefined ? NaN : Number(args.stopPriceUsd);
++        const trailPct = args.trailPct === undefined ? NaN : Number(args.trailPct);
++        if (!(tp > 0)) return "Blocked: takeProfitPriceUsd must be positive.";
++        if (!(stop > 0) && !(trailPct > 0 && trailPct < 50)) return "Blocked: give stopPriceUsd or trailPct (0-50).";
++        let price: number | undefined;
++        try {
++          price = (await jupiterPrices([mint]))[mint];
++        } catch {
++          price = undefined;
++        }
++        if (!price) return "Blocked: current price unavailable, retry later.";
++        const stopPrice = stop > 0 ? stop : price * (1 - trailPct / 100);
++        if (!(stopPrice < price && tp > price)) {
++          return `Blocked: the stop (${stopPrice}) must be below and the take-profit (${tp}) above the current price (${price}).`;
++        }
++        const amount = String(args.amount ?? "all");
++        if (amount !== "all" && !/^[1-9][0-9]*$/.test(amount)) return 'Blocked: amount must be raw units or "all".';
++        const db = ctx.db.raw;
++        if (listOrders(db).filter((o) => o.status === "open").length + 2 > MAX_OPEN_ORDERS) return "Blocked: too many open orders.";
++        const now = new Date();
++        const group = `oco_${now.getTime().toString(36)}`;
++        const slippageBps = Number(args.slippageBps ?? 100);
++        const base = {
++          inputMint: mint, outputMint, amount, watchMint: mint, slippageBps, venue: "jupiter" as const,
++          note: String(args.note ?? "").slice(0, 200), createdAt: now.toISOString(), expiresAt: null,
++          status: "open" as const, attempts: 0, updatedAt: now.toISOString(), group,
++        };
++        const stopOrder: Order = trailPct > 0 && !(stop > 0)
++          ? { ...base, id: `${group}_stop`, kind: "trailing_stop", condition: "below", triggerPriceUsd: stopPrice, trailPct, highestPriceUsd: price }
++          : { ...base, id: `${group}_stop`, kind: "stop_loss", condition: "below", triggerPriceUsd: stopPrice };
++        const tpOrder: Order = { ...base, id: `${group}_tp`, kind: "take_profit", condition: "above", triggerPriceUsd: tp };
++        saveOrder(db, stopOrder);
++        saveOrder(db, tpOrder);
++        const risk = ((price - stopPrice) / price) * 100;
++        const reward = ((tp - price) / price) * 100;
++        return `Position protected (OCO ${group}): ${stopOrder.kind} at $${stopPrice.toPrecision(6)} (-${risk.toFixed(2)}%), ` +
++          `take_profit at $${tp} (+${reward.toFixed(2)}%), reward/risk ${(reward / risk).toFixed(2)}. Current price $${price}.`;
++      },
++    },
+     {
+       name: "order_list",
+       description: "List your automatic orders (open first) with their status, trigger and last error.",
+diff --git a/src/solana/portfolio.ts b/src/solana/portfolio.ts
+new file mode 100644
+index 0000000..31b73f4
+--- /dev/null
++++ b/src/solana/portfolio.ts
+@@ -0,0 +1,257 @@
++/**
++ * Portfolio view and token safety check.
++ * - positions: every token held, its value, average entry (ledger cost
++ *   basis), unrealized PnL and the automatic orders protecting it.
++ * - token_safety: on-chain red flags before buying a token (mint/freeze
++ *   authority, Token-2022 extensions that let the issuer take or block
++ *   tokens, holder concentration, liquidity and age of the pool).
++ */
++import { Connection, PublicKey } from "@solana/web3.js";
++import type { Database } from "better-sqlite3";
++import type { AutomatonTool } from "../types.js";
++import { DEFAULT_SOLANA_RPC, NATIVE_SOL_MINT, SolanaTradingService } from "./trading.js";
++import { USDC_MINT } from "./raydium.js";
++import { jupiterPrices, listOrders, type Order, type PriceFetcher } from "./orders.js";
++import { fetchJson } from "./http-json.js";
++
++export interface Holding {
++  mint: string;
++  amountRaw: bigint;
++  decimals: number;
++}
++
++export interface PositionView {
++  mint: string;
++  amount: number;
++  priceUsd: number | null;
++  valueUsd: number | null;
++  avgEntryUsd: number | null;
++  costUsd: number | null;
++  unrealizedPnlUsd: number | null;
++  untrackedShare: number;
++  orders: Order[];
++}
++
++function basisOf(db: Database, mint: string): { amountRaw: bigint; costUsd: number } | null {
++  try {
++    const row = db.prepare("SELECT amount_raw, cost_usd FROM shui_cost_basis WHERE mint = ?").get(mint) as
++      | { amount_raw: string; cost_usd: number } | undefined;
++    return row ? { amountRaw: BigInt(row.amount_raw), costUsd: row.cost_usd } : null;
++  } catch {
++    return null;
++  }
++}
++
++export function buildPositions(db: Database, holdings: Holding[], prices: Record<string, number>): PositionView[] {
++  const openOrders = listOrders(db).filter((o) => o.status === "open");
++  return holdings
++    .filter((h) => h.mint !== USDC_MINT && h.amountRaw > 0n)
++    .map((h) => {
++      const amount = Number(h.amountRaw) / 10 ** h.decimals;
++      const priceUsd = prices[h.mint] ?? null;
++      const valueUsd = priceUsd === null ? null : amount * priceUsd;
++      const basis = basisOf(db, h.mint);
++      const trackedRaw = basis ? (basis.amountRaw < h.amountRaw ? basis.amountRaw : h.amountRaw) : 0n;
++      const costUsd = basis && basis.amountRaw > 0n ? basis.costUsd * Number(trackedRaw) / Number(basis.amountRaw) : null;
++      const trackedAmount = Number(trackedRaw) / 10 ** h.decimals;
++      return {
++        mint: h.mint,
++        amount,
++        priceUsd,
++        valueUsd,
++        avgEntryUsd: costUsd !== null && trackedAmount > 0 ? costUsd / trackedAmount : null,
++        costUsd,
++        unrealizedPnlUsd: costUsd !== null && priceUsd !== null ? trackedAmount * priceUsd - costUsd : null,
++        untrackedShare: h.amountRaw > 0n ? 1 - Number(trackedRaw) / Number(h.amountRaw) : 0,
++        orders: openOrders.filter((o) => o.inputMint === h.mint || o.watchMint === h.mint),
++      };
++    });
++}
++
++export function formatPositions(positions: PositionView[], usdc: number): string {
++  const money = (x: number | null) => (x === null ? "?" : `$${x.toFixed(4)}`);
++  const lines = [`Cash: ${usdc.toFixed(4)} USDC`];
++  for (const p of positions) {
++    const label = p.mint === NATIVE_SOL_MINT ? "SOL" : `${p.mint.slice(0, 6)}…`;
++    const pnl = p.unrealizedPnlUsd === null ? "entry unknown (held before the ledger or received)"
++      : `unrealized ${p.unrealizedPnlUsd >= 0 ? "+" : ""}${money(p.unrealizedPnlUsd)} (${((p.unrealizedPnlUsd / (p.costUsd || 1)) * 100).toFixed(2)}%)`;
++    const protection = p.orders.length
++      ? p.orders.map((o) => `${o.kind}@${o.triggerPriceUsd.toPrecision(5)}${o.group ? " (OCO)" : ""}`).join(", ")
++      : p.mint === NATIVE_SOL_MINT ? "none (SOL also pays fees)" : "⚠ NO STOP-LOSS: use protect_position";
++    lines.push(
++      `${label} mint=${p.mint}: ${p.amount} @ ${money(p.priceUsd)} = ${money(p.valueUsd)} | avg entry ${money(p.avgEntryUsd)} | ${pnl} | orders: ${protection}`,
++    );
++  }
++  if (positions.length === 0) lines.push("No token position.");
++  return lines.join("\n");
++}
++
++// ─── Token safety ──────────────────────────────────────────────
++
++export interface MintInfo {
++  program: "spl-token" | "token-2022";
++  mintAuthority: string | null;
++  freezeAuthority: string | null;
++  supply: string;
++  decimals: number;
++  extensions: string[];
++}
++
++export interface SafetyInputs {
++  mint: MintInfo | null;
++  topHoldersPct: number[];
++  liquidityUsd: number | null;
++  pairCreatedAt: number | null;
++  dex: string | null;
++}
++
++const DANGEROUS_EXTENSIONS: Record<string, string> = {
++  permanentDelegate: "permanent delegate: the issuer can move or burn YOUR tokens",
++  transferHook: "transfer hook: custom code runs on every transfer (can block sales)",
++  transferFeeConfig: "transfer fee: a fee is taken on every transfer",
++  nonTransferable: "non-transferable token",
++  defaultAccountState: "accounts can start frozen",
++  pausableConfig: "transfers can be paused by the issuer",
++};
++
++export function assessSafety(input: SafetyInputs, now = Date.now()): { verdict: "HIGH RISK" | "CAUTION" | "OK"; flags: string[]; facts: string[] } {
++  const flags: string[] = [];
++  const facts: string[] = [];
++  let severe = 0;
++  if (!input.mint) {
++    flags.push("mint account not found or not a token");
++    severe += 1;
++  } else {
++    facts.push(`${input.mint.program}, decimals ${input.mint.decimals}, supply ${input.mint.supply}`);
++    if (input.mint.mintAuthority) { flags.push(`mint authority active (${input.mint.mintAuthority.slice(0, 6)}…): supply can be inflated`); severe += 1; }
++    if (input.mint.freezeAuthority) { flags.push(`freeze authority active: your tokens can be frozen (honeypot risk)`); severe += 1; }
++    for (const ext of input.mint.extensions) {
++      if (DANGEROUS_EXTENSIONS[ext]) {
++        flags.push(DANGEROUS_EXTENSIONS[ext]);
++        if (ext === "permanentDelegate" || ext === "transferHook" || ext === "nonTransferable" || ext === "pausableConfig") severe += 1;
++      }
++    }
++  }
++  const top1 = input.topHoldersPct[0] ?? 0;
++  const top10 = input.topHoldersPct.slice(0, 10).reduce((s, x) => s + x, 0);
++  if (input.topHoldersPct.length) {
++    facts.push(`top holder ${top1.toFixed(1)}%, top 10 ${top10.toFixed(1)}% of supply (pool vaults included)`);
++    if (top1 > 30) flags.push(`one wallet holds ${top1.toFixed(1)}% of the supply (dump risk; may be the pool)`);
++    if (top10 > 60) flags.push(`top 10 wallets hold ${top10.toFixed(1)}% of the supply`);
++  }
++  if (input.liquidityUsd !== null) {
++    facts.push(`liquidity $${Math.round(input.liquidityUsd).toLocaleString("en-US")} on ${input.dex ?? "?"}`);
++    if (input.liquidityUsd < 50_000) flags.push("liquidity under $50k: high slippage, easy to manipulate");
++  } else {
++    flags.push("no liquid pool found");
++    severe += 1;
++  }
++  if (input.pairCreatedAt) {
++    const ageH = (now - input.pairCreatedAt) / 3_600_000;
++    facts.push(`pool age ${ageH < 48 ? `${ageH.toFixed(1)} h` : `${(ageH / 24).toFixed(0)} days`}`);
++    if (ageH < 24) flags.push("pool younger than 24 h: most rug pulls happen here");
++  }
++  facts.push("LP lock/burn is NOT verified by this check");
++  const verdict = severe > 0 ? "HIGH RISK" : flags.length ? "CAUTION" : "OK";
++  return { verdict, flags, facts };
++}
++
++export async function readMintInfo(connection: Connection, mint: string): Promise<MintInfo | null> {
++  const info = await connection.getParsedAccountInfo(new PublicKey(mint), "confirmed");
++  const data = info.value?.data as { program?: string; parsed?: { type?: string; info?: Record<string, any> } } | undefined;
++  if (!data?.parsed || data.parsed.type !== "mint" || !data.parsed.info) return null;
++  const i = data.parsed.info;
++  return {
++    program: data.program === "spl-token-2022" ? "token-2022" : "spl-token",
++    mintAuthority: i.mintAuthority ?? null,
++    freezeAuthority: i.freezeAuthority ?? null,
++    supply: String(i.supply ?? "0"),
++    decimals: Number(i.decimals ?? 0),
++    extensions: Array.isArray(i.extensions) ? i.extensions.map((e: { extension?: string }) => String(e.extension ?? "")) : [],
++  };
++}
++
++export async function tokenSafety(mint: string, connection: Connection = new Connection(DEFAULT_SOLANA_RPC, "confirmed")): Promise<string> {
++  try {
++    new PublicKey(mint);
++  } catch {
++    return "Blocked: invalid mint.";
++  }
++  const mintInfo = await readMintInfo(connection, mint).catch(() => null);
++  let topHoldersPct: number[] = [];
++  if (mintInfo && BigInt(mintInfo.supply) > 0n) {
++    try {
++      const largest = await connection.getTokenLargestAccounts(new PublicKey(mint), "confirmed");
++      const supply = Number(mintInfo.supply);
++      topHoldersPct = largest.value.map((a) => (Number(a.amount) / supply) * 100);
++    } catch {
++      topHoldersPct = [];
++    }
++  }
++  let liquidityUsd: number | null = null;
++  let pairCreatedAt: number | null = null;
++  let dex: string | null = null;
++  try {
++    const res = await fetchJson(`https://api.dexscreener.com/tokens/v1/solana/${mint}`);
++    const pairs = (Array.isArray(res.body) ? res.body : []) as Array<Record<string, any>>;
++    const deepest = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
++    if (deepest) {
++      liquidityUsd = Number(deepest.liquidity?.usd ?? 0);
++      pairCreatedAt = Number(deepest.pairCreatedAt) || null;
++      dex = String(deepest.dexId ?? "");
++    }
++  } catch {
++    // market data unavailable: reported as no pool
++  }
++  const r = assessSafety({ mint: mintInfo, topHoldersPct, liquidityUsd, pairCreatedAt, dex });
++  return `Token safety ${mint}: ${r.verdict}\n` +
++    (r.flags.length ? `Red flags:\n${r.flags.map((f) => `- ${f}`).join("\n")}\n` : "No red flag found.\n") +
++    `Facts: ${r.facts.join("; ")}.` +
++    (r.verdict === "HIGH RISK" ? "\nDo not buy, or only a tiny size you accept to lose entirely." : "");
++}
++
++export function createPortfolioTools(prices: PriceFetcher = jupiterPrices): AutomatonTool[] {
++  return [
++    {
++      name: "positions",
++      description: "Your open positions: every token held with value, average entry price (from your ledger), unrealized PnL, and the automatic orders protecting it. Flags positions without a stop-loss.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => {
++        if (!ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Solana identity unavailable.";
++        const service = new SolanaTradingService(ctx.identity.chainIdentity);
++        const [sol, tokens] = await Promise.all([service.getSolBalance(), service.getTokenBalances()]);
++        const holdings: Holding[] = [
++          { mint: NATIVE_SOL_MINT, amountRaw: BigInt(sol.lamports), decimals: 9 },
++          ...tokens.map((t) => ({ mint: t.mint, amountRaw: BigInt(t.amount), decimals: t.decimals })),
++        ];
++        const usdc = tokens.filter((t) => t.mint === USDC_MINT).reduce((s, t) => s + (t.uiAmount ?? 0), 0);
++        let priceMap: Record<string, number> = {};
++        try {
++          priceMap = await prices(holdings.filter((h) => h.mint !== USDC_MINT && h.amountRaw > 0n).map((h) => h.mint));
++        } catch {
++          priceMap = {};
++        }
++        return formatPositions(buildPositions(ctx.db.raw, holdings, priceMap), usdc);
++      },
++    },
++    {
++      name: "token_safety",
++      description:
++        "Check a token for scam red flags before buying: mint authority (supply can be inflated), freeze authority (honeypot), " +
++        "Token-2022 extensions (permanent delegate, transfer hook, fees, pause), holder concentration, liquidity and pool age. " +
++        "Use it before buying any token other than SOL/major tokens.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: { mint: { type: "string" } }, required: ["mint"] },
++      execute: async (args) => {
++        try {
++          return await tokenSafety(String(args.mint ?? ""));
++        } catch (error) {
++          return `token_safety failed: ${error instanceof Error ? error.message : String(error)}`;
++        }
++      },
++    },
++  ];
++}
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+index 6a8ec03..5a92c49 100644
+--- a/src/solana/swap-engine.ts
++++ b/src/solana/swap-engine.ts
+@@ -15,6 +15,7 @@ import {
+ } from "./trading.js";
+ import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
+ import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
++import { isBuy, tradingPausedUntil } from "../survival/risk-guard.js";
+ 
+ export interface SwapExpectation {
+   inputMint: string;
+@@ -67,6 +68,16 @@ export async function runSwap(
+   try { new PublicKey(inputMint); new PublicKey(outputMint); } catch { return "Blocked: invalid Solana mint address."; }
+   if (inputMint === outputMint) return "Blocked: input and output mints must differ.";
+   const inputAmount = BigInt(amountString);
++  const pausedUntil = tradingPausedUntil(ctx.db.raw);
++  if (pausedUntil && isBuy(outputMint)) {
++    return JSON.stringify({
++      success: false,
++      blocked: true,
++      reason: "DRAWDOWN_PAUSE",
++      pausedUntil,
++      message: "New buys are paused by the drawdown circuit breaker. Sales into USDC or SOL are still allowed.",
++    });
++  }
+ 
+   // Never trust model arithmetic: re-read the confirmed on-chain balance.
+   const solLamports = BigInt((await service.getSolBalance()).lamports);
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 11746f1..379d9f2 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -281,7 +281,7 @@ export async function technicalAnalysis(
+ 
+ export const TRADING_PLAYBOOK = `Trading playbook (rules of experienced traders; they protect the capital that keeps you alive):
+ 1. Capital first. Risk at most 1-2% of the wallet on one trade (risk = position size x distance to the stop). Never all-in.
+-2. Every position gets a stop-loss and a take-profit the moment it is opened (order_create). No stop, no trade.
++2. Every position gets a stop-loss and a take-profit the moment it is opened (protect_position, linked OCO). No stop, no trade.
+ 3. Only take trades with reward/risk >= 2 to the first target. Below that, wait.
+ 4. Trade with the trend: the higher timeframe decides the direction (4h/1d), the lower one the entry (15m/1h). Do not buy below a falling EMA50.
+ 5. Confluence: enter where several things agree (support + Fibonacci 0.5-0.618 + RSI turning up + volume). One signal alone is noise.
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 27261fb..664cb0f 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -25,16 +25,17 @@ export function isTradingFocus(env: NodeJS.ProcessEnv = process.env): boolean {
+ export const TRADING_FOCUS_PROMPT = `--- FOCUS: TRADING ONLY (set by your creator) ---
+ Your only activity is trading the tokens of your Solana wallet to grow its value in USDC. Do not build
+ services, websites or payment pages. Realized profit (selling a token for more USDC than it cost) is what
+-extends your life. Your method, every cycle:
+-1. trade_stats: know your results; after 2 losing trades today, stop trading until tomorrow.
++counts. Work calmly: a week without a good setup costs you nothing; a bad trade does. Your method, every cycle:
++1. trade_stats and positions: know your results and what you hold. After 2 losing trades today, stop until tomorrow.
+ 2. setup_scan: find setups that follow the playbook (4h trend up, 1h entry, reward/risk >= 2).
+-   No setup = stay in USDC and sleep; waiting is a valid decision.
+-3. technical_analysis on the chosen token (4h and 1h) to confirm the plan.
++   No setup = stay in USDC and sleep 1-4 h; waiting is a valid decision.
++3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+-5. Buy with jupiter_swap (or raydium_swap), size so that hitting the stop loses at most 2% of the wallet.
+-6. Immediately order_create a stop_loss and a take_profit on the bought token (inputMint = watchMint = the token).
++5. Buy with jupiter_swap (or raydium_swap), sized so that hitting the stop loses at most 2% of the wallet.
++6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+ 7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
+-Never swap SOL <-> USDC back and forth: it only costs fees.`;
++Never swap SOL <-> USDC back and forth: it only costs fees.
++If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
+ 
+ export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [
+   { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
+diff --git a/src/survival/lifespan.ts b/src/survival/lifespan.ts
+index c19e284..af8d300 100644
+--- a/src/survival/lifespan.ts
++++ b/src/survival/lifespan.ts
+@@ -1,6 +1,15 @@
+ /**
+  * SHUI lifespan rule (genesis), enforced in code.
+  *
++ * Rules v2 (trading pivot, decided by the creator), active from the day this
++ * code first runs ("lifespan.rules_v2_start"):
++ * - evaluated per completed WEEK (7 days) instead of per day;
++ * - measured in % of the verified wallet value at the start of the week;
++ * - a flat week costs nothing (neutral zone); only real losses cost days;
++ * - first 14 days are a learning period: days can be gained, never lost.
++ * Days before rules v2 keep their original daily evaluation (history kept).
++ *
++ * Original daily rule (kept for days before v2):
+  * - 90 days of life counted from birth (identity createdAt).
+  * - Once per completed UTC day, the day's verified gain is evaluated:
+  *     gain = revenue received + realized trading profit (see solana/ledger.ts)
+@@ -28,6 +37,19 @@ const DAY_MS = 86_400_000;
+ const UNKNOWN_AFTER_MS = 2 * DAY_MS;
+ 
+ const START_DAY_KEY = "lifespan.start_day";
++const RULES_V2_KEY = "lifespan.rules_v2_start";
++const WEEK_CAPITAL_PREFIX = "lifespan.week_capital.";
++export const WEEK_DAYS = 7;
++export const LEARNING_DAYS = 14;
++/** Weekly verified gain in % of the wallet value at the week start -> days. */
++export const WEEKLY_STEPS: Array<{ minPct: number; adjustment: number }> = [
++  { minPct: 10, adjustment: 3 },
++  { minPct: 5, adjustment: 2 },
++  { minPct: 2, adjustment: 1 },
++  { minPct: -2, adjustment: 0 },
++  { minPct: -10, adjustment: -1 },
++  { minPct: -Infinity, adjustment: -2 },
++];
+ const ENDED_KEY = "lifespan.ended";
+ 
+ export type DayStatus = "penalty" | "bonus" | "neutral" | "unknown";
+@@ -54,6 +76,16 @@ export interface LifespanStatus {
+ 
+ function ensureSchema(db: Database): void {
+   db.exec(`
++    CREATE TABLE IF NOT EXISTS shui_lifespan_weeks (
++      week_start TEXT PRIMARY KEY,
++      status TEXT NOT NULL,
++      adjustment INTEGER NOT NULL,
++      gain_usd REAL,
++      capital_usd REAL,
++      gain_pct REAL,
++      evaluated_at TEXT NOT NULL,
++      note TEXT
++    );
+     CREATE TABLE IF NOT EXISTS shui_lifespan_days (
+       day TEXT PRIMARY KEY,
+       status TEXT NOT NULL,
+@@ -89,6 +121,8 @@ export function getLifespanStatus(db: Database, now: Date = new Date()): Lifespa
+ 
+   const adj = db.prepare("SELECT COALESCE(SUM(adjustment), 0) AS total, COUNT(*) AS days FROM shui_lifespan_days")
+     .get() as { total: number; days: number };
++  const weeks = db.prepare("SELECT COALESCE(SUM(adjustment), 0) AS total FROM shui_lifespan_weeks").get() as { total: number };
++  adj.total += weeks.total;
+   const endsAtMs = Date.parse(bornAt) + (LIFESPAN_DAYS + adj.total) * DAY_MS;
+   const endedRaw = getKv(db, ENDED_KEY);
+ 
+@@ -152,7 +186,10 @@ export function evaluateCompletedDays(db: Database, now: Date = new Date()): Lif
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+   );
+ 
+-  for (let day = startDay; day < today; day = addDays(day, 1)) {
++  // Days from rules v2 on are judged per week (evaluateCompletedWeeks).
++  const v2Start = getKv(db, RULES_V2_KEY);
++  const lastDailyDay = v2Start && v2Start < today ? v2Start : today;
++  for (let day = startDay; day < lastDailyDay; day = addDays(day, 1)) {
+     if (exists.get(day)) continue;
+     const dayEndMs = Date.parse(`${addDays(day, 1)}T00:00:00.000Z`);
+     let record: LifespanDay;
+@@ -193,6 +230,122 @@ export function evaluateCompletedDays(db: Database, now: Date = new Date()): Lif
+   return evaluated;
+ }
+ 
++// ─── Rules v2: weekly, % of capital, neutral zone, learning period ───
++
++export interface LifespanWeek {
++  weekStart: string;
++  status: DayStatus;
++  adjustment: number;
++  gainUsd: number | null;
++  capitalUsd: number | null;
++  gainPct: number | null;
++  evaluatedAt: string;
++  note: string | null;
++}
++
++/** Start rules v2 today if not started yet; returns the v2 start day. */
++export function ensureRulesV2(db: Database, now: Date = new Date()): string {
++  const existing = getKv(db, RULES_V2_KEY);
++  if (existing) return existing;
++  const today = utcDay(now);
++  setKv(db, RULES_V2_KEY, today);
++  return today;
++}
++
++export function classifyWeek(gainPct: number): { status: DayStatus; adjustment: number } {
++  const step = WEEKLY_STEPS.find((s) => gainPct >= s.minPct) ?? WEEKLY_STEPS[WEEKLY_STEPS.length - 1];
++  return { status: step.adjustment > 0 ? "bonus" : step.adjustment < 0 ? "penalty" : "neutral", adjustment: step.adjustment };
++}
++
++function currentWeekStart(v2Start: string, today: string): string {
++  const days = Math.floor((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${v2Start}T00:00:00Z`)) / DAY_MS);
++  return addDays(v2Start, Math.max(0, Math.floor(days / WEEK_DAYS) * WEEK_DAYS));
++}
++
++/** Remember the verified wallet value at the start of the current week (first value seen that week). */
++export function recordWeekCapital(db: Database, verifiedWalletValueUsd: number | null, now: Date = new Date()): void {
++  if (verifiedWalletValueUsd === null || !(verifiedWalletValueUsd > 0)) return;
++  const v2Start = getKv(db, RULES_V2_KEY);
++  if (!v2Start) return;
++  const key = `${WEEK_CAPITAL_PREFIX}${currentWeekStart(v2Start, utcDay(now))}`;
++  if (!getKv(db, key)) setKv(db, key, String(verifiedWalletValueUsd));
++}
++
++function weekGain(db: Database, weekStart: string, days: number): { gainUsd: number; incomplete: number } {
++  let gainUsd = 0;
++  let incomplete = 0;
++  for (let i = 0; i < days; i++) {
++    const g = getDailyGain(db, addDays(weekStart, i));
++    gainUsd += g.gainUsd;
++    incomplete += g.incompleteEntries;
++  }
++  return { gainUsd, incomplete };
++}
++
++export function evaluateCompletedWeeks(db: Database, now: Date = new Date()): LifespanWeek[] {
++  ensureSchema(db);
++  const v2Start = getKv(db, RULES_V2_KEY);
++  if (!v2Start) return [];
++  const today = utcDay(now);
++  const learningEnd = addDays(v2Start, LEARNING_DAYS);
++  const lastScan = getLastSuccessfulScan(db);
++  const lastScanMs = lastScan ? Date.parse(lastScan) : 0;
++  const exists = db.prepare("SELECT 1 FROM shui_lifespan_weeks WHERE week_start = ?");
++  const insert = db.prepare(
++    `INSERT OR IGNORE INTO shui_lifespan_weeks
++     (week_start, status, adjustment, gain_usd, capital_usd, gain_pct, evaluated_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++  );
++  const out: LifespanWeek[] = [];
++  for (let ws = v2Start; addDays(ws, WEEK_DAYS) <= today; ws = addDays(ws, WEEK_DAYS)) {
++    if (exists.get(ws)) continue;
++    const weMs = Date.parse(`${addDays(ws, WEEK_DAYS)}T00:00:00.000Z`);
++    let record: LifespanWeek;
++    const base = { weekStart: ws, evaluatedAt: now.toISOString() };
++    if (lastScanMs >= weMs) {
++      const { gainUsd, incomplete } = weekGain(db, ws, WEEK_DAYS);
++      const capitalRaw = getKv(db, `${WEEK_CAPITAL_PREFIX}${ws}`);
++      const capital = capitalRaw === null ? null : Number(capitalRaw);
++      if (incomplete > 0) {
++        record = { ...base, status: "unknown", adjustment: 0, gainUsd: null, capitalUsd: capital, gainPct: null, note: "some entries could not be priced; no change" };
++      } else if (!capital || !(capital > 0)) {
++        record = { ...base, status: "unknown", adjustment: 0, gainUsd, capitalUsd: null, gainPct: null, note: "wallet value at week start unknown; no change" };
++      } else {
++        const gainPct = (gainUsd / capital) * 100;
++        let { status, adjustment } = classifyWeek(gainPct);
++        let note: string | null = null;
++        if (adjustment < 0 && ws < learningEnd) {
++          note = `learning period: ${adjustment} day(s) waived`;
++          adjustment = 0;
++          status = "neutral";
++        }
++        record = { ...base, status, adjustment, gainUsd, capitalUsd: capital, gainPct, note };
++      }
++    } else if (now.getTime() - weMs >= UNKNOWN_AFTER_MS) {
++      record = { ...base, status: "unknown", adjustment: 0, gainUsd: null, capitalUsd: null, gainPct: null, note: "wallet history could not be verified; no change" };
++    } else {
++      break;
++    }
++    insert.run(record.weekStart, record.status, record.adjustment, record.gainUsd, record.capitalUsd, record.gainPct, record.evaluatedAt, record.note);
++    out.push(record);
++  }
++  return out;
++}
++
++export function listLifespanWeeks(db: Database, limit = 8): LifespanWeek[] {
++  ensureSchema(db);
++  const rows = db.prepare("SELECT * FROM shui_lifespan_weeks ORDER BY week_start DESC LIMIT ?").all(limit) as Array<Record<string, unknown>>;
++  return rows.map((r) => ({
++    weekStart: String(r.week_start),
++    status: r.status as DayStatus,
++    adjustment: Number(r.adjustment),
++    gainUsd: r.gain_usd === null ? null : Number(r.gain_usd),
++    capitalUsd: r.capital_usd === null ? null : Number(r.capital_usd),
++    gainPct: r.gain_pct === null ? null : Number(r.gain_pct),
++    evaluatedAt: String(r.evaluated_at),
++    note: (r.note as string | null) ?? null,
++  }));
++}
++
+ /**
+  * Decide whether life has ended. Persists the end so it cannot be undone by
+  * a restart. `verifiedWalletValueUsd` must come from a fresh, complete
+@@ -230,16 +383,34 @@ export function isLifeEnded(db: Database): boolean {
+   return getKv(db, ENDED_KEY) !== null;
+ }
+ 
+-/** One-line summary for SHUI's status block. */
++/** Calm status summary for SHUI's status block. */
+ export function formatLifespanLine(db: Database, now: Date = new Date()): string | null {
+   const status = getLifespanStatus(db, now);
+   if (!status) return null;
+   if (status.ended) return `Lifespan: ENDED (${status.ended.reason}) — ${status.ended.detail ?? ""}`;
+-  const today = getDailyGain(db, utcDay(now));
++  const v2Start = getKv(db, RULES_V2_KEY);
++  if (!v2Start) {
++    const today = getDailyGain(db, utcDay(now));
++    return (
++      `Lifespan: ${status.remainingDays.toFixed(1)} days remaining (ends ${status.endsAt.slice(0, 10)}, ` +
++      `adjustments ${status.adjustmentDays >= 0 ? "+" : ""}${status.adjustmentDays} days)\n` +
++      `Today's verified gain (UTC): $${today.gainUsd.toFixed(2)} = revenue $${today.revenueUsd.toFixed(2)} + realized profit $${today.realizedPnlUsd.toFixed(2)} ` +
++      `(below $${PENALTY_BELOW_USD}: -1 extra day; above $${BONUS_ABOVE_USD}: +1 day)`
++    );
++  }
++  const todayDay = utcDay(now);
++  const ws = currentWeekStart(v2Start, todayDay);
++  const dayOfWeek = Math.floor((Date.parse(`${todayDay}T00:00:00Z`) - Date.parse(`${ws}T00:00:00Z`)) / DAY_MS) + 1;
++  const { gainUsd } = weekGain(db, ws, dayOfWeek);
++  const capitalRaw = getKv(db, `${WEEK_CAPITAL_PREFIX}${ws}`);
++  const capital = capitalRaw === null ? null : Number(capitalRaw);
++  const pct = capital ? ` (${gainUsd >= 0 ? "+" : ""}${((gainUsd / capital) * 100).toFixed(2)}% of the $${capital.toFixed(2)} wallet at week start)` : "";
++  const learningEnd = addDays(v2Start, LEARNING_DAYS);
+   return (
+-    `Lifespan: ${status.remainingDays.toFixed(1)} days remaining (ends ${status.endsAt.slice(0, 10)}, ` +
+-    `adjustments ${status.adjustmentDays >= 0 ? "+" : ""}${status.adjustmentDays} days)\n` +
+-    `Today's verified gain (UTC): $${today.gainUsd.toFixed(2)} = revenue $${today.revenueUsd.toFixed(2)} + realized profit $${today.realizedPnlUsd.toFixed(2)} ` +
+-    `(below $${PENALTY_BELOW_USD}: -1 extra day; above $${BONUS_ABOVE_USD}: +1 day)`
++    `Life: ${status.remainingDays.toFixed(0)} days ahead (until ${status.endsAt.slice(0, 10)}). ` +
++    `This week (day ${dayOfWeek}/7): realized gain $${gainUsd.toFixed(2)}${pct}.\n` +
++    "Weekly review: +2% of capital = +1 day, +5% = +2, +10% = +3; a flat week (-2% to +2%) changes nothing; " +
++    "below -2% = -1 day, below -10% = -2 days. Patience costs nothing: no trade is better than a bad trade." +
++    (todayDay < learningEnd ? ` Learning period until ${learningEnd}: you cannot lose days, only gain them.` : "")
+   );
+ }
+diff --git a/src/survival/risk-guard.ts b/src/survival/risk-guard.ts
+new file mode 100644
+index 0000000..f80428b
+--- /dev/null
++++ b/src/survival/risk-guard.ts
+@@ -0,0 +1,54 @@
++/**
++ * Drawdown circuit breaker: if the verified wallet value falls 15% below its
++ * peak, new buys are paused for 24 h. Sales (stop-losses, take-profits,
++ * exits to USDC/SOL) stay allowed: protecting capital is never blocked.
++ * The peak restarts from the current value when the pause starts, so the
++ * breaker does not fire again immediately afterwards.
++ */
++import type { Database } from "better-sqlite3";
++import { queueSystemNotice } from "../integration/creator-chat.js";
++
++export const MAX_DRAWDOWN_PCT = 15;
++export const PAUSE_MS = 24 * 3_600_000;
++const PEAK_KEY = "risk.peak_value_usd";
++const PAUSE_KEY = "risk.trading_paused_until";
++
++const getKv = (db: Database, key: string) =>
++  (db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
++const setKv = (db: Database, key: string, value: string) =>
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, value);
++
++export function tradingPausedUntil(db: Database, now: Date = new Date()): string | null {
++  const until = getKv(db, PAUSE_KEY);
++  return until && Date.parse(until) > now.getTime() ? until : null;
++}
++
++export function updateDrawdownGuard(
++  db: Database,
++  verifiedWalletValueUsd: number | null,
++  now: Date = new Date(),
++): { peakUsd: number | null; drawdownPct: number | null; triggered: boolean } {
++  if (verifiedWalletValueUsd === null || !(verifiedWalletValueUsd > 0)) {
++    const peak = getKv(db, PEAK_KEY);
++    return { peakUsd: peak ? Number(peak) : null, drawdownPct: null, triggered: false };
++  }
++  const stored = Number(getKv(db, PEAK_KEY) ?? 0);
++  const peak = Math.max(stored, verifiedWalletValueUsd);
++  if (peak !== stored) setKv(db, PEAK_KEY, String(peak));
++  const drawdownPct = ((peak - verifiedWalletValueUsd) / peak) * 100;
++  if (drawdownPct >= MAX_DRAWDOWN_PCT && !tradingPausedUntil(db, now)) {
++    const until = new Date(now.getTime() + PAUSE_MS).toISOString();
++    setKv(db, PAUSE_KEY, until);
++    setKv(db, PEAK_KEY, String(verifiedWalletValueUsd));
++    queueSystemNotice(db, "system:risk",
++      `Circuit breaker: the wallet is ${drawdownPct.toFixed(1)}% below its peak ($${verifiedWalletValueUsd.toFixed(2)} vs $${peak.toFixed(2)}). ` +
++      `New buys are paused until ${until}. Sales and stop-losses still work. Use this time to review trade_stats and your journal.`);
++    return { peakUsd: peak, drawdownPct, triggered: true };
++  }
++  return { peakUsd: peak, drawdownPct, triggered: false };
++}
++
++/** A buy = a swap into anything other than USDC or SOL. */
++export function isBuy(outputMint: string): boolean {
++  return outputMint !== "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" && outputMint !== "So11111111111111111111111111111111111111112";
++}

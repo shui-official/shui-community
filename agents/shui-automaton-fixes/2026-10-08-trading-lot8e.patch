@@ -1,0 +1,204 @@
+diff --git a/src/__tests__/lot8e-sol-reserve.test.ts b/src/__tests__/lot8e-sol-reserve.test.ts
+new file mode 100644
+index 0000000..0d5e8d8
+--- /dev/null
++++ b/src/__tests__/lot8e-sol-reserve.test.ts
+@@ -0,0 +1,45 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { minSolLamportsFor } from "../solana/swap-engine.js";
++import { checkSolReserve } from "../solana/sol-reserve.js";
++import { listOutgoingCreatorMessages } from "../integration/creator-chat.js";
++import { tradingFocusPrompt } from "../solana/trading-desk.js";
++
++const SOL = "So11111111111111111111111111111111111111112";
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot8e-")), "s.db")).raw;
++
++describe("SOL needed per swap", () => {
++  it("lets stops sell with 0.00987 SOL, allows a refill, and keeps buys above the reserve", () => {
++    const held = 9_869_297n; // the wallet on 08/10
++    expect(held >= minSolLamportsFor(ORCA, USDC)).toBe(true); // stop-loss / take-profit
++    expect(held >= minSolLamportsFor(USDC, SOL)).toBe(true); // refill
++    expect(held >= minSolLamportsFor(USDC, ORCA)).toBe(false); // new buy
++    expect(minSolLamportsFor(USDC, ORCA)).toBe(12_500_000n);
++    expect(minSolLamportsFor(SOL, USDC)).toBe(10_000_000n); // selling SOL itself keeps the reserve
++  });
++});
++
++describe("low SOL notice", () => {
++  it("tells SHUI to refill once a day, and asks the creator when even a refill is impossible", () => {
++    const db = freshDb();
++    const now = new Date("2026-10-08T21:00:00Z");
++    expect(checkSolReserve(db, 12_000_000n, now)).toBe("ok");
++    expect(checkSolReserve(db, 9_869_297n, now)).toBe("refill");
++    expect(checkSolReserve(db, 9_869_297n, now)).toBe("already");
++    const notice = db.prepare("SELECT content FROM inbox_messages WHERE from_address = 'system:wallet'").get() as { content: string };
++    expect(notice.content).toMatch(/jupiter_swap inputMint=EPjF.* outputMint=So111.* amountUsd=2/);
++    expect(checkSolReserve(freshDb(), 1_000_000n, now)).toBe("creator");
++    const db2 = freshDb();
++    checkSolReserve(db2, 1_000_000n, now);
++    expect(listOutgoingCreatorMessages(db2).at(-1)!.content).toMatch(/send ~0.03 SOL/);
++  });
++
++  it("tells SHUI that paper losses never stop real trading", () => {
++    expect(tradingFocusPrompt({})).toMatch(/PAPER losses never stop real trading/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 445cbc7..9662235 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -104,6 +104,7 @@ import { UnifiedInferenceClient } from "../inference/inference-client.js";
+ import { isIdleOnlyTool } from "./idle-only-tools.js";
+ import { formatCreatorChatMessage, hasPendingCreatorMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
+ import { checkGpuCap } from "../integration/runpod.js";
++import { checkSolReserve } from "../solana/sol-reserve.js";
+ import { isTradingFocus } from "../solana/trading-desk.js";
+ 
+ const logger = createLogger("loop");
+@@ -1731,6 +1732,7 @@ async function getFinancialState(
+       if (db && solPriceUsd) {
+         try {
+           initUntrackedSolBasisOnce(db.raw, BigInt(Math.round(balances.sol * 1e9)), solPriceUsd);
++          checkSolReserve(db.raw, BigInt(Math.round(balances.sol * 1e9)));
+         } catch {
+           // basis init is best-effort
+         }
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index 2aae136..7ffefb8 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -203,8 +203,8 @@ export function createJupiterSwapTool(): AutomatonTool {
+     name: "jupiter_swap",
+     description:
+       "Swap tokens through Jupiter, which compares all Solana DEXes (Raydium, Orca, Meteora…) for the best price and supports " +
+-      "almost every SPL token. Same rules as raydium_swap: exact input, amount in raw units, 0.01 SOL always kept for fees and " +
+-      "token-account rent, dryRun=true to simulate without signing. Check priceImpactPct in the result: above 1% the pool is " +
++      "almost every SPL token. Same rules as raydium_swap: exact input, amount in raw units, same SOL needs (buys 0.0125 SOL, sales into USDC 0.002, " +
++      "USDC -> SOL refill 0.003), dryRun=true to simulate without signing. Check priceImpactPct in the result: above 1% the pool is " +
+       "too thin for that size. Liquid staking also works through it: SOL -> jitoSOL (J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn) " +
+       "or mSOL (mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So) earns about 7%/year, swap back anytime.",
+     category: "financial",
+diff --git a/src/solana/sol-reserve.ts b/src/solana/sol-reserve.ts
+new file mode 100644
+index 0000000..6ba87b8
+--- /dev/null
++++ b/src/solana/sol-reserve.ts
+@@ -0,0 +1,32 @@
++/**
++ * Lot 8e: when SOL falls under the 0.01 reserve, SHUI is told once a day how
++ * to refill it from its USDC (sales and stops keep working meanwhile), and the
++ * creator is told when the SOL is too low even for that.
++ */
++import type { Database } from "better-sqlite3";
++import { queueSystemNotice, saveOutgoingCreatorMessage } from "../integration/creator-chat.js";
++import { NATIVE_SOL_MINT, SOL_FEE_RESERVE_LAMPORTS } from "./trading.js";
++
++const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const ALERT_KEY = "sol_reserve.alert_day";
++/** Below this, even the refill swap cannot pay its temporary account. */
++export const SOL_REFILL_MIN_LAMPORTS = 3_000_000n;
++
++export function checkSolReserve(db: Database, solLamports: bigint, now: Date = new Date()): "ok" | "refill" | "creator" | "already" {
++  if (solLamports >= SOL_FEE_RESERVE_LAMPORTS) return "ok";
++  const day = now.toISOString().slice(0, 10);
++  const last = (db.prepare("SELECT value FROM kv WHERE key = ?").get(ALERT_KEY) as { value: string } | undefined)?.value;
++  if (last === day) return "already";
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(ALERT_KEY, day);
++  const sol = (Number(solLamports) / 1e9).toFixed(6);
++  if (solLamports >= SOL_REFILL_MIN_LAMPORTS) {
++    queueSystemNotice(db, "system:wallet",
++      `SOL low: ${sol} SOL < 0.01 reserve. New buys are blocked; sales and stops still work. ` +
++      `Refill now: jupiter_swap inputMint=${USDC_MINT} outputMint=${NATIVE_SOL_MINT} amountUsd=2.`, now);
++    return "refill";
++  }
++  saveOutgoingCreatorMessage(db,
++    `My SOL is ${sol} SOL: too low even to swap USDC into SOL. Please send ~0.03 SOL to my wallet so my stops can execute.`, now);
++  queueSystemNotice(db, "system:wallet", `SOL critically low (${sol} SOL): your creator was asked to send SOL.`, now);
++  return "creator";
++}
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+index 731b977..874ce28 100644
+--- a/src/solana/swap-engine.ts
++++ b/src/solana/swap-engine.ts
+@@ -22,6 +22,21 @@ import { jupiterPrices } from "./orders.js";
+ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+ const JITOSOL = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+ 
++/**
++ * Lot 8e: SOL needed before a swap. With 0.00987 SOL every stop-loss was
++ * refused by the 0.01 SOL reserve, leaving real positions unprotected.
++ *   - sale into USDC (stops, take-profits): 0.002 SOL (fees are ~0.00001);
++ *   - into SOL (refill): 0.003 SOL (temporary wrapped-SOL account);
++ *   - buy of any other token: 0.0125 SOL, so the 0.01 reserve survives the
++ *     ~0.002 SOL rent of a new token account.
++ */
++export function minSolLamportsFor(inputMint: string, outputMint: string): bigint {
++  if (outputMint === USDC_MINT && inputMint !== NATIVE_SOL_MINT) return 2_000_000n;
++  if (outputMint === NATIVE_SOL_MINT) return 3_000_000n;
++  if (outputMint === USDC_MINT) return SOL_FEE_RESERVE_LAMPORTS;
++  return 12_500_000n;
++}
++
+ export interface SwapExpectation {
+   inputMint: string;
+   outputMint: string;
+@@ -121,17 +136,21 @@ export async function runSwap(
+   const solLamports = BigInt((await service.getSolBalance()).lamports);
+   let buyUsdForImpact: number | null = null;
+   let availableRaw: bigint;
++  const minSol = minSolLamportsFor(inputMint, outputMint);
+   if (inputMint === NATIVE_SOL_MINT) {
+-    availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS ? solLamports - SOL_FEE_RESERVE_LAMPORTS : 0n;
++    availableRaw = solLamports > minSol ? solLamports - minSol : 0n;
+   } else {
+-    if (solLamports < SOL_FEE_RESERVE_LAMPORTS) {
++    if (solLamports < minSol) {
+       return JSON.stringify({
+         success: false,
+         blocked: true,
+         reason: "INSUFFICIENT_SOL_FOR_FEES",
+-        requiredLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++        requiredLamports: minSol.toString(),
+         availableLamports: solLamports.toString(),
+-        message: "Not enough SOL to pay network fees and token-account rent.",
++        message: solLamports >= 3_000_000n
++          ? "Not enough SOL to keep the 0.01 SOL reserve after this buy. Refill first: jupiter_swap " +
++            `inputMint=${USDC_MINT} outputMint=${NATIVE_SOL_MINT} amountUsd=2. Sales and stops still work.`
++          : "Not enough SOL to pay network fees. Your creator must send SOL to the wallet.",
+       });
+     }
+     availableRaw = (await service.getTokenBalances())
+diff --git a/src/solana/swap-tool.ts b/src/solana/swap-tool.ts
+index a8d3341..506571f 100644
+--- a/src/solana/swap-tool.ts
++++ b/src/solana/swap-tool.ts
+@@ -34,8 +34,8 @@ export function createRaydiumSwapTool(): AutomatonTool {
+       "Mints are token addresses; SOL is So11111111111111111111111111111111111111112, USDC is EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v. " +
+       "amount is raw units (amount x 10^decimals; SOL has 9 decimals, USDC 6). " +
+       "Costs in SOL: a network fee per transaction (~0.000005 SOL plus priority fee) and ~0.00204 SOL rent the first time the wallet " +
+-      "receives a token it never held (new token account, refundable when closed). 0.01 SOL is always kept for these costs, so a " +
+-      "SOL input can use the balance minus 0.01 SOL, and any swap needs at least 0.01 SOL in the wallet. " +
++      "receives a token it never held (new token account, refundable when closed). SOL needed: buys of a token 0.0125 SOL " +
++      "(the 0.01 reserve survives the rent); sales into USDC (stops) 0.002 SOL; USDC -> SOL refill 0.003 SOL. " +
+       "Swapping SOL or USDC back and forth is not profit; realized profit is selling a token for more USDC than it cost. " +
+       "Use dryRun=true to validate and simulate the exact transaction without signing or sending it.",
+     category: "financial",
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 3722444..22aa81e 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -63,6 +63,8 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ 7. When an order executes or a paper position closes you get an inbox notice: only then write journal_add kind=lesson.
+ Orders, stops and paper trades run in code: never sleep "to wait for results". Sleep is capped by code at 2 h (1 h with a position).
+ Amounts: SOL has 9 decimals (1 SOL = 1,000,000,000 lamports), USDC 6. Read positions before claiming what you hold.
++PAPER losses never stop real trading: only a STOP line in trade_stats (2 real losing trades today) does.
++Keep at least 0.0125 SOL: below 0.01 SOL refill with jupiter_swap USDC -> SOL amountUsd=2 (sales and stops still work).
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).

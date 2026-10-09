@@ -1,0 +1,449 @@
+diff --git a/src/__tests__/dashboard-bridge.test.ts b/src/__tests__/dashboard-bridge.test.ts
+new file mode 100644
+index 0000000..c8d4e88
+--- /dev/null
++++ b/src/__tests__/dashboard-bridge.test.ts
+@@ -0,0 +1,60 @@
++import Database from "better-sqlite3";
++import { describe, expect, it } from "vitest";
++import {
++  backfillMemory, backfillTrades, emitDecision, emitMemoryFact, emitWallet, memoryCard, tradeFromSwapResult,
++} from "../integration/dashboard-bridge.js";
++
++const recorder = () => {
++  const events: any[] = [];
++  return { events, client: { emit: (e: any) => { events.push(e); return true; }, flush: async () => {}, close: async () => {} } as any };
++};
++
++describe("dashboard bridge", () => {
++  it("sends facts as memory_write with stable ids and Control Center cards", () => {
++    const { events, client } = recorder();
++    emitMemoryFact(client, { category: "financial", key: "initial_balance_usdc", value: "24.379481" });
++    expect(events[0]).toMatchObject({
++      type: "memory_write",
++      data: { id: "fact:financial:initial_balance_usdc", category: "financial", kind: "fact" },
++    });
++    expect(events[0].data.content).toContain("24.379481");
++    expect(memoryCard("domain")).toBe("market");
++    expect(memoryCard("agent")).toBe("operational");
++  });
++
++  it("backfills stored facts, procedures and ledger swaps", () => {
++    const db = new Database(":memory:");
++    db.exec(`CREATE TABLE semantic_memory (id TEXT, category TEXT, key TEXT, value TEXT, confidence REAL, source TEXT, created_at TEXT);
++      CREATE TABLE procedural_memory (id TEXT, name TEXT, description TEXT, steps TEXT, created_at TEXT);
++      CREATE TABLE shui_ledger (signature TEXT, ts TEXT, kind TEXT, input_mint TEXT, input_amount_raw TEXT, output_mint TEXT, output_amount_raw TEXT, realized_pnl_usd REAL);
++      INSERT INTO semantic_memory VALUES ('1','agent','primary_wallet_address','Bq..',1,'x','t');
++      INSERT INTO procedural_memory VALUES ('p','quote_check','read a quote','1. web_fetch','t');
++      INSERT INTO shui_ledger VALUES ('SIG','t','swap','SOL',' 1','USDC','2',0.5);
++      INSERT INTO shui_ledger VALUES ('IN','t','incoming',NULL,NULL,'USDC','3',0);`);
++    const { events, client } = recorder();
++    expect(backfillMemory(client, db)).toBe(2);
++    expect(backfillTrades(client, db)).toBe(1);
++    expect(events.map((e) => e.type)).toEqual(["memory_write", "memory_write", "trade_result"]);
++    expect(events[2].data).toMatchObject({ id: "SIG", status: "confirmed", pnl: 0.5 });
++  });
++
++  it("maps swap results to trades, including blocked and simulated swaps", () => {
++    const args = { inputMint: "SOL", outputMint: "USDC", amount: "100" };
++    expect(tradeFromSwapResult(args, JSON.stringify({ success: true, signature: "S1", inputMint: "SOL", outputMint: "USDC", inputAmount: "100", quotedOutputAmount: "12", journal: { realizedPnlUsd: 0 } }), undefined))
++      .toMatchObject({ id: "S1", status: "confirmed", amountOut: "12", pnl: 0 });
++    expect(tradeFromSwapResult(args, JSON.stringify({ blocked: true, reason: "INSUFFICIENT_CONFIRMED_ONCHAIN_BALANCE" }), undefined))
++      .toMatchObject({ status: "blocked", result: "INSUFFICIENT_CONFIRMED_ONCHAIN_BALANCE" });
++    expect(tradeFromSwapResult(args, JSON.stringify({ dryRun: true, wouldSucceed: true, networkFeeLamports: 6001 }), undefined))
++      .toMatchObject({ status: "simulated", fees: "6001 lamports" });
++    expect(tradeFromSwapResult(args, "", "rpc down")).toMatchObject({ status: "failed", result: "rpc down" });
++  });
++
++  it("sends wallet snapshots with public data only and decisions with their rationale", () => {
++    const { events, client } = recorder();
++    emitWallet(client, { address: "Bq", sol: 0.097, usdc: 24.38, tokens: [], estimatedValueUsd: 36.1, valuedAt: "2026-10-06T12:00:00Z" });
++    emitDecision(client, { id: "call-1", tool: "create_goal", args: { title: "Sell a price API" }, rationale: "Need revenue", result: 'Goal created: "x" (id: 01M48G9YYPMVDZZQA0PZ4G9VM7, status: active)' });
++    expect(events[0]).toMatchObject({ type: "wallet", data: { address: "Bq", usdc: 24.38, estimatedValueUsd: 36.1 } });
++    expect(JSON.stringify(events[0])).not.toMatch(/secret|private/i);
++    expect(events[1]).toMatchObject({ type: "decision", data: { summary: "New goal: Sell a price API", rationale: "Need revenue", goalId: "01M48G9YYPMVDZZQA0PZ4G9VM7" } });
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 0ce5db5..ccdc450 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -1,3 +1,14 @@
++import {
++  backfillMemory,
++  backfillTrades,
++  DECISION_TOOLS,
++  emitDecision,
++  emitMemoryFact,
++  emitProcedure,
++  emitWallet,
++  tradeFromSwapResult,
++  type WalletSnapshot,
++} from "../integration/dashboard-bridge.js";
+ /**
+  * The Agent Loop
+  *
+@@ -103,6 +114,10 @@ let backgroundTickInFlight = false;
+ 
+ const LIFESPAN_TICK_INTERVAL_MS = 10 * 60_000;
+ const DELEGATED_WORK_SLEEP_MS = 5 * 60_000;
++/** Last verified central-wallet read, mirrored to the Control Center. */
++let lastWalletSnapshot: WalletSnapshot | null = null;
++/** Stored facts, procedures and ledger swaps are sent once per process. */
++let dashboardBackfilled = false;
+ const IDLE_SLEEP_MS = 5 * 60_000;
+ 
+ /**
+@@ -601,6 +616,13 @@ export async function runAgentLoop(
+     },
+   });
+ 
++  if (!dashboardBackfilled) {
++    dashboardBackfilled = true;
++    backfillMemory(shuiControl, db.raw);
++    backfillTrades(shuiControl, db.raw);
++  }
++  if (lastWalletSnapshot) emitWallet(shuiControl, lastWalletSnapshot);
++
+   {
+     const lifespanStatus = getLifespanStatus(db.raw);
+     if (lifespanStatus) {
+@@ -696,6 +718,7 @@ export async function runAgentLoop(
+           config.chainType || identity.chainType || "evm",
+           identity.chainIdentity,
+         );
++      if (lastWalletSnapshot) emitWallet(shuiControl, lastWalletSnapshot);
+ 
+       // Central wallet is the authoritative economic survival signal.
+       // Only a fresh, complete valuation confirming exactly $0 can mark SHUI dead.
+@@ -1229,6 +1252,7 @@ export async function runAgentLoop(
+               error: result.error ?? undefined,
+             },
+           });
++          mirrorToolToDashboard(shuiControl, tc.function.name, args, result, response.message.content || "");
+ 
+           log(
+             config,
+@@ -1588,6 +1612,14 @@ async function getFinancialState(
+ 
+       walletValueUsd = valuation.knownValueUsd;
+       walletValueComplete = valuation.complete;
++      lastWalletSnapshot = {
++        address: tradingService.address,
++        sol: balances.sol,
++        usdc: balances.usdc,
++        tokens: balances.tokens.map((t) => ({ mint: t.mint, amount: t.amount })),
++        estimatedValueUsd: valuation.knownValueUsd,
++        valuedAt: valuation.valuedAt,
++      };
+       walletValuedAt = valuation.valuedAt;
+       walletValuationFresh = true;
+ 
+@@ -1668,3 +1700,52 @@ function hasTable(db: AutomatonDatabase["raw"], tableName: string): boolean {
+     return false;
+   }
+ }
++
++/** Mirror memory writes, swaps and strategic decisions to the Control Center. */
++function mirrorToolToDashboard(
++  client: ReturnType<typeof createShuiEventClient>,
++  name: string,
++  args: Record<string, unknown>,
++  result: { id: string; result: string; error?: string },
++  thinking: string,
++): void {
++  try {
++    if (name === "remember_fact" && !result.error && args.category && args.key) {
++      emitMemoryFact(client, {
++        category: String(args.category),
++        key: String(args.key),
++        value: String(args.value ?? ""),
++        confidence: typeof args.confidence === "number" ? args.confidence : null,
++        source: typeof args.source === "string" ? args.source : null,
++      });
++    }
++    if (name === "save_procedure" && !result.error && args.name) {
++      emitProcedure(client, {
++        name: String(args.name),
++        description: String(args.description ?? ""),
++        steps: typeof args.steps === "string" ? args.steps : JSON.stringify(args.steps ?? ""),
++      });
++    }
++    if (name === "raydium_swap") {
++      const trade = tradeFromSwapResult(args, result.result, result.error);
++      client.emit({
++        type: trade.status === "confirmed" ? "trade_result" : "trade",
++        name,
++        message: `Swap ${String(trade.status)}`,
++        data: trade,
++      });
++    }
++    if (DECISION_TOOLS.has(name)) {
++      emitDecision(client, {
++        id: result.id || `${name}_${Date.now()}`,
++        tool: name,
++        args,
++        rationale: thinking,
++        result: result.result,
++        error: result.error ?? null,
++      });
++    }
++  } catch {
++    // The dashboard is optional: never let telemetry break the agent loop.
++  }
++}
+diff --git a/src/integration/dashboard-bridge.ts b/src/integration/dashboard-bridge.ts
+new file mode 100644
+index 0000000..da82843
+--- /dev/null
++++ b/src/integration/dashboard-bridge.ts
+@@ -0,0 +1,249 @@
++/**
++ * Bridge from SHUI's own state to the SHUI Control Center pages.
++ *
++ * The Control Center only shows what SHUI sends as typed telemetry events
++ * (memory_write, wallet, trade, decision). SHUI used to send only wake /
++ * think / tool events, so the Memory, Wallet, Trading and Strategy pages
++ * stayed empty. Field names follow the Control Center aggregator
++ * (projectMemory, projectWallet, projectTrade, projectDecision).
++ * Public data only: never a private key, never wallet.json.
++ */
++import type { Database } from "better-sqlite3";
++import type { ShuiEventClient } from "./automaton-event-client.js";
++
++/** SHUI semantic-memory category -> Control Center card. */
++const CATEGORY_TO_CARD: Record<string, string> = {
++  financial: "financial",
++  domain: "market",
++  environment: "technical",
++  agent: "operational",
++  self: "operational",
++  procedural_ref: "operational",
++  creator: "social",
++};
++
++export function memoryCard(category: string): string {
++  return CATEGORY_TO_CARD[category] ?? "operational";
++}
++
++export function emitMemoryFact(
++  client: ShuiEventClient,
++  fact: { category: string; key: string; value: string; confidence?: number | null; source?: string | null },
++): void {
++  client.emit({
++    type: "memory_write",
++    name: "remember_fact",
++    message: `${fact.key}: ${fact.value}`,
++    data: {
++      id: `fact:${fact.category}:${fact.key}`,
++      category: memoryCard(fact.category),
++      kind: "fact",
++      content: `[${fact.category}] ${fact.key}: ${fact.value}`,
++      source: fact.source ?? "shui",
++      confidence: fact.confidence ?? undefined,
++    },
++  });
++}
++
++export function emitProcedure(
++  client: ShuiEventClient,
++  procedure: { name: string; description: string; steps?: string | null },
++): void {
++  client.emit({
++    type: "memory_write",
++    name: "save_procedure",
++    message: procedure.name,
++    data: {
++      id: `procedure:${procedure.name}`,
++      category: "operational",
++      kind: "procedure",
++      content: `${procedure.name}: ${procedure.description}${procedure.steps ? `\n${procedure.steps}` : ""}`,
++      source: "shui",
++    },
++  });
++}
++
++/** Send every stored fact and procedure once (stable ids: no duplicates). */
++export function backfillMemory(client: ShuiEventClient, db: Database): number {
++  let sent = 0;
++  try {
++    const facts = db.prepare(
++      "SELECT category, key, value, confidence, source FROM semantic_memory ORDER BY created_at",
++    ).all() as Array<{ category: string; key: string; value: string; confidence: number; source: string }>;
++    for (const fact of facts) {
++      emitMemoryFact(client, fact);
++      sent += 1;
++    }
++  } catch {
++    // table missing: nothing to send
++  }
++  try {
++    const procedures = db.prepare(
++      "SELECT name, description, steps FROM procedural_memory ORDER BY created_at",
++    ).all() as Array<{ name: string; description: string; steps: string }>;
++    for (const procedure of procedures) {
++      emitProcedure(client, procedure);
++      sent += 1;
++    }
++  } catch {
++    // table missing: nothing to send
++  }
++  return sent;
++}
++
++export interface WalletSnapshot {
++  address: string;
++  sol: number;
++  usdc: number;
++  tokens: Array<{ mint: string; amount: number }>;
++  estimatedValueUsd: number | null;
++  valuedAt: string;
++}
++
++export function emitWallet(client: ShuiEventClient, snapshot: WalletSnapshot): void {
++  client.emit({
++    type: "wallet",
++    name: "central_wallet",
++    message: "Central wallet snapshot",
++    data: {
++      id: `wallet_${snapshot.valuedAt}`,
++      address: snapshot.address,
++      network: "solana:mainnet",
++      sol: snapshot.sol,
++      usdc: snapshot.usdc,
++      tokens: snapshot.tokens.map((t) => ({ mint: t.mint, amount: t.amount })),
++      estimatedValueUsd: snapshot.estimatedValueUsd ?? undefined,
++    },
++  });
++}
++
++/** Map a raydium_swap tool result to a Control Center trade (incl. blocked and dry runs). */
++export function tradeFromSwapResult(
++  args: Record<string, unknown>,
++  resultText: string,
++  error: string | undefined,
++  at: Date = new Date(),
++): Record<string, unknown> {
++  let parsed: Record<string, unknown> = {};
++  try {
++    parsed = JSON.parse(resultText) as Record<string, unknown>;
++  } catch {
++    parsed = {};
++  }
++  const status = error
++    ? "failed"
++    : parsed.dryRun === true
++      ? (parsed.wouldSucceed ? "simulated" : "simulation_failed")
++      : parsed.blocked === true
++        ? "blocked"
++        : parsed.success === true
++          ? "confirmed"
++          : "unknown";
++  const journal = (parsed.journal ?? {}) as Record<string, unknown>;
++  const signature = typeof parsed.signature === "string" ? parsed.signature : undefined;
++  return {
++    id: signature ?? `swap_${status}_${at.getTime()}`,
++    tokenIn: parsed.inputMint ?? args.inputMint,
++    tokenOut: parsed.outputMint ?? args.outputMint,
++    amountIn: parsed.inputAmount ?? args.amount,
++    amountOut: parsed.quotedOutputAmount ?? undefined,
++    slippage: parsed.slippageBps ?? args.slippageBps,
++    signature,
++    status,
++    result: error ?? (typeof parsed.reason === "string" ? parsed.reason : typeof parsed.error === "string" ? parsed.error : status),
++    pnl: typeof journal.realizedPnlUsd === "number" ? journal.realizedPnlUsd : undefined,
++    fees: typeof parsed.networkFeeLamports === "number" ? `${parsed.networkFeeLamports} lamports` : undefined,
++    route: "raydium",
++  };
++}
++
++/** Send the confirmed swaps already recorded in the ledger (ids = signatures). */
++export function backfillTrades(client: ShuiEventClient, db: Database): number {
++  try {
++    const rows = db.prepare(
++      `SELECT signature, ts, input_mint, input_amount_raw, output_mint, output_amount_raw, realized_pnl_usd
++       FROM shui_ledger WHERE kind = 'swap' ORDER BY ts`,
++    ).all() as Array<Record<string, unknown>>;
++    for (const row of rows) {
++      client.emit({
++        type: "trade_result",
++        name: "raydium_swap",
++        message: "Confirmed swap (ledger)",
++        data: {
++          id: row.signature,
++          signature: row.signature,
++          tokenIn: row.input_mint,
++          tokenOut: row.output_mint,
++          amountIn: row.input_amount_raw,
++          amountOut: row.output_amount_raw,
++          status: "confirmed",
++          pnl: row.realized_pnl_usd,
++          route: "raydium",
++        },
++      });
++    }
++    return rows.length;
++  } catch {
++    return 0;
++  }
++}
++
++/** Tools whose call is a strategic decision worth showing on the Strategy page. */
++export const DECISION_TOOLS = new Set([
++  "create_goal",
++  "cancel_goal",
++  "raydium_swap",
++  "solana_transfer",
++  "service_deploy",
++  "service_stop",
++  "payment_request",
++]);
++
++function describeDecision(tool: string, args: Record<string, unknown>): string {
++  switch (tool) {
++    case "create_goal":
++      return `New goal: ${String(args.title ?? "").slice(0, 200)}`;
++    case "cancel_goal":
++      return `Cancel goal: ${String(args.goal_id ?? args.goalId ?? args.title ?? "")}`;
++    case "raydium_swap":
++      return `${args.dryRun === true ? "Simulate" : "Swap"} ${String(args.amount ?? "")} ${String(args.inputMint ?? "").slice(0, 8)}… -> ${String(args.outputMint ?? "").slice(0, 8)}…`;
++    case "solana_transfer":
++      return `Transfer ${String(args.amount ?? "")} to ${String(args.to ?? args.recipient ?? "").slice(0, 12)}…`;
++    case "service_deploy":
++      return `Publish service ${String(args.name ?? "")} (port ${String(args.port ?? "")})`;
++    case "service_stop":
++      return `Stop service ${String(args.name ?? "")}`;
++    case "payment_request":
++      return `Request payment of ${String(args.amountUsdc ?? "")} USDC (${String(args.label ?? "")})`;
++    default:
++      return tool;
++  }
++}
++
++export function emitDecision(
++  client: ShuiEventClient,
++  params: {
++    id: string;
++    tool: string;
++    args: Record<string, unknown>;
++    rationale?: string | null;
++    result?: string | null;
++    error?: string | null;
++    goalId?: string | null;
++  },
++): void {
++  const goalFromResult = params.result?.match(/\(id: ([0-9A-Z]{26})/)?.[1];
++  client.emit({
++    type: "decision",
++    name: params.tool,
++    message: describeDecision(params.tool, params.args),
++    data: {
++      id: `dec_${params.id}`,
++      summary: describeDecision(params.tool, params.args),
++      action: params.tool,
++      rationale: params.rationale?.trim() ? params.rationale.trim().slice(0, 4000) : undefined,
++      result: (params.error ? `error: ${params.error}` : params.result ?? "").slice(0, 500) || undefined,
++      goalId: params.goalId ?? goalFromResult ?? undefined,
++    },
++  });
++}

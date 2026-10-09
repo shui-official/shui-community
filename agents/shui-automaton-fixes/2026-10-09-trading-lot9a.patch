@@ -1,0 +1,457 @@
+diff --git a/src/__tests__/lot8f-truth.test.ts b/src/__tests__/lot8f-truth.test.ts
+index 22088d2..97dd1cd 100644
+--- a/src/__tests__/lot8f-truth.test.ts
++++ b/src/__tests__/lot8f-truth.test.ts
+@@ -33,7 +33,7 @@ describe("the code's answer on buys", () => {
+     expect(buyStatus(db, now).line).toMatch(/BUYS ALLOWED now .* 0\/2/);
+     expect(falseStopClaim(db, "note", NIGHT_NOTE, now)).toMatch(/^Blocked: this reason is false\. BUYS ALLOWED/);
+     expect(falseStopClaim(db, "note", "skip: stop inside normal 4h noise, R/R too low", now)).toBeNull();
+-    expect(falseStopClaim(db, "lesson", "After 2 losing trades I stopped, which was right", now)).toBeNull();
++    expect(falseStopClaim(db, "lesson", "RSI was overbought, the stop was too tight", now)).toBeNull();
+   });
+ 
+   it("accepts the reason when the code really blocks buys", () => {
+diff --git a/src/__tests__/lot9a-reliability.test.ts b/src/__tests__/lot9a-reliability.test.ts
+new file mode 100644
+index 0000000..ab7631e
+--- /dev/null
++++ b/src/__tests__/lot9a-reliability.test.ts
+@@ -0,0 +1,105 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { isStale, quarantineStaleMemoriesOnce, scrubStale } from "../memory/stale.js";
++import { formatMemoryBlock } from "../agent/context.js";
++import { addJournalEntry, recentJournal } from "../solana/trading-desk.js";
++import { falseStopClaim } from "../solana/decisions.js";
++import { protectionGuard, saveOrder, type Order } from "../solana/orders.js";
++import { PENDING_TX_KEY } from "../solana/pending-tx.js";
++import { alertModelOutage, clearModelOutage, isInferenceOutage, releaseClaimWithoutRetry } from "../agent/loop.js";
++import { listOutgoingCreatorMessages } from "../integration/creator-chat.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot9a-")), "s.db"));
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const NIGHT = "skip: After 2 losing trades today, I must stop trading today. New buys are blocked until 00:00 UTC.";
++const LOOP = "I need to actually execute a trading task rather than just creating files and checking status repeatedly.";
++
++describe("stale beliefs", () => {
++  it("recognises the false beliefs and scrubs only their sentences", () => {
++    for (const t of [NIGHT, LOOP, "I hold 529,000 SOL worth $6,150", "Opened a position in CnrMgN today"]) expect(isStale(t), t).toBe(true);
++    expect(isStale("skip: RSI overbought on 4h")).toBe(false);
++    expect(scrubStale(`${LOOP} ORCA has a valid setup with R/R 3.8.`)).toBe("ORCA has a valid setup with R/R 3.8.");
++  });
++
++  it("quarantines stale memories and journal notes once, keeping a copy", () => {
++    const db = freshDb();
++    db.raw.prepare("INSERT INTO working_memory (id, session_id, content, content_type) VALUES ('w1','s',?, 'note'), ('w2','s','Watch ORCA 4h trend','note')").run(NIGHT);
++    db.raw.prepare("INSERT INTO episodic_memory (id, session_id, event_type, summary) VALUES ('e1','s','note','I hold 529,000 SOL')").run();
++    addJournalEntry(db.raw, { kind: "note", text: NIGHT });
++    addJournalEntry(db.raw, { kind: "note", text: "skip: stop inside 4h noise" });
++    expect(quarantineStaleMemoriesOnce(db.raw)).toBe(3);
++    expect(quarantineStaleMemoriesOnce(db.raw)).toBe(0);
++    expect((db.raw.prepare("SELECT id FROM working_memory").all() as any[]).map((r) => r.id)).toEqual(["w2"]);
++    expect((db.raw.prepare("SELECT COUNT(*) c FROM memory_quarantine").get() as any).c).toBe(3);
++    expect(recentJournal(db.raw).map((j) => j.text)).toEqual(["skip: stop inside 4h noise"]);
++  });
++
++  it("keeps stale lines out of the memory block and the journal shown to SHUI", () => {
++    const block = formatMemoryBlock({
++      workingMemory: [
++        { id: "a", sessionId: "s", content: NIGHT, contentType: "note", priority: 0.9 } as any,
++        { id: "b", sessionId: "s", content: "Watch JUP", contentType: "note", priority: 0.5 } as any,
++      ],
++      episodicMemory: [], semanticMemory: [], proceduralMemory: [], relationships: [], totalTokens: 10,
++    });
++    expect(block).toMatch(/Watch JUP/);
++    expect(block).not.toMatch(/losing trades/);
++    const db = freshDb();
++    addJournalEntry(db.raw, { kind: "lesson", text: NIGHT });
++    expect(recentJournal(db.raw)).toHaveLength(0);
++  });
++
++  it("refuses a false loss-streak rule written as a lesson too", () => {
++    const db = freshDb();
++    expect(falseStopClaim(db.raw, "lesson", NIGHT)).toMatch(/^Blocked: this reason is false/);
++  });
++});
++
++describe("protection guard", () => {
++  const order = (over: Partial<Order>): Order => ({
++    id: "oco_a_stop", group: "oco_a", kind: "stop_loss", condition: "below", triggerPriceUsd: 2.4, inputMint: ORCA,
++    outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: "all", watchMint: ORCA, slippageBps: 100, venue: "jupiter",
++    note: "t", createdAt: new Date().toISOString(), expiresAt: null, status: "open", attempts: 0, updatedAt: new Date().toISOString(), ...over,
++  } as Order);
++
++  it("refuses with 0 on-chain, a pending swap, or an existing protection", async () => {
++    const db = freshDb();
++    expect(await protectionGuard({ db }, ORCA, async () => 0n)).toMatch(/hold 0 of this token/);
++    expect(await protectionGuard({ db }, ORCA, async () => 2_669_362n)).toBeNull();
++    expect(await protectionGuard({ db }, ORCA, async () => { throw new Error("rpc"); })).toBeNull();
++    db.setKV(PENDING_TX_KEY, JSON.stringify({ signature: "Gch6", at: new Date().toISOString() }));
++    expect(await protectionGuard({ db }, ORCA, async () => 1n)).toMatch(/still unconfirmed/);
++    db.deleteKV(PENDING_TX_KEY);
++    saveOrder(db.raw, order({}));
++    expect(await protectionGuard({ db }, ORCA, async () => 1n)).toMatch(/already protected \(oco_a_stop/);
++    saveOrder(db.raw, order({ status: "filled" }));
++    expect(await protectionGuard({ db }, ORCA, async () => 1n)).toBeNull();
++  });
++});
++
++describe("model outages", () => {
++  it("recognises outages and gives the messages back without spending a retry", () => {
++    expect(isInferenceOutage(new Error("fetch failed"))).toBe(true);
++    expect(isInferenceOutage(new Error("Inference error (ollama): 502: <!DOCTYPE html>"))).toBe(true);
++    expect(isInferenceOutage(new Error("Circuit breaker is open until 2026-10-08T22:25:09Z"))).toBe(true);
++    expect(isInferenceOutage(new Error("Cannot read properties of undefined"))).toBe(false);
++    const db = freshDb();
++    db.raw.prepare("INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status, retry_count) VALUES ('m','system:orders','shui','Order EXECUTED',?, 'in_progress', 3)").run(new Date().toISOString());
++    releaseClaimWithoutRetry(db.raw, ["m"]);
++    expect(db.raw.prepare("SELECT status, retry_count FROM inbox_messages WHERE id = 'm'").get()).toEqual({ status: "received", retry_count: 2 });
++  });
++
++  it("tells the creator once per outage, and when the model is back", () => {
++    const db = freshDb();
++    expect(alertModelOutage(db.raw, new Error("fetch failed"))).toBe(true);
++    expect(alertModelOutage(db.raw, new Error("fetch failed"))).toBe(false);
++    clearModelOutage(db.raw);
++    clearModelOutage(db.raw);
++    const msgs = listOutgoingCreatorMessages(db.raw).map((m) => m.content);
++    expect(msgs.filter((m) => /failed 3 turns in a row/.test(m))).toHaveLength(1);
++    expect(msgs.filter((m) => /answers again/.test(m))).toHaveLength(1);
++  });
++});
+diff --git a/src/agent/context.ts b/src/agent/context.ts
+index 7303c36..61f3c25 100644
+--- a/src/agent/context.ts
++++ b/src/agent/context.ts
+@@ -6,6 +6,7 @@
+  * Enforces token budget to prevent context window overflow.
+  */
+ 
++import { isStale, scrubStale } from "../memory/stale.js";
+ import type {
+   ChatMessage,
+   AgentTurn,
+@@ -146,7 +147,7 @@ export function buildContextMessages(
+       const tools = t.toolCalls
+         .map((tc) => `${tc.name}(${tc.error ? "FAILED" : "ok"})`)
+         .join(", ");
+-      return `[${t.timestamp}] ${t.inputSource || "self"}: ${t.thinking.slice(0, 100)}${tools ? ` | tools: ${tools}` : ""}`;
++      return `[${t.timestamp}] ${t.inputSource || "self"}: ${scrubStale(t.thinking).slice(0, 100)}${tools ? ` | tools: ${tools}` : ""}`;
+     });
+     summaryMessage = `Previous context summary (${oldTurns.length} turns compressed):\n${oldSummaries.join("\n")}`;
+   } else {
+@@ -175,7 +176,7 @@ export function buildContextMessages(
+     if (turn.thinking) {
+       const msg: ChatMessage = {
+         role: "assistant",
+-        content: turn.thinking,
++        content: scrubStale(turn.thinking) || "(previous reasoning omitted)",
+       };
+ 
+       // If there were tool calls, include them
+@@ -262,7 +263,12 @@ export function trimContext(
+  * Format a MemoryRetrievalResult into a text block for context injection.
+  * Included as a system message between the system prompt and conversation history.
+  */
++/** Lot 9a: stale beliefs never go back into the context. */
+ export function formatMemoryBlock(memories: MemoryRetrievalResult): string {
++  return formatMemoryBlockRaw(memories).split("\n").filter((line) => !isStale(line)).join("\n");
++}
++
++function formatMemoryBlockRaw(memories: MemoryRetrievalResult): string {
+   const sections: string[] = [];
+ 
+   if (memories.workingMemory.length > 0) {
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 9662235..f6d2099 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -102,9 +102,12 @@ import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
+ import { ProviderRegistry } from "../inference/provider-registry.js";
+ import { UnifiedInferenceClient } from "../inference/inference-client.js";
+ import { isIdleOnlyTool } from "./idle-only-tools.js";
+-import { formatCreatorChatMessage, hasPendingCreatorMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
++import { formatCreatorChatMessage, hasPendingCreatorMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies, saveOutgoingCreatorMessage } from "../integration/creator-chat.js";
++import type { Database as DatabaseType } from "better-sqlite3";
+ import { checkGpuCap } from "../integration/runpod.js";
+ import { checkSolReserve } from "../solana/sol-reserve.js";
++import { quarantineStaleMemoriesOnce } from "../memory/stale.js";
++import { buyStatus } from "../solana/decisions.js";
+ import { isTradingFocus } from "../solana/trading-desk.js";
+ 
+ const logger = createLogger("loop");
+@@ -215,6 +218,11 @@ export async function runLifespanTick(params: {
+     ensureRulesV2(raw);
+     reclassifyRevenueAsFunding(raw);
+     resetValuationBaselinesOnce(raw);
++    try {
++      quarantineStaleMemoriesOnce(raw);
++    } catch {
++      // best-effort cleanup
++    }
+     recordWeekCapital(raw, params.verifiedWalletValueUsd ?? null);
+     updateDrawdownGuard(raw, params.verifiedWalletValueUsd ?? null);
+     const evaluated = evaluateCompletedDays(raw);
+@@ -926,6 +934,14 @@ export async function runAgentLoop(
+       if (memoryBlock) {
+         messages.splice(1, 0, { role: "system", content: memoryBlock });
+       }
++      // Lot 9a: the code's answer on buys, every turn, so no remembered rule can override it.
++      if (isTradingFocus()) {
++        try {
++          messages.splice(1, 0, { role: "system", content: buyStatus(db.raw).line });
++        } catch {
++          // status is advisory
++        }
++      }
+ 
+       if (orchestrator) {
+         const orchestratorTick = await orchestrator.tick();
+@@ -1585,6 +1601,7 @@ export async function runAgentLoop(
+       }
+ 
+       consecutiveErrors = 0;
++      clearModelOutage(db.raw);
+     } catch (err: any) {
+       consecutiveErrors++;
+       log(config, `[ERROR] Turn failed: ${err.message}`);
+@@ -1597,6 +1614,14 @@ export async function runAgentLoop(
+       // Handle inbox message state on turn failure:
+       // Messages that have retries remaining go back to 'received';
+       // messages that have exhausted retries move to 'failed'.
++      // Lot 9a: when the model itself is down, the messages were never read:
++      // give them back without spending a retry (stop-loss notices were lost).
++      if (claimedMessages.length > 0 && isInferenceOutage(err)) {
++        releaseClaimWithoutRetry(db.raw, claimedMessages.map((m) => m.id));
++        log(config, `[INBOX] ${claimedMessages.length} message(s) kept for later (model unavailable)`);
++        claimedMessages = [];
++      }
++      if (consecutiveErrors >= MODEL_ALERT_AFTER_FAILURES && isInferenceOutage(err)) alertModelOutage(db.raw, err);
+       if (claimedMessages.length > 0) {
+         const exhausted = claimedMessages.filter((m) => m.retryCount >= m.maxRetries);
+         const retryable = claimedMessages.filter((m) => m.retryCount < m.maxRetries);
+@@ -1660,6 +1685,41 @@ export function alignLocalProvidersWithEndpoint(registry: { alignLoopbackProvide
+   return registry.alignLoopbackProviders(base, env.OLLAMA_API_KEY);
+ }
+ 
++/** Lot 9a: errors that mean the model could not be reached (not a bad answer). */
++export function isInferenceOutage(err: unknown): boolean {
++  const msg = String((err as { message?: string })?.message ?? err ?? "");
++  return /fetch failed|Circuit breaker is open|Inference error|\b50[0234]\b|ECONN|ETIMEDOUT|UND_ERR|socket hang up|timed? ?out|aborted/i.test(msg);
++}
++
++export const MODEL_ALERT_AFTER_FAILURES = 3;
++const MODEL_OUTAGE_KEY = "model.outage_alert";
++
++export function releaseClaimWithoutRetry(db: DatabaseType, ids: string[]): void {
++  if (!ids.length) return;
++  const placeholders = ids.map(() => "?").join(",");
++  db.prepare(
++    `UPDATE inbox_messages SET status = 'received', retry_count = MAX(COALESCE(retry_count, 1) - 1, 0) WHERE id IN (${placeholders})`,
++  ).run(...ids);
++}
++
++/** Tells the creator once per outage that the model is unreachable. */
++export function alertModelOutage(db: DatabaseType, err: unknown, now: Date = new Date()): boolean {
++  if (db.prepare("SELECT 1 FROM kv WHERE key = ?").get(MODEL_OUTAGE_KEY)) return false;
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(MODEL_OUTAGE_KEY, now.toISOString());
++  const why = String((err as { message?: string })?.message ?? err).slice(0, 160);
++  saveOutgoingCreatorMessage(db,
++    `My model (Runpod endpoint) failed ${MODEL_ALERT_AFTER_FAILURES} turns in a row (${why}). I cannot think or decide until it answers; ` +
++    "my stops and take-profits keep running in code. Please check the endpoint workers (stuck in initializing? terminate the worker).", now);
++  return true;
++}
++
++export function clearModelOutage(db: DatabaseType, now: Date = new Date()): void {
++  const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(MODEL_OUTAGE_KEY) as { value: string } | undefined;
++  if (!row) return;
++  db.prepare("DELETE FROM kv WHERE key = ?").run(MODEL_OUTAGE_KEY);
++  saveOutgoingCreatorMessage(db, `My model answers again (outage since ${row.value.slice(11, 16)} UTC).`, now);
++}
++
+ /** Pause after a failed turn: until the circuit breaker closes, else 5 s, 10 s, 20 s… (max 60 s). */
+ export function failedTurnBackoffMs(err: unknown, consecutiveErrors: number, now = Date.now()): number {
+   const match = /Circuit breaker is open until (\S+)/.exec(String((err as { message?: string })?.message ?? ""));
+diff --git a/src/memory/stale.ts b/src/memory/stale.ts
+new file mode 100644
+index 0000000..8416e57
+--- /dev/null
++++ b/src/memory/stale.ts
+@@ -0,0 +1,72 @@
++/**
++ * Lot 9a — false or outdated beliefs that SHUI kept re-reading and copying
++ * (audit of 2026-10-09): "after 2 losing trades I must stop" while buys were
++ * allowed, "529,000 SOL", the creator token seen as a position, and one
++ * sentence repeated in 251 thoughts. They are quarantined once (kept in
++ * memory_quarantine, so nothing is lost) and filtered out of everything that
++ * goes back into the model's context.
++ */
++import type { Database } from "better-sqlite3";
++
++export const STALE_PATTERNS: RegExp[] = [
++  /after \d+ losing trades?[^.]*\b(must stop|stop trading|blocked|not tradable)/i,
++  /\bI must stop trading today\b/i,
++  /not tradable today due to consecutive losses/i,
++  /\b529,?000 SOL\b/i,
++  /position in CnrMgN|CnrMgN[1-9A-HJ-NP-Za-km-z]* position/i,
++  /I need to actually execute a trading task rather than just creating files/i,
++];
++
++export function isStale(text: string | null | undefined): boolean {
++  return !!text && STALE_PATTERNS.some((re) => re.test(text));
++}
++
++/** Removes the sentences that carry a stale belief; keeps the rest. */
++export function scrubStale(text: string): string {
++  if (!isStale(text)) return text;
++  const kept = text
++    .split(/(?<=[.!?])\s+|\n+/)
++    .filter((sentence) => sentence.trim() && !isStale(sentence));
++  return kept.join(" ").trim();
++}
++
++const SOURCES: Array<{ table: string; text: string }> = [
++  { table: "working_memory", text: "content" },
++  { table: "episodic_memory", text: "summary || ' ' || COALESCE(detail, '')" },
++  { table: "semantic_memory", text: "value" },
++  { table: "knowledge_store", text: "content" },
++];
++
++const tableExists = (db: Database, name: string): boolean =>
++  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
++
++/** Once: move stale memories and journal notes to memory_quarantine. Returns how many were moved. */
++export function quarantineStaleMemoriesOnce(db: Database, now: Date = new Date()): number {
++  if (db.prepare("SELECT 1 FROM kv WHERE key = 'migration.lot9_memory'").get()) return 0;
++  db.exec(`CREATE TABLE IF NOT EXISTS memory_quarantine (
++    source TEXT NOT NULL, source_id TEXT NOT NULL, content TEXT NOT NULL, quarantined_at TEXT NOT NULL,
++    PRIMARY KEY (source, source_id))`);
++  const save = db.prepare("INSERT OR REPLACE INTO memory_quarantine (source, source_id, content, quarantined_at) VALUES (?, ?, ?, ?)");
++  let moved = 0;
++  const run = db.transaction(() => {
++    for (const { table, text } of SOURCES) {
++      if (!tableExists(db, table)) continue;
++      const rows = db.prepare(`SELECT id, ${text} AS t FROM ${table}`).all() as Array<{ id: string; t: string }>;
++      for (const row of rows.filter((r) => isStale(r.t))) {
++        save.run(table, row.id, row.t, now.toISOString());
++        db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(row.id);
++        moved++;
++      }
++    }
++    const notes = db.prepare("SELECT key, value FROM kv WHERE key LIKE 'journal.%'").all() as Array<{ key: string; value: string }>;
++    for (const note of notes.filter((n) => isStale(n.value))) {
++      save.run("journal", note.key, note.value, now.toISOString());
++      db.prepare("DELETE FROM kv WHERE key = ?").run(note.key);
++      moved++;
++    }
++    db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('migration.lot9_memory', ?, datetime('now'))")
++      .run(JSON.stringify({ at: now.toISOString(), moved }));
++  });
++  run();
++  return moved;
++}
+diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
+index 1dc7a39..23d640d 100644
+--- a/src/solana/decisions.ts
++++ b/src/solana/decisions.ts
+@@ -172,7 +172,8 @@ const FALSE_STOP_RE = /(losing trades?|losses?)\b.{0,60}\b(stop|no more|cannot|c
+ 
+ /** A skip or plan that claims a loss-streak stop the code does not apply. */
+ export function falseStopClaim(db: Database, kind: string, text: string, now: Date = new Date()): string | null {
+-  if (kind === "lesson" || !FALSE_STOP_RE.test(text)) return null;
++  // Lot 9a: lessons too — a false rule written as a lesson came back every turn.
++  if (!FALSE_STOP_RE.test(text)) return null;
+   const status = buyStatus(db, now);
+   return status.allowed
+     ? `Blocked: this reason is false. ${status.line} Decide again on the real merits of the setup (buy it, or skip for a market reason).`
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 85e3a6b..9cbc577 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -15,6 +15,7 @@ import type { AutomatonDatabase, AutomatonTool } from "../types.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+ import { NATIVE_SOL_MINT, SolanaTradingService } from "./trading.js";
+ import { runSwap, type SwapVenue } from "./swap-engine.js";
++import { readPendingTransaction } from "./pending-tx.js";
+ import { jupiterHeaders, jupiterVenue } from "./jupiter.js";
+ import { raydiumVenue } from "./swap-tool.js";
+ import { fetchJson } from "./http-json.js";
+@@ -147,6 +148,40 @@ export function classifySwapResult(text: string): { done: boolean; transient: bo
+   return { done: false, transient: false, message: (parsed?.reason ? String(parsed.reason) : text).slice(0, 300) };
+ }
+ 
++/**
++ * Lot 9a: refuses a protection when a swap is still unconfirmed, when the token
++ * is already protected (a second OCO sold nothing and failed), or when the
++ * wallet holds none of it on-chain.
++ */
++export async function protectionGuard(
++  ctx: { db: AutomatonDatabase; identity?: { chainIdentity?: ChainIdentity } },
++  mint: string,
++  balanceOf?: (mint: string) => Promise<bigint>,
++): Promise<string | null> {
++  if (readPendingTransaction(ctx.db)) {
++    return "Blocked: a swap is still unconfirmed. Check positions first: never protect a buy before it is confirmed on-chain.";
++  }
++  const existing = listOrders(ctx.db.raw).find((o) => o.status === "open" && !o.paper && o.watchMint === mint &&
++    (o.kind === "stop_loss" || o.kind === "trailing_stop"));
++  if (existing) {
++    return `Blocked: this token is already protected (${existing.id}, ${existing.kind} at $${existing.triggerPriceUsd}). ` +
++      "To change it, order_cancel both orders of that group first.";
++  }
++  const chain = ctx.identity?.chainIdentity;
++  const read = balanceOf ?? (chain
++    ? async (m: string) => (await new SolanaTradingService(chain).getTokenBalances())
++      .filter((t) => t.mint === m).reduce((sum, t) => sum + BigInt(t.amount), 0n)
++    : null);
++  if (!read || mint === NATIVE_SOL_MINT) return null;
++  let held: bigint;
++  try {
++    held = await read(mint);
++  } catch {
++    return null; // RPC trouble must not block a protection
++  }
++  return held > 0n ? null : "Blocked: you hold 0 of this token on-chain, so there is nothing to protect. If you just bought it, the buy did not land: read positions.";
++}
++
+ export interface OrderExecutorDeps {
+   db: AutomatonDatabase;
+   chainIdentity: ChainIdentity;
+@@ -498,6 +533,9 @@ export function createOrderTools(): AutomatonTool[] {
+         if (amount !== "all" && !/^[1-9][0-9]*$/.test(amount)) return 'Blocked: amount must be raw units or "all".';
+         const db = ctx.db.raw;
+         if (listOrders(db).filter((o) => o.status === "open").length + 2 > MAX_OPEN_ORDERS) return "Blocked: too many open orders.";
++        // Lot 9a: never protect a position that does not exist (the ORCA buy of 09/10 never landed).
++        const guard = await protectionGuard(ctx, mint);
++        if (guard) return guard;
+         const now = new Date();
+         const group = `oco_${now.getTime().toString(36)}`;
+         const slippageBps = Number(args.slippageBps ?? 100);
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 95ad338..c834c24 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -24,6 +24,7 @@ import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskP
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ import { buyStatus, clampBuyUsd, decisionLine, falseStopClaim, recordPendingSetups, type PendingSetup } from "./decisions.js";
+ import { isMemecoin, tradeLimits } from "./trade-limits.js";
++import { isStale } from "../memory/stale.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
+@@ -413,8 +414,10 @@ export function addJournalEntry(db: Database, entry: { kind: string; text: strin
+ }
+ 
+ export function recentJournal(db: Database, limit = 5): Array<{ at: string; kind: string; mint: string | null; text: string }> {
+-  const rows = db.prepare("SELECT value FROM kv WHERE key LIKE 'journal.%' ORDER BY key DESC LIMIT ?").all(limit) as Array<{ value: string }>;
+-  return rows.map((r) => JSON.parse(r.value));
++  // Lot 9a: stale notes ("after 2 losing trades I must stop"…) are not shown back to SHUI.
++  const rows = db.prepare("SELECT value FROM kv WHERE key LIKE 'journal.%' ORDER BY key DESC LIMIT ?").all(limit * 4) as Array<{ value: string }>;
++  return rows.map((r) => JSON.parse(r.value) as { at: string; kind: string; mint: string | null; text: string })
++    .filter((j) => !isStale(j.text)).slice(0, limit);
+ }
+ 
+ export interface TradeStats {

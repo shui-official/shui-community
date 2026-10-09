@@ -1,0 +1,1112 @@
+diff --git a/src/__tests__/lot4-perps.test.ts b/src/__tests__/lot4-perps.test.ts
+new file mode 100644
+index 0000000..bacd009
+--- /dev/null
++++ b/src/__tests__/lot4-perps.test.ts
+@@ -0,0 +1,186 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase } from "../state/database.js";
++import {
++  createPerpTools,
++  maxDepositUsd,
++  perpValuationAsset,
++  runPerpTick,
++  validatePerpOpen,
++  type DriftAccountView,
++  type DriftAdapter,
++  type PerpOpenCheck,
++} from "../solana/perps.js";
++import { getDailyGain, listLedgerEntries } from "../solana/ledger.js";
++import { computeTradeStats } from "../solana/trading-desk.js";
++import { buildCentralWalletValuation } from "../solana/wallet-valuation.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot4-")), "s.db"));
++const identity = { chainType: "solana", address: "Shui1111111111111111111111111111111111111111" } as any;
++const setKv = (db: any, k: string, v: string) =>
++  db.raw.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(k, v);
++const setCapital = (db: any, usd: number) =>
++  setKv(db, "last_known_balance", JSON.stringify({ walletValueUsd: usd, walletValueComplete: true }));
++
++const base: PerpOpenCheck = {
++  direction: "long", entryPrice: 100, sizeUsd: 50, stopPrice: 96, capitalUsd: 200, accountValueUsd: 50,
++  otherNotionalUsd: 0, liqPrice: null, openedCount: 10, pausedUntil: null,
++};
++
++function fakeAdapter(state: { account: DriftAccountView; price?: number; liq?: number | null }) {
++  const calls = { open: vi.fn(), deposit: vi.fn(), withdraw: vi.fn(), close: vi.fn() };
++  const adapter: DriftAdapter = {
++    account: async () => structuredClone(state.account),
++    oraclePrice: async () => state.price ?? 100,
++    sizeRules: async () => ({ min: 0.01, step: 0.01 }),
++    estimateLiqPrice: async () => state.liq ?? null,
++    deposit: async (usdc) => {
++      calls.deposit(usdc);
++      state.account.exists = true;
++      state.account.valueUsd += usdc;
++      state.account.freeCollateralUsd += usdc;
++      return `dep_${usdc}`;
++    },
++    withdraw: async (usdc) => {
++      calls.withdraw(usdc);
++      state.account.valueUsd -= usdc;
++      state.account.freeCollateralUsd -= usdc;
++      return `wd_${usdc}`;
++    },
++    open: async (p) => {
++      calls.open(p);
++      return "open_sig";
++    },
++    close: async (mi) => {
++      calls.close(mi);
++      state.account.positions = state.account.positions.filter((p) => p.marketIndex !== mi);
++      return "close_sig";
++    },
++    dispose: async () => {},
++  };
++  return { adapter, calls, factory: async () => adapter };
++}
++
++const tool = (tools: ReturnType<typeof createPerpTools>, name: string) => tools.find((t) => t.name === name)!;
++const ctx = (db: any) => ({ db, identity: { chainIdentity: identity } }) as any;
++
++describe("perp validation", () => {
++  it("accepts a sane trade", () => {
++    const v = validatePerpOpen(base);
++    expect(v.ok).toBe(true);
++    expect(v.leverage).toBeCloseTo(1);
++  });
++  it("caps leverage at 5x, and 1x for the first 5 trades", () => {
++    expect(validatePerpOpen({ ...base, sizeUsd: 300, stopPrice: 99.5 }).reasons.join()).toMatch(/leverage 6.00x > max 5x/);
++    expect(validatePerpOpen({ ...base, sizeUsd: 250, stopPrice: 99.5 }).ok).toBe(true);
++    expect(validatePerpOpen({ ...base, sizeUsd: 100, stopPrice: 99, openedCount: 2 }).reasons.join()).toMatch(/max 1x \(first 5 trades/);
++  });
++  it("limits the loss at the stop to 2% of capital", () => {
++    const v = validatePerpOpen({ ...base, stopPrice: 90 }); // 0.5 unit * 10 = $5 > $4
++    expect(v.ok).toBe(false);
++    expect(v.reasons.join()).toMatch(/risk at stop/);
++  });
++  it("needs the stop on the right side and the liquidation far enough", () => {
++    expect(validatePerpOpen({ ...base, stopPrice: 101 }).reasons.join()).toMatch(/stopPrice below/);
++    expect(validatePerpOpen({ ...base, direction: "short", stopPrice: 99 }).reasons.join()).toMatch(/stopPrice above/);
++    expect(validatePerpOpen({ ...base, liqPrice: 95 }).reasons.join()).toMatch(/liquidation \$95.*too close/);
++    expect(validatePerpOpen({ ...base, liqPrice: 93 }).ok).toBe(true);
++    expect(validatePerpOpen({ ...base, direction: "short", stopPrice: 104, liqPrice: 105 }).ok).toBe(false);
++  });
++  it("respects the circuit breaker and caps collateral at 50%", () => {
++    expect(validatePerpOpen({ ...base, pausedUntil: "2099-01-01" }).reasons.join()).toMatch(/circuit breaker/);
++    expect(maxDepositUsd(200, 60)).toBe(40);
++    expect(maxDepositUsd(200, 120)).toBe(0);
++  });
++});
++
++describe("perp tools", () => {
++  it("deposits within the 50% cap and journals the transfer", async () => {
++    const db = freshDb();
++    setCapital(db, 100);
++    const state = { account: { exists: false, valueUsd: 0, freeCollateralUsd: 0, positions: [], openOrders: 0 } };
++    const { factory, calls } = fakeAdapter(state);
++    const tools = createPerpTools(factory);
++    expect(await tool(tools, "perp_deposit").execute({ usdc: 60 }, ctx(db))).toMatch(/Max deposit now: \$50.00/);
++    expect(await tool(tools, "perp_deposit").execute({ usdc: 40 }, ctx(db))).toMatch(/Deposited 40 USDC/);
++    expect(calls.deposit).toHaveBeenCalledWith(40);
++    const entry = listLedgerEntries(db.raw).find((e) => e.signature === "dep_40")!;
++    expect(entry.kind).toBe("perp_transfer");
++    expect(getDailyGain(db.raw, entry.day).gainUsd).toBe(0);
++    expect(perpValuationAsset(db.raw)).toMatchObject({ amount: 40, priceUsd: 1 });
++  });
++
++  it("opens with the stop on Drift, counts the trade and blocks unsafe ones", async () => {
++    const db = freshDb();
++    setCapital(db, 200);
++    setKv(db, "perp.net_deposits", "50");
++    const state = { account: { exists: true, valueUsd: 50, freeCollateralUsd: 50, positions: [], openOrders: 0 }, price: 100, liq: null };
++    const { factory, calls } = fakeAdapter(state);
++    const tools = createPerpTools(factory);
++    const open = tool(tools, "perp_open");
++    // starter: 1x max
++    expect(await open.execute({ market: "SOL-PERP", direction: "long", sizeUsd: 100, stopPrice: 99 }, ctx(db))).toMatch(/Blocked: leverage 2.00x > max 1x/);
++    expect(await open.execute({ market: "SOL-PERP", direction: "long", sizeUsd: 50, stopPrice: 97, dryRun: true }, ctx(db))).toMatch(/Dry run OK/);
++    expect(calls.open).not.toHaveBeenCalled();
++    expect(await open.execute({ market: "SOL-PERP", direction: "short", sizeUsd: 50, stopPrice: 103, takeProfitPrice: 92 }, ctx(db))).toMatch(/Opened/);
++    expect(calls.open).toHaveBeenCalledWith(expect.objectContaining({ marketIndex: 0, direction: "short", baseAmount: 0.5, stopPrice: 103, takeProfitPrice: 92, worstPrice: 99 }));
++    expect(await open.execute({ market: "DOGE-PERP", direction: "long", sizeUsd: 10, stopPrice: 1 }, ctx(db))).toMatch(/market must be/);
++    expect(await open.execute({ market: "BTC-PERP", direction: "long", sizeUsd: 30, stopPrice: 80 }, ctx(db))).toMatch(/risk at stop/);
++  });
++
++  it("records realized PnL when flat, counted by trade_stats and the weekly gain", async () => {
++    const db = freshDb();
++    setKv(db, "perp.net_deposits", "50");
++    const state = {
++      account: {
++        exists: true, valueUsd: 53, freeCollateralUsd: 40, openOrders: 1,
++        positions: [{ market: "SOL-PERP", marketIndex: 0, baseAmount: 0.5, entryPrice: 100, notionalUsd: 53, unrealizedPnlUsd: 3, liqPrice: 20 }],
++      },
++      price: 106,
++    };
++    const { factory } = fakeAdapter(state);
++    await runPerpTick(db.raw, identity, factory);
++    expect(listLedgerEntries(db.raw).filter((e) => e.kind === "perp_pnl")).toHaveLength(0); // open position: nothing realized
++    const tools = createPerpTools(factory);
++    expect(await tool(tools, "perp_close").execute({ market: "SOL-PERP" }, ctx(db))).toMatch(/Realized PnL recorded: \+\$3.00/);
++    const pnl = listLedgerEntries(db.raw).filter((e) => e.kind === "perp_pnl");
++    expect(pnl).toHaveLength(1);
++    expect(getDailyGain(db.raw, pnl[0].day).gainUsd).toBeCloseTo(3);
++    expect(computeTradeStats(db.raw).totalPnlUsd).toBeCloseTo(3);
++    await runPerpTick(db.raw, identity, factory); // no double count
++    expect(listLedgerEntries(db.raw).filter((e) => e.kind === "perp_pnl")).toHaveLength(1);
++  });
++
++  it("warns once when a position nears liquidation", async () => {
++    const db = freshDb();
++    setKv(db, "perp.net_deposits", "50");
++    const state = {
++      account: {
++        exists: true, valueUsd: 30, freeCollateralUsd: 2, openOrders: 1,
++        positions: [{ market: "SOL-PERP", marketIndex: 0, baseAmount: 2, entryPrice: 100, notionalUsd: 192, unrealizedPnlUsd: -20, liqPrice: 92 }],
++      },
++      price: 95,
++    };
++    const { factory } = fakeAdapter(state);
++    await runPerpTick(db.raw, identity, factory);
++    await runPerpTick(db.raw, identity, factory);
++    const notices = db.raw.prepare("SELECT content FROM inbox_messages WHERE from_address = 'system:perps'").all();
++    expect(notices).toHaveLength(1);
++  });
++});
++
++describe("valuation with Drift", () => {
++  it("adds a fresh Drift value and marks a stale one incomplete, never zero", () => {
++    const db = freshDb();
++    expect(perpValuationAsset(db.raw)).toBeNull();
++    setKv(db, "perp.net_deposits", "40");
++    setKv(db, "perp.account", JSON.stringify({ valueUsd: 41, freeCollateralUsd: 41, positions: [], openOrders: 0, at: new Date().toISOString() }));
++    const balances = { sol: 0, usdc: 59, tokens: [] };
++    const fresh = buildCentralWalletValuation({ balances, solPriceUsd: 150, extraAssets: [perpValuationAsset(db.raw)!] });
++    expect(fresh).toMatchObject({ knownValueUsd: 100, complete: true });
++    const stale = perpValuationAsset(db.raw, new Date(Date.now() + 3_600_000))!;
++    expect(buildCentralWalletValuation({ balances, solPriceUsd: 150, extraAssets: [stale] })).toMatchObject({ knownValueUsd: 59, complete: false });
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 0a69cde..c970b46 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -57,6 +57,7 @@ import {
+   fetchTokenUsdValuesFromRaydium,
+   buildCentralWalletValuation,
+ } from "../solana/wallet-valuation.js";
++import { perpValuationAsset } from "../solana/perps.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+ import { scanWalletHistory, getDailyGain, utcDay } from "../solana/ledger.js";
+ import {
+@@ -1022,6 +1023,11 @@ export async function runAgentLoop(
+           "paper_stats",
+           "stake_sol",
+           "unstake_sol",
++          "perp_positions",
++          "perp_deposit",
++          "perp_withdraw",
++          "perp_open",
++          "perp_close",
+           "order_create",
+           "order_list",
+           "order_cancel",
+@@ -1664,10 +1670,14 @@ async function getFinancialState(
+         ? await fetchTokenUsdValuesFromRaydium(quoteService, balances.tokens)
+         : undefined;
+ 
++      // The Drift account (collateral + unrealized PnL) is part of the capital:
++      // a deposit must not look like a loss to the drawdown breaker.
++      const driftAsset = db ? perpValuationAsset(db.raw) : null;
+       const valuation = buildCentralWalletValuation({
+         balances,
+         solPriceUsd,
+         tokenValuesUsd,
++        extraAssets: driftAsset ? [driftAsset] : undefined,
+       });
+ 
+       walletValueUsd = valuation.knownValueUsd;
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index a0de5b5..cef4ef2 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -9,6 +9,7 @@ import { createBacktestTool } from "../solana/backtest.js";
+ import { createStrategyTools } from "../solana/strategies.js";
+ import { createMarketRegimeTool } from "../solana/market-regime.js";
+ import { createTradingExtraTools } from "../solana/trading-extras.js";
++import { createPerpTools } from "../solana/perps.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+@@ -150,6 +151,7 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+     ...createStrategyTools(),
+     createMarketRegimeTool(),
+     ...createTradingExtraTools(),
++    ...createPerpTools(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/index.ts b/src/index.ts
+index 0341a30..edf89ee 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -24,6 +24,7 @@ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+ import { startCreatorChatServer } from "./integration/creator-chat.js";
+ import { startOrderExecutor } from "./solana/orders.js";
+ import { startStrategyRunner } from "./solana/strategies.js";
++import { startPerpMonitor } from "./solana/perps.js";
+ import { startJanitor } from "./maintenance/janitor.js";
+ import { startDailyReport } from "./maintenance/daily-report.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+@@ -403,6 +404,8 @@ async function run(): Promise<void> {
+   if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
+     startOrderExecutor({ db, chainIdentity, log: (message) => logger.info(message) });
+     startStrategyRunner({ db, chainIdentity, log: (message) => logger.info(message) });
++    // Drift perpetuals: account value for the valuation, realized PnL, liquidation warnings.
++    startPerpMonitor(db.raw, chainIdentity, (message) => logger.info(message));
+   }
+ 
+   // Handle graceful shutdown
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index 55d9451..2813c6f 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -66,6 +66,10 @@ const WORKER_EXCLUDED_TOOLS = new Set([
+   "dca_create",
+   "stake_sol",
+   "unstake_sol",
++  "perp_deposit",
++  "perp_withdraw",
++  "perp_open",
++  "perp_close",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/solana/ledger.ts b/src/solana/ledger.ts
+index b1965ef..a6d8069 100644
+--- a/src/solana/ledger.ts
++++ b/src/solana/ledger.ts
+@@ -31,7 +31,9 @@ export type LedgerKind =
+   | "transfer_out"
+   | "revenue"
+   | "creator_deposit"
+-  | "own_unjournaled";
++  | "own_unjournaled"
++  | "perp_transfer"
++  | "perp_pnl";
+ 
+ export interface LedgerEntry {
+   signature: string;
+@@ -354,6 +356,49 @@ export function recordIncoming(db: Database, delta: WalletTransactionDelta, para
+   return entry;
+ }
+ 
++/** USDC moved between the wallet and Drift: not a gain, journaled so the history scan skips it. */
++export function recordPerpTransfer(db: Database, params: { signature: string; direction: "deposit" | "withdraw"; usdc: number; at?: Date }): void {
++  ensureLedgerSchema(db);
++  const at = params.at ?? new Date();
++  const raw = String(Math.round(params.usdc * 1_000_000));
++  insertEntry(db, {
++    signature: params.signature,
++    ts: at.toISOString(),
++    day: utcDay(at),
++    kind: "perp_transfer",
++    inputMint: params.direction === "deposit" ? USDC_MINT : null,
++    inputAmountRaw: params.direction === "deposit" ? raw : null,
++    outputMint: params.direction === "withdraw" ? USDC_MINT : null,
++    outputAmountRaw: params.direction === "withdraw" ? raw : null,
++    revenueUsd: 0,
++    realizedPnlUsd: 0,
++    incomplete: false,
++    counterparty: "drift",
++    details: JSON.stringify({ direction: params.direction }),
++  });
++}
++
++/** Realized PnL of Drift perpetuals (closed trades, fees, funding), recorded when the account is flat. */
++export function recordPerpPnl(db: Database, params: { pnlUsd: number; at?: Date; details?: Record<string, unknown> }): void {
++  ensureLedgerSchema(db);
++  const at = params.at ?? new Date();
++  insertEntry(db, {
++    signature: `perp_pnl:${at.toISOString()}`,
++    ts: at.toISOString(),
++    day: utcDay(at),
++    kind: "perp_pnl",
++    inputMint: null,
++    inputAmountRaw: null,
++    outputMint: null,
++    outputAmountRaw: null,
++    revenueUsd: 0,
++    realizedPnlUsd: params.pnlUsd,
++    incomplete: false,
++    counterparty: "drift",
++    details: params.details ? JSON.stringify(params.details) : null,
++  });
++}
++
+ export interface WalletHistorySource {
+   /** Signatures newer than `until`, newest first (Solana RPC order). */
+   getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
+diff --git a/src/solana/perps.ts b/src/solana/perps.ts
+new file mode 100644
+index 0000000..3cff29d
+--- /dev/null
++++ b/src/solana/perps.ts
+@@ -0,0 +1,707 @@
++/**
++ * Lot 4: leveraged perpetuals on Drift (SOL-PERP, BTC-PERP, ETH-PERP), long or
++ * short, with the safeguards validated by the creator:
++ *   - leverage max 5x (the first 5 trades at 1x);
++ *   - at most 50% of the total capital as Drift collateral;
++ *   - a stop-loss is mandatory and lives on Drift (reduce-only trigger order
++ *     placed in the same transaction as the entry), so it works while SHUI sleeps;
++ *   - the estimated liquidation price must be at least 1.5x the stop distance away;
++ *   - at most 2% of the total capital lost if the stop is hit;
++ *   - the drawdown breaker blocks new positions (closing always works).
++ *
++ * The Drift SDK is loaded on demand (pnpm add @drift-labs/sdk@2.156.0), so SHUI
++ * keeps working without it. The signing key stays inside this process, exactly
++ * like the swap pipeline.
++ *
++ * Accounting: the Drift account value (collateral + unrealized PnL) is cached in
++ * kv `perp.account` and added to the wallet valuation. Realized PnL is journaled
++ * in the ledger (kind perp_pnl) whenever the account is flat:
++ * value - net deposits, minus what was already recorded.
++ */
++import type { Database } from "better-sqlite3";
++import type { AutomatonTool } from "../types.js";
++import type { ChainIdentity } from "../identity/chain.js";
++import { recordPerpPnl, recordPerpTransfer } from "./ledger.js";
++import { tradingPausedUntil } from "../survival/risk-guard.js";
++import { queueSystemNotice } from "../integration/creator-chat.js";
++
++export const PERP_LIMITS = {
++  maxLeverage: 5,
++  starterLeverage: 1,
++  starterTrades: 5,
++  maxCollateralShare: 0.5,
++  liqBufferRatio: 1.5,
++  maxRiskPct: 2,
++  /** Taker fee + slippage per side, used in the risk estimate. */
++  feePct: 0.1,
++  /** Worst fill accepted for the market entry, vs the oracle price. */
++  entrySlippagePct: 1,
++} as const;
++
++export const PERP_MARKETS: Record<string, number> = { "SOL-PERP": 0, "BTC-PERP": 1, "ETH-PERP": 2 };
++export const DRIFT_SDK_VERSION = "2.156.0";
++const CACHE_KEY = "perp.account";
++const NET_DEPOSITS_KEY = "perp.net_deposits";
++const RECORDED_CUM_KEY = "perp.recorded_cum";
++const OPENED_COUNT_KEY = "perp.opened_count";
++const CACHE_FRESH_MS = 15 * 60_000;
++const MONITOR_MS = 5 * 60_000;
++
++export type PerpDirection = "long" | "short";
++
++export interface PerpPositionView {
++  market: string;
++  marketIndex: number;
++  /** Signed size in base units (positive = long). */
++  baseAmount: number;
++  entryPrice: number;
++  notionalUsd: number;
++  unrealizedPnlUsd: number;
++  liqPrice: number | null;
++}
++
++export interface DriftAccountView {
++  exists: boolean;
++  /** Collateral + unrealized PnL (USD). */
++  valueUsd: number;
++  freeCollateralUsd: number;
++  positions: PerpPositionView[];
++  openOrders: number;
++}
++
++export interface DriftAdapter {
++  account(): Promise<DriftAccountView>;
++  oraclePrice(marketIndex: number): Promise<number>;
++  /** Minimum size and step for an order, in base units. */
++  sizeRules(marketIndex: number): Promise<{ min: number; step: number }>;
++  /** Liquidation price if the position changed by baseDelta (signed); null = none. */
++  estimateLiqPrice(marketIndex: number, baseDelta: number, entryPrice: number): Promise<number | null>;
++  deposit(usdc: number): Promise<string>;
++  withdraw(usdc: number): Promise<string>;
++  open(params: {
++    marketIndex: number;
++    direction: PerpDirection;
++    baseAmount: number;
++    worstPrice: number;
++    stopPrice: number;
++    takeProfitPrice?: number;
++  }): Promise<string>;
++  /** Cancel the market's orders and close its position at market. */
++  close(marketIndex: number): Promise<string>;
++  dispose(): Promise<void>;
++}
++
++export type AdapterFactory = (identity: ChainIdentity) => Promise<DriftAdapter>;
++
++const getKv = (db: Database, key: string) =>
++  (db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
++const setKv = (db: Database, key: string, value: string) =>
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, value);
++const num = (db: Database, key: string) => Number(getKv(db, key) ?? 0) || 0;
++
++export function marketName(marketIndex: number): string {
++  return Object.entries(PERP_MARKETS).find(([, i]) => i === marketIndex)?.[0] ?? `PERP-${marketIndex}`;
++}
++
++// ─── Pure validation ────────────────────────────────────────────
++
++export interface PerpOpenCheck {
++  direction: PerpDirection;
++  entryPrice: number;
++  sizeUsd: number;
++  stopPrice: number;
++  takeProfitPrice?: number;
++  /** Total capital: wallet + Drift account (USD). */
++  capitalUsd: number;
++  /** Drift account value (USD). */
++  accountValueUsd: number;
++  /** Notional of the other open positions (USD). */
++  otherNotionalUsd: number;
++  liqPrice: number | null;
++  openedCount: number;
++  pausedUntil: string | null;
++}
++
++export interface PerpOpenVerdict {
++  ok: boolean;
++  reasons: string[];
++  leverage: number;
++  maxLeverage: number;
++  riskUsd: number;
++  maxRiskUsd: number;
++}
++
++export function validatePerpOpen(c: PerpOpenCheck): PerpOpenVerdict {
++  const reasons: string[] = [];
++  const starter = c.openedCount < PERP_LIMITS.starterTrades;
++  const maxLeverage = starter ? PERP_LIMITS.starterLeverage : PERP_LIMITS.maxLeverage;
++  const leverage = c.accountValueUsd > 0 ? (c.otherNotionalUsd + c.sizeUsd) / c.accountValueUsd : Infinity;
++  const stopDistance = c.direction === "long" ? c.entryPrice - c.stopPrice : c.stopPrice - c.entryPrice;
++  const units = c.sizeUsd / c.entryPrice;
++  const riskUsd = units * Math.max(0, stopDistance) + c.sizeUsd * (2 * PERP_LIMITS.feePct) / 100;
++  const maxRiskUsd = (c.capitalUsd * PERP_LIMITS.maxRiskPct) / 100;
++
++  if (c.pausedUntil) reasons.push(`circuit breaker active until ${c.pausedUntil}: no new positions (closing still works)`);
++  if (!(c.capitalUsd > 0)) reasons.push("total capital unknown: wait for a fresh wallet valuation");
++  if (!(stopDistance > 0)) {
++    reasons.push(c.direction === "long" ? "a long needs stopPrice below the entry price" : "a short needs stopPrice above the entry price");
++  }
++  if (c.takeProfitPrice !== undefined) {
++    const tpOk = c.direction === "long" ? c.takeProfitPrice > c.entryPrice : c.takeProfitPrice < c.entryPrice;
++    if (!tpOk) reasons.push(c.direction === "long" ? "takeProfitPrice must be above the entry" : "takeProfitPrice must be below the entry");
++  }
++  if (leverage > maxLeverage + 1e-9) {
++    reasons.push(
++      `leverage ${Number.isFinite(leverage) ? leverage.toFixed(2) : "∞"}x > max ${maxLeverage}x` +
++      (starter ? ` (first ${PERP_LIMITS.starterTrades} trades at 1x; ${c.openedCount} done)` : "") +
++      ` — reduce sizeUsd or deposit more collateral`,
++    );
++  }
++  if (stopDistance > 0 && riskUsd > maxRiskUsd + 1e-9) {
++    reasons.push(`risk at stop $${riskUsd.toFixed(2)} > ${PERP_LIMITS.maxRiskPct}% of capital ($${maxRiskUsd.toFixed(2)}) — reduce sizeUsd or tighten the stop`);
++  }
++  if (stopDistance > 0 && c.liqPrice !== null && c.liqPrice > 0) {
++    const liqDistance = c.direction === "long" ? c.entryPrice - c.liqPrice : c.liqPrice - c.entryPrice;
++    if (liqDistance < PERP_LIMITS.liqBufferRatio * stopDistance) {
++      reasons.push(
++        `liquidation $${c.liqPrice.toPrecision(6)} too close: it must be at least ${PERP_LIMITS.liqBufferRatio}x the stop distance away ` +
++        `(stop ${stopDistance.toPrecision(4)}, liquidation ${liqDistance.toPrecision(4)}) — lower the leverage`,
++      );
++    }
++  }
++  return { ok: reasons.length === 0, reasons, leverage, maxLeverage, riskUsd, maxRiskUsd };
++}
++
++/** Max new Drift collateral allowed: 50% of total capital minus what is already there. */
++export function maxDepositUsd(capitalUsd: number, accountValueUsd: number): number {
++  return Math.max(0, capitalUsd * PERP_LIMITS.maxCollateralShare - accountValueUsd);
++}
++
++export function roundToStep(value: number, step: number): number {
++  if (!(step > 0)) return value;
++  return Math.floor(value / step + 1e-9) * step;
++}
++
++// ─── Account cache, valuation, PnL ──────────────────────────────
++
++export interface PerpCache {
++  valueUsd: number;
++  freeCollateralUsd: number;
++  positions: PerpPositionView[];
++  openOrders: number;
++  at: string;
++}
++
++export function savePerpCache(db: Database, account: DriftAccountView, now: Date = new Date()): void {
++  const cache: PerpCache = {
++    valueUsd: account.valueUsd,
++    freeCollateralUsd: account.freeCollateralUsd,
++    positions: account.positions,
++    openOrders: account.openOrders,
++    at: now.toISOString(),
++  };
++  setKv(db, CACHE_KEY, JSON.stringify(cache));
++}
++
++export function readPerpCache(db: Database): PerpCache | null {
++  try {
++    const raw = getKv(db, CACHE_KEY);
++    return raw ? (JSON.parse(raw) as PerpCache) : null;
++  } catch {
++    return null;
++  }
++}
++
++/** True once SHUI ever deposited on Drift. */
++export function perpsInUse(db: Database): boolean {
++  return getKv(db, NET_DEPOSITS_KEY) !== null;
++}
++
++/**
++ * The Drift account as a wallet asset for the valuation: priced when the cache
++ * is fresh, unpriced (valuation incomplete, never zero) when it is stale.
++ */
++export function perpValuationAsset(db: Database, now: Date = new Date()):
++  { assetId: string; symbol: string; amount: number; priceUsd: number | null } | null {
++  if (!perpsInUse(db)) return null;
++  const cache = readPerpCache(db);
++  const fresh = cache && now.getTime() - Date.parse(cache.at) <= CACHE_FRESH_MS;
++  if (fresh && cache) return { assetId: "DRIFT", symbol: "DRIFT", amount: Math.max(0, cache.valueUsd), priceUsd: 1 };
++  if (num(db, NET_DEPOSITS_KEY) <= 0 && cache && cache.valueUsd <= 0.01) return null;
++  return { assetId: "DRIFT", symbol: "DRIFT", amount: 1, priceUsd: null };
++}
++
++function addNetDeposits(db: Database, deltaUsd: number): void {
++  setKv(db, NET_DEPOSITS_KEY, String(num(db, NET_DEPOSITS_KEY) + deltaUsd));
++}
++
++/**
++ * When the account is flat, journal the PnL not yet recorded
++ * (value - net deposits - already recorded): fees, funding and closed trades.
++ */
++export function recordFlatPnl(db: Database, account: DriftAccountView, now: Date = new Date()): number | null {
++  if (!account.exists || account.positions.length > 0 || !perpsInUse(db)) return null;
++  const cum = account.valueUsd - num(db, NET_DEPOSITS_KEY);
++  const delta = cum - num(db, RECORDED_CUM_KEY);
++  if (Math.abs(delta) < 0.005) return null;
++  recordPerpPnl(db, { at: now, pnlUsd: delta, details: { valueUsd: account.valueUsd, netDeposits: num(db, NET_DEPOSITS_KEY) } });
++  setKv(db, RECORDED_CUM_KEY, String(cum));
++  return delta;
++}
++
++export function formatPerpAccount(account: DriftAccountView, db: Database): string {
++  if (!account.exists) return "No Drift account yet. Use perp_deposit first (it creates the account).";
++  const net = num(db, NET_DEPOSITS_KEY);
++  const lines = [
++    `Drift account: value $${account.valueUsd.toFixed(2)} | free collateral $${account.freeCollateralUsd.toFixed(2)} | ` +
++    `net deposits $${net.toFixed(2)} | all-time PnL ${account.valueUsd - net >= 0 ? "+" : ""}$${(account.valueUsd - net).toFixed(2)} | open orders ${account.openOrders}`,
++  ];
++  if (account.positions.length === 0) lines.push("No open position.");
++  for (const p of account.positions) {
++    lines.push(
++      `- ${p.market} ${p.baseAmount > 0 ? "LONG" : "SHORT"} ${Math.abs(p.baseAmount)} @ $${p.entryPrice.toPrecision(6)} ` +
++      `(notional $${p.notionalUsd.toFixed(2)}, uPnL ${p.unrealizedPnlUsd >= 0 ? "+" : ""}$${p.unrealizedPnlUsd.toFixed(2)}, ` +
++      `liquidation ${p.liqPrice ? `$${p.liqPrice.toPrecision(6)}` : "none"})`,
++    );
++  }
++  const opened = num(db, OPENED_COUNT_KEY);
++  lines.push(
++    `Limits: leverage max ${opened < PERP_LIMITS.starterTrades ? `1x (starter: ${opened}/${PERP_LIMITS.starterTrades} trades done, then 5x)` : `${PERP_LIMITS.maxLeverage}x`}, ` +
++    `collateral max ${PERP_LIMITS.maxCollateralShare * 100}% of capital, risk max ${PERP_LIMITS.maxRiskPct}% at the stop.`,
++  );
++  return lines.join("\n");
++}
++
++/** Total capital (wallet incl. Drift) from the last valuation, or null. */
++export function lastCapitalUsd(db: Database): number | null {
++  try {
++    const raw = getKv(db, "last_known_balance");
++    if (!raw) return null;
++    const parsed = JSON.parse(raw) as { walletValueUsd?: number | null; walletValueComplete?: boolean };
++    return parsed.walletValueComplete && typeof parsed.walletValueUsd === "number" && parsed.walletValueUsd > 0
++      ? parsed.walletValueUsd
++      : null;
++  } catch {
++    return null;
++  }
++}
++
++// ─── Real adapter (Drift SDK, loaded on demand) ─────────────────
++
++export const sdkAdapterFactory: AdapterFactory = async (identity) => {
++  const moduleName = "@drift-labs/sdk";
++  let sdk: any;
++  try {
++    sdk = await import(moduleName);
++  } catch {
++    throw new Error(`Drift SDK not installed. Ask your creator to run, in /home/automaton/workspace/automaton-main: pnpm add @drift-labs/sdk@${DRIFT_SDK_VERSION} && pnpm build, then restart SHUI.`);
++  }
++  const web3 = await import("@solana/web3.js");
++  const { DEFAULT_SOLANA_RPC } = await import("./trading.js");
++  const withKey = identity as ChainIdentity & { getSecretKey?: () => Uint8Array };
++  if (typeof withKey.getSecretKey !== "function") throw new Error("Solana identity does not expose a local signer");
++  const keypair = web3.Keypair.fromSecretKey(withKey.getSecretKey());
++  if (keypair.publicKey.toBase58() !== identity.address) throw new Error("Signer public key does not match central SHUI wallet");
++
++  const connection = new web3.Connection(DEFAULT_SOLANA_RPC, "confirmed");
++  const programId = new web3.PublicKey(sdk.DRIFT_PROGRAM_ID);
++  const userKey = sdk.getUserAccountPublicKeySync(programId, keypair.publicKey, 0);
++  let exists = !!(await connection.getAccountInfo(userKey));
++  const accountLoader = new sdk.BulkAccountLoader(connection, "confirmed", 0);
++  const client = new sdk.DriftClient({
++    connection,
++    wallet: new sdk.Wallet(keypair),
++    env: "mainnet-beta",
++    accountSubscription: { type: "polling", accountLoader },
++    perpMarketIndexes: Object.values(PERP_MARKETS),
++    spotMarketIndexes: [0],
++    subAccountIds: [0],
++    skipLoadUsers: !exists,
++  });
++  await client.subscribe();
++  const BN = sdk.BN;
++  const P = { base: 1e9, price: 1e6, quote: 1e6 };
++  const toBn = (value: number, precision: number) => new BN(Math.round(value * precision).toString());
++  const toNum = (bn: any, precision: number) => Number(bn.toString()) / precision;
++
++  const user = () => client.getUser();
++  const refresh = async () => {
++    if (exists) await user().fetchAccounts();
++    await accountLoader.load();
++  };
++  const ata = () => client.getAssociatedTokenAccount(0);
++
++  const adapter: DriftAdapter = {
++    async account() {
++      if (!exists) return { exists: false, valueUsd: 0, freeCollateralUsd: 0, positions: [], openOrders: 0 };
++      await refresh();
++      const u = user();
++      const positions: PerpPositionView[] = u.getActivePerpPositions().map((p: any) => {
++        const base = toNum(p.baseAssetAmount, P.base);
++        const quoteEntry = Math.abs(toNum(p.quoteEntryAmount, P.quote));
++        const oracle = toNum(client.getOracleDataForPerpMarket(p.marketIndex).price, P.price);
++        const liq = toNum(u.liquidationPrice(p.marketIndex), P.price);
++        return {
++          market: marketName(p.marketIndex),
++          marketIndex: p.marketIndex,
++          baseAmount: base,
++          entryPrice: base !== 0 ? quoteEntry / Math.abs(base) : 0,
++          notionalUsd: Math.abs(base) * oracle,
++          unrealizedPnlUsd: toNum(u.getUnrealizedPNL(true, p.marketIndex), P.quote),
++          liqPrice: liq > 0 ? liq : null,
++        };
++      }).filter((p: PerpPositionView) => p.baseAmount !== 0);
++      return {
++        exists: true,
++        valueUsd: toNum(u.getNetUsdValue(), P.quote),
++        freeCollateralUsd: toNum(u.getFreeCollateral(), P.quote),
++        positions,
++        openOrders: u.getOpenOrders().length,
++      };
++    },
++    async oraclePrice(marketIndex) {
++      return toNum(client.getOracleDataForPerpMarket(marketIndex).price, P.price);
++    },
++    async sizeRules(marketIndex) {
++      const market = client.getPerpMarketAccount(marketIndex);
++      return { min: toNum(market.amm.minOrderSize, P.base), step: toNum(market.amm.orderStepSize, P.base) };
++    },
++    async estimateLiqPrice(marketIndex, baseDelta, entryPrice) {
++      if (!exists) return null;
++      const liq = toNum(user().liquidationPrice(marketIndex, toBn(baseDelta, P.base), toBn(entryPrice, P.price)), P.price);
++      return liq > 0 ? liq : null;
++    },
++    async deposit(usdc) {
++      const amount = toBn(usdc, P.quote);
++      if (!exists) {
++        const [sig] = await client.initializeUserAccountAndDepositCollateral(amount, await ata(), 0, 0);
++        exists = true;
++        try {
++          await client.addUser(0);
++        } catch {
++          // the deposit landed; the next call loads the new account
++        }
++        return sig;
++      }
++      return client.deposit(amount, 0, await ata());
++    },
++    async withdraw(usdc) {
++      return client.withdraw(toBn(usdc, P.quote), 0, await ata(), true);
++    },
++    async open(p) {
++      const dir = p.direction === "long" ? sdk.PositionDirection.LONG : sdk.PositionDirection.SHORT;
++      const exit = p.direction === "long" ? sdk.PositionDirection.SHORT : sdk.PositionDirection.LONG;
++      const base = toBn(p.baseAmount, P.base);
++      const orders = [
++        sdk.getMarketOrderParams({ marketIndex: p.marketIndex, marketType: sdk.MarketType.PERP, direction: dir, baseAssetAmount: base, price: toBn(p.worstPrice, P.price) }),
++        sdk.getTriggerMarketOrderParams({
++          marketIndex: p.marketIndex, marketType: sdk.MarketType.PERP, direction: exit, baseAssetAmount: base, reduceOnly: true,
++          triggerPrice: toBn(p.stopPrice, P.price),
++          triggerCondition: p.direction === "long" ? sdk.OrderTriggerCondition.BELOW : sdk.OrderTriggerCondition.ABOVE,
++        }),
++      ];
++      if (p.takeProfitPrice) {
++        orders.push(sdk.getTriggerMarketOrderParams({
++          marketIndex: p.marketIndex, marketType: sdk.MarketType.PERP, direction: exit, baseAssetAmount: base, reduceOnly: true,
++          triggerPrice: toBn(p.takeProfitPrice, P.price),
++          triggerCondition: p.direction === "long" ? sdk.OrderTriggerCondition.ABOVE : sdk.OrderTriggerCondition.BELOW,
++        }));
++      }
++      return client.placeOrders(orders.map((o: any) => sdk.getOrderParams(o)));
++    },
++    async close(marketIndex) {
++      await refresh();
++      try {
++        await client.cancelOrders(sdk.MarketType.PERP, marketIndex);
++      } catch {
++        // no open order on this market
++      }
++      const pos = user().getPerpPosition(marketIndex);
++      if (!pos || pos.baseAssetAmount.isZero()) return "no-position";
++      return client.closePosition(marketIndex);
++    },
++    async dispose() {
++      try {
++        await client.unsubscribe();
++      } catch {
++        // ignore
++      }
++    },
++  };
++  return adapter;
++};
++
++// ─── Tools ───────────────────────────────────────────────────────
++
++function solanaIdentity(ctx: { identity: { chainIdentity?: ChainIdentity } }): ChainIdentity | null {
++  const id = ctx.identity.chainIdentity;
++  return id && id.chainType === "solana" ? id : null;
++}
++
++async function withAdapter<T>(factory: AdapterFactory, identity: ChainIdentity, fn: (a: DriftAdapter) => Promise<T>): Promise<T> {
++  const adapter = await factory(identity);
++  try {
++    return await fn(adapter);
++  } finally {
++    await adapter.dispose();
++  }
++}
++
++const errText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 400);
++
++export function createPerpTools(factory: AdapterFactory = sdkAdapterFactory): AutomatonTool[] {
++  const marketParam = { type: "string", enum: Object.keys(PERP_MARKETS), description: "SOL-PERP, BTC-PERP or ETH-PERP." };
++  return [
++    {
++      name: "perp_positions",
++      description: "Your Drift perpetuals account: value, free collateral, open long/short positions with PnL and liquidation price, limits.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => {
++        const identity = solanaIdentity(ctx);
++        if (!identity) return "Solana identity unavailable.";
++        try {
++          return await withAdapter(factory, identity, async (a) => {
++            const account = await a.account();
++            if (account.exists) {
++              savePerpCache(ctx.db.raw, account);
++              recordFlatPnl(ctx.db.raw, account);
++            }
++            return formatPerpAccount(account, ctx.db.raw);
++          });
++        } catch (err) {
++          return `Drift unavailable: ${errText(err)}`;
++        }
++      },
++    },
++    {
++      name: "perp_deposit",
++      description:
++        "Move USDC from your wallet to your Drift account as collateral for perpetuals (creates the account the first time, " +
++        "~0.035 SOL rent, refundable). Max 50% of your total capital on Drift.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: { usdc: { type: "number" }, dryRun: { type: "boolean" } }, required: ["usdc"] },
++      execute: async (args, ctx) => {
++        const identity = solanaIdentity(ctx);
++        if (!identity) return "Solana identity unavailable.";
++        const usdc = Number(args.usdc);
++        if (!(usdc >= 1)) return "Blocked: usdc must be at least 1.";
++        const db = ctx.db.raw;
++        const capital = lastCapitalUsd(db);
++        if (capital === null) return "Blocked: total capital unknown (wallet valuation incomplete). Try again after the next valuation.";
++        try {
++          return await withAdapter(factory, identity, async (a) => {
++            const account = await a.account();
++            const room = maxDepositUsd(capital, account.valueUsd);
++            if (usdc > room + 1e-6) {
++              return `Blocked: Drift collateral would exceed ${PERP_LIMITS.maxCollateralShare * 100}% of your capital ` +
++                `($${capital.toFixed(2)}; already $${account.valueUsd.toFixed(2)} on Drift). Max deposit now: $${room.toFixed(2)}.`;
++            }
++            if (args.dryRun === true) {
++              return `Dry run: would deposit ${usdc} USDC to Drift${account.exists ? "" : " (account creation first)"}. Room left after: $${(room - usdc).toFixed(2)}.`;
++            }
++            const sig = await a.deposit(usdc);
++            addNetDeposits(db, usdc);
++            recordPerpTransfer(db, { signature: sig, direction: "deposit", usdc });
++            const after = await a.account();
++            savePerpCache(db, after);
++            return `Deposited ${usdc} USDC to Drift (tx ${sig}). Account value $${after.valueUsd.toFixed(2)}, free collateral $${after.freeCollateralUsd.toFixed(2)}.`;
++          });
++        } catch (err) {
++          return `Drift deposit failed: ${errText(err)}`;
++        }
++      },
++    },
++    {
++      name: "perp_withdraw",
++      description: 'Move USDC from Drift back to your wallet (only free collateral, never borrows). usdc as a number or "all".',
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: { usdc: { type: "string" } }, required: ["usdc"] },
++      execute: async (args, ctx) => {
++        const identity = solanaIdentity(ctx);
++        if (!identity) return "Solana identity unavailable.";
++        const db = ctx.db.raw;
++        try {
++          return await withAdapter(factory, identity, async (a) => {
++            const account = await a.account();
++            if (!account.exists) return "No Drift account.";
++            const all = String(args.usdc).trim() === "all";
++            const usdc = all ? Math.floor(account.freeCollateralUsd * 1e6) / 1e6 : Number(args.usdc);
++            if (!(usdc > 0)) return "Blocked: nothing to withdraw (free collateral $" + account.freeCollateralUsd.toFixed(2) + ").";
++            if (usdc > account.freeCollateralUsd + 1e-6) return `Blocked: only $${account.freeCollateralUsd.toFixed(2)} of free collateral.`;
++            const sig = await a.withdraw(usdc);
++            addNetDeposits(db, -usdc);
++            recordPerpTransfer(db, { signature: sig, direction: "withdraw", usdc });
++            const after = await a.account();
++            savePerpCache(db, after);
++            recordFlatPnl(db, after);
++            return `Withdrew ${usdc} USDC from Drift (tx ${sig}). Account value now $${after.valueUsd.toFixed(2)}.`;
++          });
++        } catch (err) {
++          return `Drift withdraw failed: ${errText(err)}`;
++        }
++      },
++    },
++    {
++      name: "perp_open",
++      description:
++        "Open a leveraged LONG or SHORT on Drift (SOL-PERP, BTC-PERP, ETH-PERP). sizeUsd = position notional. stopPrice is mandatory " +
++        "and is placed on Drift with the entry (works while you sleep); takeProfitPrice optional. Checked by code: leverage max 5x " +
++        "(first 5 trades 1x), max 2% of capital lost at the stop, liquidation at least 1.5x the stop distance away, circuit breaker. " +
++        "Use dryRun first to see leverage, risk and liquidation.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: {
++        type: "object",
++        properties: {
++          market: marketParam,
++          direction: { type: "string", enum: ["long", "short"] },
++          sizeUsd: { type: "number" },
++          stopPrice: { type: "number" },
++          takeProfitPrice: { type: "number" },
++          dryRun: { type: "boolean" },
++        },
++        required: ["market", "direction", "sizeUsd", "stopPrice"],
++      },
++      execute: async (args, ctx) => {
++        const identity = solanaIdentity(ctx);
++        if (!identity) return "Solana identity unavailable.";
++        const marketIndex = PERP_MARKETS[String(args.market ?? "")];
++        if (marketIndex === undefined) return `Blocked: market must be one of ${Object.keys(PERP_MARKETS).join(", ")}.`;
++        const direction = String(args.direction) as PerpDirection;
++        if (direction !== "long" && direction !== "short") return 'Blocked: direction must be "long" or "short".';
++        const sizeUsd = Number(args.sizeUsd);
++        const stopPrice = Number(args.stopPrice);
++        const takeProfitPrice = args.takeProfitPrice === undefined ? undefined : Number(args.takeProfitPrice);
++        if (!(sizeUsd > 0) || !(stopPrice > 0) || (takeProfitPrice !== undefined && !(takeProfitPrice > 0))) {
++          return "Blocked: sizeUsd and stopPrice must be positive numbers.";
++        }
++        const db = ctx.db.raw;
++        try {
++          return await withAdapter(factory, identity, async (a) => {
++            const account = await a.account();
++            if (!account.exists || !(account.valueUsd > 0)) return "Blocked: no collateral on Drift. Use perp_deposit first.";
++            if (account.positions.some((p) => p.marketIndex === marketIndex)) {
++              return `Blocked: you already have a ${marketName(marketIndex)} position. Close it first (perp_close) — one position per market.`;
++            }
++            const entryPrice = await a.oraclePrice(marketIndex);
++            const rules = await a.sizeRules(marketIndex);
++            const baseAmount = roundToStep(sizeUsd / entryPrice, rules.step);
++            if (baseAmount < rules.min) {
++              return `Blocked: size too small. ${marketName(marketIndex)} minimum is ${rules.min} units (~$${(rules.min * entryPrice).toFixed(2)}).`;
++            }
++            const realSize = baseAmount * entryPrice;
++            const liqPrice = await a.estimateLiqPrice(marketIndex, direction === "long" ? baseAmount : -baseAmount, entryPrice);
++            const walletCapital = lastCapitalUsd(db);
++            const verdict = validatePerpOpen({
++              direction, entryPrice, sizeUsd: realSize, stopPrice, takeProfitPrice,
++              capitalUsd: walletCapital ?? 0,
++              accountValueUsd: account.valueUsd,
++              otherNotionalUsd: account.positions.reduce((s, p) => s + p.notionalUsd, 0),
++              liqPrice,
++              openedCount: num(db, OPENED_COUNT_KEY),
++              pausedUntil: tradingPausedUntil(db),
++            });
++            const summary =
++              `${marketName(marketIndex)} ${direction.toUpperCase()} ${baseAmount} units (~$${realSize.toFixed(2)}) at ~$${entryPrice.toPrecision(6)}, ` +
++              `stop $${stopPrice}${takeProfitPrice ? `, target $${takeProfitPrice}` : ""} | leverage ${verdict.leverage.toFixed(2)}x (max ${verdict.maxLeverage}x) | ` +
++              `risk at stop $${verdict.riskUsd.toFixed(2)} (max $${verdict.maxRiskUsd.toFixed(2)}) | liquidation ${liqPrice ? `$${liqPrice.toPrecision(6)}` : "none"}`;
++            if (!verdict.ok) return `Blocked: ${verdict.reasons.join("; ")}.\nPlan: ${summary}`;
++            if (args.dryRun === true) return `Dry run OK: ${summary}`;
++            const worstPrice = entryPrice * (direction === "long" ? 1 + PERP_LIMITS.entrySlippagePct / 100 : 1 - PERP_LIMITS.entrySlippagePct / 100);
++            const sig = await a.open({ marketIndex, direction, baseAmount, worstPrice, stopPrice, takeProfitPrice });
++            setKv(db, OPENED_COUNT_KEY, String(num(db, OPENED_COUNT_KEY) + 1));
++            try {
++              savePerpCache(db, await a.account());
++            } catch {
++              // the monitor refreshes it
++            }
++            return `Opened: ${summary} (tx ${sig}). The stop${takeProfitPrice ? " and target are" : " is"} on Drift. ` +
++              "Journal the plan (journal_add) and check it with perp_positions.";
++          });
++        } catch (err) {
++          return `Drift order failed: ${errText(err)}`;
++        }
++      },
++    },
++    {
++      name: "perp_close",
++      description: "Close your Drift position on a market at market price and cancel its stop/target orders. Always allowed.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: { market: marketParam }, required: ["market"] },
++      execute: async (args, ctx) => {
++        const identity = solanaIdentity(ctx);
++        if (!identity) return "Solana identity unavailable.";
++        const marketIndex = PERP_MARKETS[String(args.market ?? "")];
++        if (marketIndex === undefined) return `Blocked: market must be one of ${Object.keys(PERP_MARKETS).join(", ")}.`;
++        const db = ctx.db.raw;
++        try {
++          return await withAdapter(factory, identity, async (a) => {
++            const sig = await a.close(marketIndex);
++            if (sig === "no-position") return `No ${marketName(marketIndex)} position (its open orders were cancelled).`;
++            const after = await a.account();
++            savePerpCache(db, after);
++            const pnl = recordFlatPnl(db, after);
++            return `Closed ${marketName(marketIndex)} (tx ${sig}).` +
++              (pnl !== null ? ` Realized PnL recorded: ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.` : "") +
++              ` Account value $${after.valueUsd.toFixed(2)}. Write the lesson (journal_add).`;
++          });
++        } catch (err) {
++          return `Drift close failed: ${errText(err)}`;
++        }
++      },
++    },
++  ];
++}
++
++// ─── Monitor ─────────────────────────────────────────────────────
++
++/**
++ * One monitor pass: refresh the cache (valuation), record PnL when flat,
++ * warn when a position gets close to liquidation.
++ */
++export async function runPerpTick(db: Database, identity: ChainIdentity, factory: AdapterFactory = sdkAdapterFactory, now: Date = new Date()): Promise<void> {
++  if (!perpsInUse(db)) return;
++  await withAdapter(factory, identity, async (a) => {
++    const account = await a.account();
++    if (!account.exists) return;
++    savePerpCache(db, account, now);
++    recordFlatPnl(db, account, now);
++    for (const p of account.positions) {
++      if (!p.liqPrice) continue;
++      const price = await a.oraclePrice(p.marketIndex);
++      const distPct = (Math.abs(price - p.liqPrice) / price) * 100;
++      const warnKey = `perp.liq_warned.${p.marketIndex}`;
++      if (distPct < 5 && getKv(db, warnKey) !== p.entryPrice.toString()) {
++        setKv(db, warnKey, p.entryPrice.toString());
++        queueSystemNotice(db, "system:perps",
++          `${p.market} is ${distPct.toFixed(1)}% from liquidation (price $${price.toPrecision(6)}, liquidation $${p.liqPrice.toPrecision(6)}). ` +
++          "Check that your stop is still in place (perp_positions) or reduce the position (perp_close).", now);
++      }
++    }
++  });
++}
++
++export function startPerpMonitor(db: Database, identity: ChainIdentity | undefined, log: (m: string) => void = () => {}): NodeJS.Timeout | null {
++  if (!identity || identity.chainType !== "solana") return null;
++  let running = false;
++  const tick = async () => {
++    if (running || !perpsInUse(db)) return;
++    running = true;
++    try {
++      await runPerpTick(db, identity);
++    } catch (err) {
++      log(`[PERPS] monitor: ${errText(err)}`);
++    } finally {
++      running = false;
++    }
++  };
++  const timer = setInterval(() => void tick(), MONITOR_MS);
++  timer.unref();
++  void tick();
++  return timer;
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index ae8c259..a72e76d 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -39,7 +39,11 @@ To act while you sleep: price_alert wakes you at a level; backtest a rule, then
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
+ A daily report is sent to your creator automatically; message_creator is for important events only. Never swap SOL <-> USDC back and forth: it only costs fees.
+-If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
++If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.
++Leverage (Drift perpetuals SOL/BTC/ETH-PERP, long or short): perp_deposit USDC as collateral (max 50% of capital),
++then perp_open with a mandatory stopPrice (placed on Drift, works while you sleep), dryRun first. Code limits: 5x max
++(1x for your first 5 trades), 2% of capital lost at the stop, liquidation far beyond the stop. A short lets you profit
++from a 4h downtrend. Leverage multiplies losses as much as gains: use it only on A+ setups. perp_positions, perp_close.`;
+ 
+ export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [
+   { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
+@@ -166,7 +170,7 @@ export function computeTradeStats(db: Database, today = new Date().toISOString()
+   try {
+     rows = db.prepare(
+       `SELECT day, realized_pnl_usd AS pnl FROM shui_ledger
+-       WHERE kind = 'swap' AND output_mint = ? AND input_mint != ? ORDER BY ts`,
++       WHERE (kind = 'swap' AND output_mint = ? AND input_mint != ?) OR kind = 'perp_pnl' ORDER BY ts`,
+     ).all(USDC_MINT, USDC_MINT) as Array<{ day: string; pnl: number }>;
+   } catch {
+     rows = [];
+diff --git a/src/solana/wallet-valuation.ts b/src/solana/wallet-valuation.ts
+index a61a1cb..9eb6715 100644
+--- a/src/solana/wallet-valuation.ts
++++ b/src/solana/wallet-valuation.ts
+@@ -317,6 +317,8 @@ export function buildCentralWalletValuation(params: {
+   solPriceUsd: number | null;
+   /** Total USD value per token mint (whole position), when known. */
+   tokenValuesUsd?: Map<string, number>;
++  /** Assets held outside the wallet (e.g. the Drift account), already valued or unpriced. */
++  extraAssets?: Array<{ assetId: string; symbol?: string; amount: number; priceUsd: number | null }>;
+   valuedAt?: Date;
+ }): WalletValuation {
+   const assets: WalletAssetValuation[] = [
+@@ -343,6 +345,7 @@ export function buildCentralWalletValuation(params: {
+             : null,
+       });
+     }),
++    ...(params.extraAssets ?? []).map((asset) => valueWalletAsset(asset)),
+   ];
+ 
+   return aggregateWalletValuation(

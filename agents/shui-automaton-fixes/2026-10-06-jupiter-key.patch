@@ -1,0 +1,112 @@
+diff --git a/src/__tests__/trading-tools.test.ts b/src/__tests__/trading-tools.test.ts
+index 6e35386..2c55baf 100644
+--- a/src/__tests__/trading-tools.test.ts
++++ b/src/__tests__/trading-tools.test.ts
+@@ -217,3 +217,15 @@ describe("market API rate limits", () => {
+     await expect(fetchJson("https://transaction-v1.raydium.io/x", {}, { retryDelaysMs: [1], fetchImpl })).rejects.toThrow(/rate-limiting.*Wait a minute/);
+   });
+ });
++
++describe("jupiter api key", () => {
++  afterEach(() => { delete process.env.JUPITER_API_KEY; });
++  it("uses the keyed API and header when JUPITER_API_KEY is set", async () => {
++    const { jupiterBaseUrl, jupiterHeaders } = await import("../solana/jupiter.js");
++    expect(jupiterBaseUrl()).toContain("lite-api.jup.ag");
++    expect(jupiterHeaders()["x-api-key"]).toBeUndefined();
++    process.env.JUPITER_API_KEY = "k";
++    expect(jupiterBaseUrl()).toBe("https://api.jup.ag/swap/v1");
++    expect(jupiterHeaders()["x-api-key"]).toBe("k");
++  });
++});
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index 725f769..6bba164 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -12,15 +12,33 @@ import {
+   TOKEN_PROGRAM_ID,
+   type SolanaTradingService,
+ } from "./trading.js";
+-import { fetchJson } from "./http-json.js";
++import { fetchJson, HttpJsonError } from "./http-json.js";
+ import { runSwap, type SwapExpectation, type SwapVenue, type VenueQuote } from "./swap-engine.js";
+ 
+ export const JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+ const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
+ const MAX_PRIORITY_FEE_LAMPORTS = 200_000; // 0.0002 SOL cap per swap
+ 
++/**
++ * The keyless lite API is heavily rate-limited (HTTP 429 on SHUI's first
++ * swap). With a free key from portal.jup.ag in JUPITER_API_KEY, the keyed
++ * API is used instead.
++ */
+ export function jupiterBaseUrl(): string {
+-  return (process.env.JUPITER_API_URL ?? "https://lite-api.jup.ag/swap/v1").replace(/\/$/, "");
++  const fallback = process.env.JUPITER_API_KEY ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1";
++  return (process.env.JUPITER_API_URL ?? fallback).replace(/\/$/, "");
++}
++
++export function jupiterHeaders(extra: Record<string, string> = {}): Record<string, string> {
++  const key = process.env.JUPITER_API_KEY?.trim();
++  return { accept: "application/json", ...extra, ...(key ? { "x-api-key": key } : {}) };
++}
++
++function explainRateLimit(error: unknown): never {
++  if (error instanceof HttpJsonError && error.status === 429) {
++    throw new Error(`${error.message} Jupiter's free API is busy: use raydium_swap for this trade, or retry later.`);
++  }
++  throw error;
+ }
+ 
+ export interface JupiterQuoteResponse {
+@@ -127,7 +145,7 @@ export const jupiterVenue: SwapVenue = {
+     url.searchParams.set("amount", amount.toString());
+     url.searchParams.set("slippageBps", String(slippageBps));
+     url.searchParams.set("swapMode", "ExactIn");
+-    const response = await fetchJson(url, { headers: { accept: "application/json" } });
++    const response = await fetchJson(url, { headers: jupiterHeaders() }).catch(explainRateLimit);
+     const raw: unknown = response.body;
+     if (!response.ok) throw new Error(`Jupiter quote HTTP ${response.status}: ${JSON.stringify(raw).slice(0, 300)}`);
+     return parseJupiterQuote(raw, { inputMint, outputMint, inputAmount: amount });
+@@ -135,7 +153,7 @@ export const jupiterVenue: SwapVenue = {
+   async build(service, { quote }) {
+     const response = await fetchJson(`${jupiterBaseUrl()}/swap`, {
+       method: "POST",
+-      headers: { "content-type": "application/json", accept: "application/json" },
++      headers: jupiterHeaders({ "content-type": "application/json" }),
+       body: JSON.stringify({
+         quoteResponse: quote.raw,
+         userPublicKey: service.address,
+@@ -143,7 +161,7 @@ export const jupiterVenue: SwapVenue = {
+         dynamicComputeUnitLimit: true,
+         prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: MAX_PRIORITY_FEE_LAMPORTS, priorityLevel: "medium" } },
+       }),
+-    }, { timeoutMs: 20_000 });
++    }, { timeoutMs: 20_000 }).catch(explainRateLimit);
+     const body = response.body as { swapTransaction?: string; error?: string };
+     if (!response.ok || !body.swapTransaction) throw new Error(`Jupiter swap build failed: ${JSON.stringify(body).slice(0, 300)}`);
+     return service.deserializeSwapTransaction(body.swapTransaction);
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 0be03b6..b55bac0 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -14,7 +14,7 @@ import type { AutomatonDatabase, AutomatonTool } from "../types.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+ import { NATIVE_SOL_MINT, SolanaTradingService } from "./trading.js";
+ import { runSwap, type SwapVenue } from "./swap-engine.js";
+-import { jupiterVenue } from "./jupiter.js";
++import { jupiterHeaders, jupiterVenue } from "./jupiter.js";
+ import { raydiumVenue } from "./swap-tool.js";
+ import { fetchJson } from "./http-json.js";
+ import { queueSystemNotice } from "../integration/creator-chat.js";
+@@ -74,8 +74,9 @@ export function isTriggered(order: Pick<Order, "condition" | "triggerPriceUsd">,
+ export type PriceFetcher = (mints: string[]) => Promise<Record<string, number>>;
+ 
+ export const jupiterPrices: PriceFetcher = async (mints) => {
+-  const base = (process.env.JUPITER_PRICE_URL ?? "https://lite-api.jup.ag/price/v3").replace(/\/$/, "");
+-  const response = await fetchJson(`${base}?ids=${mints.join(",")}`, {}, { timeoutMs: 10_000 });
++  const fallback = process.env.JUPITER_API_KEY ? "https://api.jup.ag/price/v3" : "https://lite-api.jup.ag/price/v3";
++  const base = (process.env.JUPITER_PRICE_URL ?? fallback).replace(/\/$/, "");
++  const response = await fetchJson(`${base}?ids=${mints.join(",")}`, { headers: jupiterHeaders() }, { timeoutMs: 10_000 });
+   if (!response.ok) throw new Error(`Jupiter price HTTP ${response.status}`);
+   const body = response.body as Record<string, { usdPrice?: number; price?: string } | null>;
+   const data = ((body as { data?: unknown }).data ?? body) as Record<string, { usdPrice?: number; price?: string } | null>;

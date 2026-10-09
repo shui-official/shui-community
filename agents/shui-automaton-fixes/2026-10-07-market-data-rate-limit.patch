@@ -1,0 +1,105 @@
+diff --git a/src/__tests__/lot5-trading.test.ts b/src/__tests__/lot5-trading.test.ts
+index 988c062..165d8fd 100644
+--- a/src/__tests__/lot5-trading.test.ts
++++ b/src/__tests__/lot5-trading.test.ts
+@@ -85,3 +85,29 @@ describe("loss-streak stop", () => {
+     expect(v.reasons.join()).toMatch(/2 losing trades today/);
+   });
+ });
++
++describe("market data rate limit", () => {
++  it("caches candles and spaces GeckoTerminal calls (~30/min limit)", async () => {
++    const { cacheTtlMs, defaultFetcher } = await import("../solana/technical-analysis.js");
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=4&limit=300")).toBe(600_000);
++    expect(cacheTtlMs("https://api.geckoterminal.com/api/v2/networks/solana/pools/P/ohlcv/hour?aggregate=1&limit=300")).toBe(180_000);
++    expect(cacheTtlMs("https://api.dexscreener.com/tokens/v1/solana/M")).toBe(300_000);
++    const calls: number[] = [];
++    const realFetch = globalThis.fetch;
++    globalThis.fetch = (async () => {
++      calls.push(Date.now());
++      return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
++    }) as typeof fetch;
++    try {
++      const a = "https://api.geckoterminal.com/api/v2/networks/solana/pools/CACHE1/ohlcv/hour?aggregate=1&limit=300";
++      const b = "https://api.geckoterminal.com/api/v2/networks/solana/pools/CACHE2/ohlcv/hour?aggregate=1&limit=300";
++      await defaultFetcher(a);
++      await defaultFetcher(a); // cached
++      await defaultFetcher(b);
++      expect(calls).toHaveLength(2);
++      expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(2_000);
++    } finally {
++      globalThis.fetch = realFetch;
++    }
++  }, 10_000);
++});
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 08e286e..05d760c 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -308,9 +308,52 @@ export function candlesFromGecko(body: unknown): Candle[] {
+ }
+ 
+ export type Fetcher = (url: string) => Promise<unknown>;
++/**
++ * GeckoTerminal's free API allows ~30 requests per minute for the whole
++ * process (setup_scan, technical_analysis, backtests and the strategy runner
++ * share it). Calls are spaced out, retried longer on HTTP 429, and responses
++ * are cached for as long as the candles cannot change much.
++ */
++const GECKO_MIN_INTERVAL_MS = 2_200;
++const GECKO_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
++const CACHE_MAX_ENTRIES = 300;
++const responseCache = new Map<string, { at: number; body: unknown }>();
++let geckoQueue: Promise<void> = Promise.resolve();
++let geckoLastCall = 0;
++
++/** How long a market-data response stays valid. */
++export function cacheTtlMs(url: string): number {
++  if (url.includes("api.dexscreener.com")) return 5 * 60_000;
++  const m = /\/ohlcv\/(minute|hour|day)\?aggregate=(\d+)/.exec(url);
++  if (!m) return 60_000;
++  if (m[1] === "minute") return 60_000;
++  if (m[1] === "day") return 30 * 60_000;
++  return Number(m[2]) >= 4 ? 10 * 60_000 : 3 * 60_000;
++}
++
++function geckoSlot(): Promise<void> {
++  const slot = geckoQueue.then(async () => {
++    const wait = geckoLastCall + GECKO_MIN_INTERVAL_MS - Date.now();
++    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
++    geckoLastCall = Date.now();
++  });
++  geckoQueue = slot.catch(() => {});
++  return slot;
++}
++
+ export const defaultFetcher: Fetcher = async (url) => {
+-  const response = await fetchJson(url, { headers: { accept: "application/json;version=20230302" } });
++  const cached = responseCache.get(url);
++  if (cached && Date.now() - cached.at < cacheTtlMs(url)) return cached.body;
++  const gecko = url.includes("api.geckoterminal.com");
++  if (gecko) await geckoSlot();
++  const response = await fetchJson(
++    url,
++    { headers: { accept: "application/json;version=20230302" } },
++    gecko ? { retryDelaysMs: GECKO_RETRY_DELAYS_MS } : {},
++  );
+   if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
++  if (responseCache.size >= CACHE_MAX_ENTRIES) responseCache.delete(responseCache.keys().next().value as string);
++  responseCache.set(url, { at: Date.now(), body: response.body });
+   return response.body;
+ };
+ 
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 069fe9f..0d17fbc 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -292,7 +292,7 @@ export function createTradingDeskTools(): AutomatonTool[] {
+         "Scan a watchlist of liquid Solana tokens (default SOL, cbBTC, ETH, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
+         "and 1h (entry) and return the setups that follow the playbook: LONG in a 4h uptrend (1h RSI 35-68, momentum turning), " +
+         "SHORT via Drift perpetuals for SOL/BTC/ETH in a 4h downtrend (1h bounce fading), liquidity >= $50k, reward/risk >= 2, " +
+-        "with entry, stop and target. Takes ~40 s.",
++        "with entry, stop and target. Takes up to ~1 min (market data is rate-limited).",
+       category: "financial",
+       riskLevel: "safe",
+       parameters: { type: "object", properties: { mints: { type: "array", items: { type: "string" }, description: "Optional token mints (max 12)." } } },

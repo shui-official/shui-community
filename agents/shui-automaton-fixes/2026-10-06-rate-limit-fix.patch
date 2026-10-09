@@ -1,0 +1,214 @@
+diff --git a/src/__tests__/trading-tools.test.ts b/src/__tests__/trading-tools.test.ts
+index ea869ed..6e35386 100644
+--- a/src/__tests__/trading-tools.test.ts
++++ b/src/__tests__/trading-tools.test.ts
+@@ -200,3 +200,20 @@ describe("message_creator and payment links", () => {
+     expect(JSON.parse(out).note).toContain("not revenue");
+   });
+ });
++
++describe("market API rate limits", () => {
++  it("retries a plain-text rate limit, then parses JSON", async () => {
++    const { fetchJson } = await import("../solana/http-json.js");
++    const replies = [new Response("Rate limit exceeded", { status: 429 }), new Response('{"success":true}', { status: 200 })];
++    const fetchImpl = vi.fn(async () => replies.shift()!) as unknown as typeof fetch;
++    const out = await fetchJson("https://transaction-v1.raydium.io/x", {}, { retryDelaysMs: [1], fetchImpl });
++    expect(out.body).toEqual({ success: true });
++    expect(fetchImpl).toHaveBeenCalledTimes(2);
++  });
++
++  it("gives a readable error when the limit persists", async () => {
++    const { fetchJson } = await import("../solana/http-json.js");
++    const fetchImpl = (async () => new Response("Rate limit exceeded", { status: 429 })) as unknown as typeof fetch;
++    await expect(fetchJson("https://transaction-v1.raydium.io/x", {}, { retryDelaysMs: [1], fetchImpl })).rejects.toThrow(/rate-limiting.*Wait a minute/);
++  });
++});
+diff --git a/src/solana/http-json.ts b/src/solana/http-json.ts
+new file mode 100644
+index 0000000..75970db
+--- /dev/null
++++ b/src/solana/http-json.ts
+@@ -0,0 +1,45 @@
++/**
++ * fetch + JSON for public market APIs (Raydium, Jupiter, GeckoTerminal…).
++ * They answer rate limits with HTTP 429 and a plain-text body ("Rate limit
++ * exceeded"), which made response.json() throw "Unexpected token 'R'".
++ * Rate limits and 5xx are retried after a short pause; a body that is not
++ * JSON becomes a readable error.
++ */
++const RETRY_DELAYS_MS = [1500, 4000];
++
++export class HttpJsonError extends Error {
++  constructor(message: string, readonly status: number) {
++    super(message);
++    this.name = "HttpJsonError";
++  }
++}
++
++export async function fetchJson(
++  url: string | URL,
++  init: RequestInit = {},
++  options: { timeoutMs?: number; retryDelaysMs?: number[]; fetchImpl?: typeof fetch } = {},
++): Promise<{ status: number; ok: boolean; body: unknown }> {
++  const delays = options.retryDelaysMs ?? RETRY_DELAYS_MS;
++  const doFetch = options.fetchImpl ?? fetch;
++  const host = new URL(String(url)).host;
++  for (let attempt = 0; ; attempt++) {
++    const response = await doFetch(url, { ...init, signal: AbortSignal.timeout(options.timeoutMs ?? 15_000) });
++    const text = await response.text();
++    const retryable = response.status === 429 || response.status >= 500 || /rate limit/i.test(text.slice(0, 200));
++    if (retryable && attempt < delays.length) {
++      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
++      continue;
++    }
++    try {
++      return { status: response.status, ok: response.ok, body: JSON.parse(text) };
++    } catch {
++      const snippet = text.slice(0, 120).replace(/\s+/g, " ");
++      throw new HttpJsonError(
++        retryable
++          ? `${host} is rate-limiting requests (HTTP ${response.status}: ${snippet}). Wait a minute before retrying.`
++          : `${host} answered HTTP ${response.status} with a non-JSON body: ${snippet}`,
++        response.status,
++      );
++    }
++  }
++}
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index b2dbb50..725f769 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -12,6 +12,7 @@ import {
+   TOKEN_PROGRAM_ID,
+   type SolanaTradingService,
+ } from "./trading.js";
++import { fetchJson } from "./http-json.js";
+ import { runSwap, type SwapExpectation, type SwapVenue, type VenueQuote } from "./swap-engine.js";
+ 
+ export const JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+@@ -126,13 +127,13 @@ export const jupiterVenue: SwapVenue = {
+     url.searchParams.set("amount", amount.toString());
+     url.searchParams.set("slippageBps", String(slippageBps));
+     url.searchParams.set("swapMode", "ExactIn");
+-    const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+-    const raw: unknown = await response.json();
++    const response = await fetchJson(url, { headers: { accept: "application/json" } });
++    const raw: unknown = response.body;
+     if (!response.ok) throw new Error(`Jupiter quote HTTP ${response.status}: ${JSON.stringify(raw).slice(0, 300)}`);
+     return parseJupiterQuote(raw, { inputMint, outputMint, inputAmount: amount });
+   },
+   async build(service, { quote }) {
+-    const response = await fetch(`${jupiterBaseUrl()}/swap`, {
++    const response = await fetchJson(`${jupiterBaseUrl()}/swap`, {
+       method: "POST",
+       headers: { "content-type": "application/json", accept: "application/json" },
+       body: JSON.stringify({
+@@ -142,9 +143,8 @@ export const jupiterVenue: SwapVenue = {
+         dynamicComputeUnitLimit: true,
+         prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: MAX_PRIORITY_FEE_LAMPORTS, priorityLevel: "medium" } },
+       }),
+-      signal: AbortSignal.timeout(20_000),
+-    });
+-    const body = (await response.json()) as { swapTransaction?: string; error?: string };
++    }, { timeoutMs: 20_000 });
++    const body = response.body as { swapTransaction?: string; error?: string };
+     if (!response.ok || !body.swapTransaction) throw new Error(`Jupiter swap build failed: ${JSON.stringify(body).slice(0, 300)}`);
+     return service.deserializeSwapTransaction(body.swapTransaction);
+   },
+diff --git a/src/solana/market-scan.ts b/src/solana/market-scan.ts
+index 492d19d..355c186 100644
+--- a/src/solana/market-scan.ts
++++ b/src/solana/market-scan.ts
+@@ -4,6 +4,7 @@
+  * search). Compact text: a small local model reads it better than raw JSON.
+  */
+ import type { AutomatonTool } from "../types.js";
++import { fetchJson } from "./http-json.js";
+ 
+ const GECKO = "https://api.geckoterminal.com/api/v2";
+ const DEXSCREENER = "https://api.dexscreener.com";
+@@ -28,12 +29,9 @@ export interface MarketRow {
+ type Fetcher = (url: string) => Promise<unknown>;
+ 
+ const defaultFetch: Fetcher = async (url) => {
+-  const response = await fetch(url, {
+-    headers: { accept: "application/json;version=20230302" },
+-    signal: AbortSignal.timeout(15_000),
+-  });
++  const response = await fetchJson(url, { headers: { accept: "application/json;version=20230302" } });
+   if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
+-  return response.json();
++  return response.body;
+ };
+ 
+ const num = (v: unknown): number | null => {
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 2689507..0be03b6 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -16,6 +16,7 @@ import { NATIVE_SOL_MINT, SolanaTradingService } from "./trading.js";
+ import { runSwap, type SwapVenue } from "./swap-engine.js";
+ import { jupiterVenue } from "./jupiter.js";
+ import { raydiumVenue } from "./swap-tool.js";
++import { fetchJson } from "./http-json.js";
+ import { queueSystemNotice } from "../integration/creator-chat.js";
+ 
+ const ORDER_PREFIX = "order.";
+@@ -74,9 +75,9 @@ export type PriceFetcher = (mints: string[]) => Promise<Record<string, number>>;
+ 
+ export const jupiterPrices: PriceFetcher = async (mints) => {
+   const base = (process.env.JUPITER_PRICE_URL ?? "https://lite-api.jup.ag/price/v3").replace(/\/$/, "");
+-  const response = await fetch(`${base}?ids=${mints.join(",")}`, { signal: AbortSignal.timeout(10_000) });
++  const response = await fetchJson(`${base}?ids=${mints.join(",")}`, {}, { timeoutMs: 10_000 });
+   if (!response.ok) throw new Error(`Jupiter price HTTP ${response.status}`);
+-  const body = (await response.json()) as Record<string, { usdPrice?: number; price?: string } | null>;
++  const body = response.body as Record<string, { usdPrice?: number; price?: string } | null>;
+   const data = ((body as { data?: unknown }).data ?? body) as Record<string, { usdPrice?: number; price?: string } | null>;
+   const prices: Record<string, number> = {};
+   for (const mint of mints) {
+diff --git a/src/solana/raydium.ts b/src/solana/raydium.ts
+index 60420e7..32d3c3e 100644
+--- a/src/solana/raydium.ts
++++ b/src/solana/raydium.ts
+@@ -1,4 +1,5 @@
+ import { API_URLS } from "@raydium-io/raydium-sdk-v2";
++import { fetchJson } from "./http-json.js";
+ 
+ export const SOL_MINT =
+   "So11111111111111111111111111111111111111112";
+@@ -44,14 +45,14 @@ export class RaydiumQuoteService {
+     // Raydium compute API expects slippage as a percentage.
+     url.searchParams.set("slippageBps", slippageBps.toString());
+ 
+-    const response = await fetch(url, {
++    const response = await fetchJson(url, {
+       method: "GET",
+       headers: {
+         accept: "application/json",
+       },
+     });
+ 
+-    const raw: unknown = await response.json();
++    const raw: unknown = response.body;
+ 
+     if (!response.ok) {
+       throw new Error(
+@@ -106,7 +107,7 @@ export async function buildRaydiumSwapTransactions(params: {
+   const url =
+     `${API_URLS.SWAP_HOST}${API_URLS.SWAP_TX}swap-base-in`;
+ 
+-  const response = await fetch(url, {
++  const response = await fetchJson(url, {
+     method: "POST",
+     headers: {
+       "content-type": "application/json",
+@@ -125,8 +126,7 @@ export async function buildRaydiumSwapTransactions(params: {
+     }),
+   });
+ 
+-  const result =
+-    (await response.json()) as RaydiumBuildResult;
++  const result = response.body as RaydiumBuildResult;
+ 
+   if (!response.ok || !result.success) {
+     throw new Error(

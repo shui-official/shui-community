@@ -1,0 +1,104 @@
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 82a12f7..5454286 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -102,6 +102,10 @@ let persistentOrchestrator: Orchestrator | undefined;
+ let backgroundTickInFlight = false;
+ 
+ const LIFESPAN_TICK_INTERVAL_MS = 10 * 60_000;
++const DELEGATED_WORK_SLEEP_MS = 5 * 60_000;
++
++/** Conway credits unavailable since (ms); used to log the outage once. */
++let conwayCreditsUnavailableSince: number | null = null;
+ let lastLifespanTickAt = 0;
+ let lifespanTickInFlight = false;
+ 
+@@ -838,7 +842,16 @@ export async function runAgentLoop(
+             config,
+             "[ORCHESTRATOR] All delegated work is active and no self-assigned parent task remains. Sleeping to avoid idle loop.",
+           );
+-          db.setKV("sleep_until", new Date(Date.now() + 60_000).toISOString());
++          // The orchestrator keeps ticking while SHUI sleeps and wakes it when
++          // the goal finishes, so there is no need to wake every minute (each
++          // wake re-reads balances, prices and Conway). Configurable.
++          const delegatedSleepMs = Number(
++            (config as { delegatedWorkSleepMs?: number }).delegatedWorkSleepMs ?? DELEGATED_WORK_SLEEP_MS,
++          );
++          db.setKV(
++            "sleep_until",
++            new Date(Date.now() + (Number.isFinite(delegatedSleepMs) && delegatedSleepMs >= 30_000 ? delegatedSleepMs : DELEGATED_WORK_SLEEP_MS)).toISOString(),
++          );
+           db.setAgentState("sleeping");
+           onStateChange?.("sleeping");
+           running = false;
+@@ -1485,8 +1498,19 @@ async function getFinancialState(
+   try {
+     creditsCents = await conway.getCreditsBalance();
+     if (creditsCents > 0) _lastKnownCredits = creditsCents;
++    if (conwayCreditsUnavailableSince !== null) {
++      logger.info("Conway credits balance available again");
++      conwayCreditsUnavailableSince = null;
++    }
+   } catch (error) {
+-    logger.error("Credits balance fetch failed", error instanceof Error ? error : undefined);
++    // Logged once per outage: it was logged as an ERROR twice per wake
++    // (~120 times per hour) although SHUI does not depend on Conway.
++    if (conwayCreditsUnavailableSince === null) {
++      conwayCreditsUnavailableSince = Date.now();
++      logger.warn(
++        `Conway credits unavailable (shown as UNKNOWN; not a balance, SHUI continues locally): ${error instanceof Error ? error.message : String(error)}`,
++      );
++    }
+ 
+     // Conway availability controls compute resources only.
+     // Unknown Conway credits must not become a cached or fake current balance,
+diff --git a/src/heartbeat/tick-context.ts b/src/heartbeat/tick-context.ts
+index be0f244..1a4bc9d 100644
+--- a/src/heartbeat/tick-context.ts
++++ b/src/heartbeat/tick-context.ts
+@@ -37,6 +37,8 @@ function generateTickId(): string {
+  * - Derives survivalTier from credit balance
+  * - Reads lowComputeMultiplier from config
+  */
++let conwayUnavailableWarned = false;
++
+ export async function buildTickContext(
+   db: DatabaseType,
+   conway: ConwayClient,
+@@ -52,8 +54,13 @@ export async function buildTickContext(
+   try {
+     creditBalance = await conway.getCreditsBalance();
+   } catch (err: any) {
+-    logger.warn("Conway credit balance unavailable; local inference may continue");
++    // Warn once per outage instead of on every heartbeat tick.
++    if (!conwayUnavailableWarned) {
++      conwayUnavailableWarned = true;
++      logger.warn("Conway credit balance unavailable; local inference may continue");
++    }
+   }
++  if (creditBalance >= 0) conwayUnavailableWarned = false;
+ 
+   let usdcBalance = 0;
+   if (walletAddress) {
+diff --git a/src/index.ts b/src/index.ts
+index 002d1b5..e0a99c7 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -491,6 +491,17 @@ async function run(): Promise<void> {
+             const tick = await tickOrchestratorWhileSleeping();
+             if (tick) {
+               db.setKV("orchestrator.last_tick", JSON.stringify(tick));
++              // A goal just finished (or failed): wake SHUI now instead of
++              // waiting for the end of its sleep, so it can decide what's next.
++              if (
++                lastOrchestratorPhase === "executing" &&
++                (tick.phase === "complete" || tick.phase === "failed" || tick.phase === "idle")
++              ) {
++                logger.info(`[ORCHESTRATOR] (sleeping) goal ${tick.phase} — waking SHUI`);
++                lastOrchestratorPhase = tick.phase;
++                db.deleteKV("sleep_until");
++                break;
++              }
+               if (tick.phase !== lastOrchestratorPhase) {
+                 if (lastOrchestratorPhase !== null || tick.phase !== "idle") {
+                   logger.info(`[ORCHESTRATOR] (sleeping) phase -> ${tick.phase}`);

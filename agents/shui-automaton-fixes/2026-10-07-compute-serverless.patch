@@ -1,0 +1,587 @@
+diff --git a/src/__tests__/lot9-compute.test.ts b/src/__tests__/lot9-compute.test.ts
+new file mode 100644
+index 0000000..fb56d5d
+--- /dev/null
++++ b/src/__tests__/lot9-compute.test.ts
+@@ -0,0 +1,88 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase } from "../state/database.js";
++import {
++  captureTopupRequest, checkLowBalance, computeCostOfDay, createComputeTools, fetchRunpodAccount, formatComputeLine,
++  readTopupRequest, recordRunpodReading, topupTransferArgs,
++} from "../integration/runpod.js";
++import { createCreatorChatHandler, listOutgoingCreatorMessages } from "../integration/creator-chat.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot9-")), "s.db"));
++const ADDR = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
++
++describe("Runpod account", () => {
++  it("reads balance and spend rate, retrying with the api_key parameter", async () => {
++    const calls: string[] = [];
++    const fetchImpl = (async (url: string) => {
++      calls.push(String(url));
++      if (calls.length === 1) return new Response("", { status: 401 });
++      return new Response(JSON.stringify({ data: { myself: { clientBalance: 61.5, currentSpendPerHr: 0.494 } } }), { status: 200 });
++    }) as unknown as typeof fetch;
++    const acc = await fetchRunpodAccount("KEY", fetchImpl, new Date("2026-10-07T12:00:00Z"));
++    expect(acc).toMatchObject({ balanceUsd: 61.5, spendPerHr: 0.494 });
++    expect(acc.hoursLeft).toBeCloseTo(124.5, 0);
++    expect(calls[1]).toMatch(/api_key=KEY/);
++  });
++
++  it("accumulates today's compute cost and shows the NET result", () => {
++    const db = freshDb();
++    recordRunpodReading(db.raw, { balanceUsd: 61.5, spendPerHr: 0.5, hoursLeft: 123, at: "2026-10-07T12:00:00.000Z" });
++    recordRunpodReading(db.raw, { balanceUsd: 61.25, spendPerHr: 0.5, hoursLeft: 122.5, at: "2026-10-07T12:30:00.000Z" });
++    expect(computeCostOfDay(db.raw, "2026-10-07")).toBeCloseTo(0.25);
++    const line = formatComputeLine(db.raw, 0.1, new Date("2026-10-07T13:00:00Z"))!;
++    expect(line).toMatch(/balance \$61.25/);
++    expect(line).toMatch(/NET -\$0.15/);
++  });
++
++  it("warns SHUI and the creator once a day when the balance is low", () => {
++    const db = freshDb();
++    recordRunpodReading(db.raw, { balanceUsd: 10, spendPerHr: 0.5, hoursLeft: 20, at: new Date().toISOString() });
++    expect(checkLowBalance(db.raw)).toBe(true);
++    expect(checkLowBalance(db.raw)).toBe(false);
++    expect(listOutgoingCreatorMessages(db.raw).at(-1)!.content).toMatch(/TOPUP <address> <amount> USDC/);
++  });
++});
++
++describe("crypto top-up", () => {
++  it("only the authenticated creator chat creates a request, which expires", async () => {
++    const db = freshDb();
++    expect(captureTopupRequest(db.raw, "hello")).toBeNull();
++    expect(captureTopupRequest(db.raw, "TOPUP notAnAddress 20 USDC")).toBeNull();
++    const now = new Date("2026-10-07T12:00:00Z");
++    const r = captureTopupRequest(db.raw, `voilà :\nTOPUP ${ADDR} 20,5 USDC`, now)!;
++    expect(r).toMatchObject({ address: ADDR, amount: 20.5, token: "USDC", status: "pending" });
++    expect(topupTransferArgs(r)).toMatchObject({ amount: "20500000" });
++    expect(readTopupRequest(db.raw, new Date("2026-10-07T13:00:00Z"))!.status).toBe("expired");
++  });
++
++  it("pays a pending request once, within the cap, through the transfer tool", async () => {
++    const db = freshDb();
++    captureTopupRequest(db.raw, `TOPUP ${ADDR} 5 USDC`);
++    const transfer = { name: "solana_transfer", execute: vi.fn(async () => JSON.stringify({ success: true, signature: "SIG123" })) } as any;
++    const pay = createComputeTools(() => transfer).find((t) => t.name === "runpod_topup_pay")!;
++    const ctx = { db, identity: {} } as any;
++    expect(await pay.execute({}, ctx)).toMatch(/SIG123/);
++    expect(transfer.execute).toHaveBeenCalledWith(expect.objectContaining({ recipient: ADDR, amount: "5000000" }), ctx);
++    expect(readTopupRequest(db.raw)!.status).toBe("paid");
++    expect(await pay.execute({}, ctx)).toMatch(/is paid/);
++    captureTopupRequest(db.raw, `TOPUP ${ADDR} 500 USDC`);
++    expect(await pay.execute({}, ctx)).toMatch(/above the top-up cap/);
++  });
++
++  it("captures TOPUP from the chat endpoint", async () => {
++    const db = freshDb();
++    const handler = createCreatorChatHandler(db.raw, "t".repeat(32));
++    const body = JSON.stringify({ content: `TOPUP ${ADDR} 12 USDC` });
++    const res = await new Promise<{ status: number; body: string }>((resolve) => {
++      const req: any = new (require("node:events").EventEmitter)();
++      req.method = "POST"; req.url = "/chat"; req.headers = { authorization: `Bearer ${"t".repeat(32)}` };
++      const out: any = { writeHead: (s: number) => { out.status = s; }, end: (b: string) => resolve({ status: out.status, body: b }), writableEnded: false };
++      handler(req, out);
++      req.emit("data", Buffer.from(body)); req.emit("end");
++    });
++    expect(res.status).toBe(202);
++    expect(JSON.parse(res.body).topup).toMatch(/12 USDC/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 09f6dab..0ab1087 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -1024,6 +1024,8 @@ export async function runAgentLoop(
+           "paper_stats",
+           "stake_sol",
+           "unstake_sol",
++          "compute_status",
++          "runpod_topup_pay",
+           "perp_positions",
+           "perp_deposit",
+           "perp_withdraw",
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 79aec5c..d0b5768 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -5,6 +5,7 @@
+  * The prompt is rebuilt each turn with dynamic context.
+  */
+ 
++import { formatComputeLine } from "../integration/runpod.js";
+ import { formatLifespanLine } from "../survival/lifespan.js";
+ import { isTradingFocus, tradingFocusPrompt } from "../solana/trading-desk.js";
+ import fs from "fs";
+@@ -747,6 +748,8 @@ Your chain type is ${chainType}.`,
+   try {
+     const line = formatLifespanLine(db.raw);
+     if (line) lifespanLine = `\n${line}`;
++    const compute = formatComputeLine(db.raw);
++    if (compute) lifespanLine += `\n${compute}`;
+   } catch {
+     // Lifespan status unavailable: omit rather than guess.
+   }
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index daf1e93..887d73e 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -1,4 +1,5 @@
+ import { fileURLToPath } from "node:url";
++import { createComputeTools } from "../integration/runpod.js";
+ import { createRaydiumSwapTool } from "../solana/swap-tool.js";
+ import { stopPublicListeners } from "../services/public-listeners.js";
+ import { createMessageCreatorTool } from "../integration/creator-chat.js";
+@@ -144,9 +145,11 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+ }
+ 
+ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
++  const transferTool = createSolanaTransferTool();
+   return [
+     createRaydiumSwapTool(),
+-    createSolanaTransferTool(),
++    transferTool,
++    ...createComputeTools(() => transferTool),
+     createSolanaTransactionsTool(),
+     ...createPaymentTools(),
+     ...createServiceTools(),
+diff --git a/src/conway/inference.ts b/src/conway/inference.ts
+index ac8c684..8d9ca26 100644
+--- a/src/conway/inference.ts
++++ b/src/conway/inference.ts
+@@ -95,7 +95,7 @@ export function createInferenceClient(
+     }
+ 
+     // Keep Qwen reasoning enabled while limiting excessive thinking latency.
+-    if (backend === "ollama" && /^qwen/i.test(model)) {
++    if (backend === "ollama" && /^qwen/i.test(model) && isLoopbackHttpUrl(ollamaBaseUrl)) {
+       body.think = "low";
+     }
+ 
+@@ -122,7 +122,8 @@ export function createInferenceClient(
+       apiUrl;
+     const openAiLikeApiKey =
+       backend === "openai" ? (openaiApiKey as string) :
+-      backend === "ollama" ? "ollama" :
++      // Local Ollama ignores the key; a Runpod Serverless (vLLM) endpoint needs OLLAMA_API_KEY.
++      backend === "ollama" ? (process.env.OLLAMA_API_KEY || "ollama") :
+       apiKey;
+ 
+     return chatViaOpenAiCompatible({
+diff --git a/src/index.ts b/src/index.ts
+index 045cec1..39e2f61 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -25,6 +25,7 @@ import { startCreatorChatServer } from "./integration/creator-chat.js";
+ import { startOrderExecutor } from "./solana/orders.js";
+ import { startStrategyRunner } from "./solana/strategies.js";
+ import { startPerpMonitor } from "./solana/perps.js";
++import { startComputeMonitor } from "./integration/runpod.js";
+ import { startJanitor } from "./maintenance/janitor.js";
+ import { startDailyReport } from "./maintenance/daily-report.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+@@ -399,6 +400,8 @@ async function run(): Promise<void> {
+   startJanitor({ db: db.raw, log: (message) => logger.info(message) });
+   // Daily report to the creator, built by code from verified data.
+   startDailyReport(db.raw, (message) => logger.info(message));
++  // GPU account (Runpod): balance, cost, low-balance alert. Needs RUNPOD_API_KEY.
++  startComputeMonitor(db.raw, process.env, (message) => logger.info(message));
+ 
+   // Automatic orders (stop-loss, take-profit, buy_below) run without the model.
+   if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
+diff --git a/src/integration/creator-chat.ts b/src/integration/creator-chat.ts
+index 6bb8553..05620f6 100644
+--- a/src/integration/creator-chat.ts
++++ b/src/integration/creator-chat.ts
+@@ -11,6 +11,7 @@
+  * SHUI publishes run on the same machine and must not be able to pose as the
+  * creator. No token configured = endpoint disabled.
+  */
++import { captureTopupRequest } from "./runpod.js";
+ import http from "node:http";
+ import { randomUUID, timingSafeEqual } from "node:crypto";
+ import type { Database } from "better-sqlite3";
+@@ -244,7 +245,8 @@ export function createCreatorChatHandler(db: Database, token: string): http.Requ
+           return;
+         }
+         const id = queueCreatorMessage(db, content);
+-        send(res, 202, { id, status: "received" });
++        const topup = captureTopupRequest(db, content);
++        send(res, 202, { id, status: "received", ...(topup ? { topup: `${topup.amount} ${topup.token} → ${topup.address} (valid until ${topup.expiresAt})` } : {}) });
+       });
+       return;
+     }
+diff --git a/src/integration/runpod.ts b/src/integration/runpod.ts
+new file mode 100644
+index 0000000..fced01c
+--- /dev/null
++++ b/src/integration/runpod.ts
+@@ -0,0 +1,294 @@
++/**
++ * SHUI's compute "life": the Runpod account that pays for its GPU.
++ *
++ * - RUNPOD_API_KEY (read-only key is enough): balance and spend rate are read
++ *   every 15 min from Runpod's GraphQL API and cached in kv `compute.runpod`;
++ *   the GPU cost is accumulated per UTC day (kv `compute.cost.<day>`) so SHUI
++ *   sees its NET result (trading PnL minus compute).
++ * - Top-up in crypto: Runpod's "Pay with crypto" creates a one-time address
++ *   and amount in the creator's browser session; SHUI cannot create it. When
++ *   the balance runs low SHUI asks its creator, who pastes
++ *   "TOPUP <address> <amount> USDC|SOL" in the Control Center chat. Only that
++ *   authenticated message creates a payable request; runpod_topup_pay pays it
++ *   once, within a cap, through the normal transfer pipeline.
++ */
++import type { Database } from "better-sqlite3";
++import { PublicKey } from "@solana/web3.js";
++import type { AutomatonTool } from "../types.js";
++import { queueSystemNotice, saveOutgoingCreatorMessage } from "./creator-chat.js";
++
++const GRAPHQL_URL = "https://api.runpod.io/graphql";
++const CACHE_KEY = "compute.runpod";
++const COST_PREFIX = "compute.cost.";
++const TOPUP_KEY = "compute.topup_request";
++const LOW_ALERT_KEY = "compute.low_alert_day";
++const POLL_MS = 15 * 60_000;
++export const LOW_BALANCE_HOURS = 72;
++export const TOPUP_REQUEST_TTL_MS = 55 * 60_000;
++const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const SOL_MINT = "So11111111111111111111111111111111111111112";
++
++export interface RunpodAccount {
++  balanceUsd: number;
++  spendPerHr: number;
++  /** Hours of compute left at the current spend rate (null = not spending). */
++  hoursLeft: number | null;
++  at: string;
++}
++
++export interface TopupRequest {
++  address: string;
++  amount: number;
++  token: "USDC" | "SOL";
++  at: string;
++  expiresAt: string;
++  status: "pending" | "paid" | "expired";
++  signature?: string;
++}
++
++const getKv = (db: Database, key: string) =>
++  (db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
++const setKv = (db: Database, key: string, value: string) =>
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, value);
++
++export function topupMaxUsd(env: NodeJS.ProcessEnv = process.env): number {
++  const v = Number(env.SHUI_TOPUP_MAX_USD);
++  return Number.isFinite(v) && v > 0 ? v : 50;
++}
++
++// ─── Runpod API ─────────────────────────────────────────────────
++
++export async function fetchRunpodAccount(
++  apiKey: string,
++  fetchImpl: typeof fetch = fetch,
++  now: Date = new Date(),
++): Promise<RunpodAccount> {
++  const body = JSON.stringify({ query: "query { myself { clientBalance currentSpendPerHr } }" });
++  const post = (url: string, headers: Record<string, string>) =>
++    fetchImpl(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body, signal: AbortSignal.timeout(15_000) });
++  let response = await post(GRAPHQL_URL, { Authorization: `Bearer ${apiKey}` });
++  if (response.status === 401 || response.status === 403) {
++    response = await post(`${GRAPHQL_URL}?api_key=${encodeURIComponent(apiKey)}`, {});
++  }
++  if (!response.ok) throw new Error(`Runpod API HTTP ${response.status}`);
++  const json = (await response.json()) as { data?: { myself?: { clientBalance?: number; currentSpendPerHr?: number } }; errors?: Array<{ message?: string }> };
++  const me = json.data?.myself;
++  if (!me || typeof me.clientBalance !== "number") {
++    throw new Error(`Runpod API: ${json.errors?.[0]?.message ?? "no account data"}`);
++  }
++  const spendPerHr = typeof me.currentSpendPerHr === "number" ? me.currentSpendPerHr : 0;
++  return {
++    balanceUsd: me.clientBalance,
++    spendPerHr,
++    hoursLeft: spendPerHr > 0 ? me.clientBalance / spendPerHr : null,
++    at: now.toISOString(),
++  };
++}
++
++export function readRunpodCache(db: Database): RunpodAccount | null {
++  try {
++    const raw = getKv(db, CACHE_KEY);
++    return raw ? (JSON.parse(raw) as RunpodAccount) : null;
++  } catch {
++    return null;
++  }
++}
++
++export function computeCostOfDay(db: Database, day: string): number {
++  return Number(getKv(db, `${COST_PREFIX}${day}`) ?? 0) || 0;
++}
++
++/** Store a fresh reading and add the compute spent since the previous one to today's cost. */
++export function recordRunpodReading(db: Database, account: RunpodAccount): void {
++  const prev = readRunpodCache(db);
++  if (prev) {
++    const hours = Math.min(1, Math.max(0, (Date.parse(account.at) - Date.parse(prev.at)) / 3_600_000));
++    const cost = hours * prev.spendPerHr;
++    if (cost > 0) {
++      const key = `${COST_PREFIX}${account.at.slice(0, 10)}`;
++      setKv(db, key, String(computeCostOfDay(db, account.at.slice(0, 10)) + cost));
++    }
++  }
++  setKv(db, CACHE_KEY, JSON.stringify(account));
++}
++
++/** One line for the status block, trade_stats and the daily report. */
++export function formatComputeLine(db: Database, todayPnlUsd: number | null = null, now: Date = new Date()): string | null {
++  const acc = readRunpodCache(db);
++  if (!acc) return null;
++  const day = now.toISOString().slice(0, 10);
++  const cost = computeCostOfDay(db, day);
++  const left = acc.hoursLeft === null ? "not spending now"
++    : acc.hoursLeft >= 48 ? `${(acc.hoursLeft / 24).toFixed(1)} days left` : `${acc.hoursLeft.toFixed(0)} h left`;
++  const signed = (x: number) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
++  const net = todayPnlUsd === null ? "" : ` | today: trading ${signed(todayPnlUsd)} − compute $${cost.toFixed(2)} = NET ${signed(todayPnlUsd - cost)}`;
++  return `Your GPU (Runpod, pays for your thinking): balance $${acc.balanceUsd.toFixed(2)}, burn $${acc.spendPerHr.toFixed(3)}/h ` +
++    `($${(acc.spendPerHr * 24).toFixed(2)}/day) → ${left}${net}. Your trading profits should cover it.`;
++}
++
++/** Warn SHUI and the creator once a day when the GPU balance gets low. */
++export function checkLowBalance(db: Database, now: Date = new Date()): boolean {
++  const acc = readRunpodCache(db);
++  if (!acc || acc.hoursLeft === null || acc.hoursLeft >= LOW_BALANCE_HOURS) return false;
++  const day = now.toISOString().slice(0, 10);
++  if (getKv(db, LOW_ALERT_KEY) === day) return false;
++  setKv(db, LOW_ALERT_KEY, day);
++  const text = `GPU balance low: $${acc.balanceUsd.toFixed(2)} (~${acc.hoursLeft.toFixed(0)} h at $${acc.spendPerHr.toFixed(3)}/h).`;
++  saveOutgoingCreatorMessage(db,
++    `${text} To let me pay it: Runpod → Billing → Pay with crypto (Solana, USDC), then send me here: ` +
++    "TOPUP <address> <amount> USDC (I pay it once, from my wallet, within the cap).", now);
++  queueSystemNotice(db, "system:compute", `${text} Your creator was asked for a top-up address. When a TOPUP request arrives, check your USDC and pay it with runpod_topup_pay.`, now);
++  return true;
++}
++
++// ─── Top-up requests (from the authenticated creator chat only) ──
++
++const TOPUP_RE = /^\s*TOPUP\s+([1-9A-HJ-NP-Za-km-z]{32,44})\s+([0-9]+(?:[.,][0-9]+)?)\s*(USDC|SOL)?\s*$/im;
++
++/** Called on each creator chat message: a "TOPUP <address> <amount> [USDC|SOL]" line creates a payable request. */
++export function captureTopupRequest(db: Database, content: string, now: Date = new Date()): TopupRequest | null {
++  const m = TOPUP_RE.exec(content);
++  if (!m) return null;
++  try {
++    new PublicKey(m[1]);
++  } catch {
++    return null;
++  }
++  const amount = Number(m[2].replace(",", "."));
++  if (!(amount > 0)) return null;
++  const request: TopupRequest = {
++    address: m[1],
++    amount,
++    token: (m[3]?.toUpperCase() as "USDC" | "SOL" | undefined) ?? "USDC",
++    at: now.toISOString(),
++    expiresAt: new Date(now.getTime() + TOPUP_REQUEST_TTL_MS).toISOString(),
++    status: "pending",
++  };
++  setKv(db, TOPUP_KEY, JSON.stringify(request));
++  return request;
++}
++
++export function readTopupRequest(db: Database, now: Date = new Date()): TopupRequest | null {
++  try {
++    const raw = getKv(db, TOPUP_KEY);
++    if (!raw) return null;
++    const r = JSON.parse(raw) as TopupRequest;
++    if (r.status === "pending" && Date.parse(r.expiresAt) <= now.getTime()) {
++      const expired = { ...r, status: "expired" as const };
++      setKv(db, TOPUP_KEY, JSON.stringify(expired));
++      return expired;
++    }
++    return r;
++  } catch {
++    return null;
++  }
++}
++
++/** Raw amount and mint for a request; SOL amounts are in SOL units. */
++export function topupTransferArgs(r: TopupRequest): { recipient: string; mint: string; amount: string } {
++  return r.token === "SOL"
++    ? { recipient: r.address, mint: SOL_MINT, amount: String(Math.round(r.amount * 1e9)) }
++    : { recipient: r.address, mint: USDC_MINT, amount: String(Math.round(r.amount * 1e6)) };
++}
++
++// ─── Tools and monitor ──────────────────────────────────────────
++
++export function createComputeTools(transferTool: () => AutomatonTool | undefined): AutomatonTool[] {
++  return [
++    {
++      name: "compute_status",
++      description: "Your GPU account (Runpod): balance, cost per hour/day, time left, today's NET result (trading − compute), and any pending top-up request from your creator.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => {
++        const db = ctx.db.raw;
++        const { computeTradeStats } = await import("../solana/trading-desk.js");
++        const line = formatComputeLine(db, computeTradeStats(db).todayPnlUsd)
++          ?? "Runpod not connected (RUNPOD_API_KEY missing): your GPU cost is not visible yet.";
++        const r = readTopupRequest(db);
++        const req = r
++          ? `\nTop-up request: ${r.amount} ${r.token} to ${r.address} — ${r.status}${r.status === "pending" ? ` (expires ${r.expiresAt}; pay with runpod_topup_pay)` : r.signature ? ` (tx ${r.signature})` : ""}`
++          : "\nNo top-up request.";
++        return line + req;
++      },
++    },
++    {
++      name: "runpod_topup_pay",
++      description:
++        "Pay the pending Runpod top-up request your creator sent in the chat (TOPUP <address> <amount> USDC|SOL), from your wallet. " +
++        `Pays it exactly once, before it expires, up to $${topupMaxUsd()} and at most 50% of your USDC. This is how you pay for your own GPU.`,
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => {
++        const db = ctx.db.raw;
++        const r = readTopupRequest(db);
++        if (!r) return "No top-up request. Ask your creator for one (message_creator) when your GPU balance is low.";
++        if (r.status !== "pending") return `The last top-up request is ${r.status}. Ask your creator for a new one.`;
++        const usd = r.token === "USDC" ? r.amount : r.amount * (await solPriceUsd());
++        if (!(usd > 0)) return "Blocked: SOL price unavailable.";
++        if (usd > topupMaxUsd()) return `Blocked: $${usd.toFixed(2)} is above the top-up cap ($${topupMaxUsd()}). Ask your creator for a smaller amount.`;
++        if (r.token === "USDC") {
++          const usdc = await walletUsdc(ctx);
++          if (usdc !== null && r.amount > usdc * 0.5) {
++            return `Blocked: ${r.amount} USDC is more than half of your USDC (${usdc.toFixed(2)}). Trade more first, or ask for a smaller top-up.`;
++          }
++        }
++        const tool = transferTool();
++        if (!tool) return "Blocked: transfer tool unavailable.";
++        const result = await tool.execute({ ...topupTransferArgs(r), reason: `Runpod GPU top-up (${r.amount} ${r.token})` }, ctx);
++        const signature = /"signature"\s*:\s*"([^"]+)"/.exec(String(result))?.[1];
++        if (signature) {
++          setKv(db, TOPUP_KEY, JSON.stringify({ ...r, status: "paid", signature }));
++          saveOutgoingCreatorMessage(db, `I paid my GPU: ${r.amount} ${r.token} sent for the Runpod top-up (tx ${signature}). The credit appears on Runpod after the network confirms.`);
++        }
++        return String(result);
++      },
++    },
++  ];
++}
++
++async function solPriceUsd(): Promise<number> {
++  try {
++    const { jupiterPrices } = await import("../solana/orders.js");
++    return (await jupiterPrices([SOL_MINT]))[SOL_MINT] ?? 0;
++  } catch {
++    return 0;
++  }
++}
++
++async function walletUsdc(ctx: { identity: { chainIdentity?: unknown } }): Promise<number | null> {
++  try {
++    const id = ctx.identity.chainIdentity as { chainType?: string } | undefined;
++    if (!id || id.chainType !== "solana") return null;
++    const { SolanaTradingService } = await import("../solana/trading.js");
++    const balances = await new SolanaTradingService(id as never).getTokenBalances();
++    return balances.filter((b) => b.mint === USDC_MINT).reduce((s, b) => s + (b.uiAmount ?? Number(b.amount) / 1e6), 0);
++  } catch {
++    return null;
++  }
++}
++
++export async function runComputeTick(db: Database, apiKey: string, fetchImpl: typeof fetch = fetch, now: Date = new Date()): Promise<RunpodAccount> {
++  const account = await fetchRunpodAccount(apiKey, fetchImpl, now);
++  recordRunpodReading(db, account);
++  checkLowBalance(db, now);
++  return account;
++}
++
++export function startComputeMonitor(db: Database, env: NodeJS.ProcessEnv = process.env, log: (m: string) => void = () => {}): NodeJS.Timeout | null {
++  const apiKey = (env.RUNPOD_API_KEY ?? "").trim();
++  if (!apiKey) return null;
++  const tick = async () => {
++    try {
++      await runComputeTick(db, apiKey);
++    } catch (error) {
++      log(`[COMPUTE] Runpod read failed: ${error instanceof Error ? error.message : String(error)}`);
++    }
++  };
++  const timer = setInterval(() => void tick(), POLL_MS);
++  timer.unref();
++  void tick();
++  return timer;
++}
+diff --git a/src/maintenance/daily-report.ts b/src/maintenance/daily-report.ts
+index 96538e0..00381c1 100644
+--- a/src/maintenance/daily-report.ts
++++ b/src/maintenance/daily-report.ts
+@@ -36,6 +36,7 @@ export function buildDailyReport(db: Database, now: Date = new Date()): string {
+     `Wallet: ${walletUsd === null ? "value unknown" : `$${walletUsd.toFixed(2)}`} | realized PnL today ${stats.todayPnlUsd >= 0 ? "+" : ""}$${stats.todayPnlUsd.toFixed(4)} | total ${stats.totalPnlUsd >= 0 ? "+" : ""}$${stats.totalPnlUsd.toFixed(4)}`,
+     `Trades closed: ${stats.closedTrades} (win rate ${stats.winRate === null ? "?" : `${(stats.winRate * 100).toFixed(0)}%`})`,
+     ...(stats.metrics ? [formatPerformance(stats.metrics, walletUsd)] : []),
++    ...(stats.computeLine ? [stats.computeLine] : []),
+     `Open orders: ${open.filter((o) => !o.paper && o.kind !== "alert").length} | alerts ${open.filter((o) => o.kind === "alert").length} | strategies active ${strategies.length}${strategies.some((s) => s.paper) ? ` (${strategies.filter((s) => s.paper).length} paper)` : ""}`,
+     `Paper trades today: ${paper.length}${paper.length ? ` (simulated PnL ${paper.reduce((s, t) => s + t.pnlUsd, 0).toFixed(4)}$)` : ""}`,
+   ];
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index 2813c6f..a9b6caa 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -66,6 +66,7 @@ const WORKER_EXCLUDED_TOOLS = new Set([
+   "dca_create",
+   "stake_sol",
+   "unstake_sol",
++  "runpod_topup_pay",
+   "perp_deposit",
+   "perp_withdraw",
+   "perp_open",
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 155ef98..b1f1d15 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -7,6 +7,7 @@
+  * - journal_add / trade_stats: a trade journal and real performance stats
+  *   computed from the ledger (realized PnL of every sale into USDC).
+  */
++import { formatComputeLine } from "../integration/runpod.js";
+ import { randomUUID } from "node:crypto";
+ import type { Database } from "better-sqlite3";
+ import type { AutomatonTool } from "../types.js";
+@@ -53,6 +54,8 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
++Your GPU (Runpod) costs money every hour: compute_status shows its balance, cost and your NET result (trading − compute).
++Profits pay for your thinking. When your creator sends a TOPUP request in the chat, pay it with runpod_topup_pay.
+ A daily report is sent to your creator automatically; message_creator is for important events only. Never swap SOL <-> USDC back and forth: it only costs fees.
+ If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.
+ The SHUI token in your wallet is your creator's own token: it is not a position. Never trade, protect, alert or analyze it.
+@@ -392,6 +395,8 @@ export interface TradeStats {
+   lossStreakToday: number;
+   /** Quality metrics over all closed trades (lot 7). */
+   metrics?: ReturnType<typeof performanceMetrics>;
++  /** GPU cost and NET result of the day (lot 9). */
++  computeLine?: string | null;
+   capitalUsd?: number | null;
+ }
+ 
+@@ -428,6 +433,7 @@ export function computeTradeStats(
+     todayPnlUsd: sum(todayRows),
+     lossStreakToday: streak,
+     metrics: performanceMetrics(rows.map((r) => r.pnl)),
++    computeLine: formatComputeLine(db, sum(todayRows)),
+     capitalUsd,
+   };
+ }
+@@ -439,6 +445,7 @@ export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recen
+     `Realized PnL total ${money(s.totalPnlUsd)} | today ${money(s.todayPnlUsd)} | avg win ${money(s.avgWinUsd)} | avg loss ${money(s.avgLossUsd)} | expectancy per trade ${money(s.expectancyUsd)}`,
+   ];
+   if (s.metrics) lines.push(formatPerformance(s.metrics, s.capitalUsd ?? null));
++  if (s.computeLine) lines.push(s.computeLine);
+   if (s.lossStreakToday >= MAX_LOSS_STREAK) {
+     const until = new Date();
+     until.setUTCHours(24, 0, 0, 0);

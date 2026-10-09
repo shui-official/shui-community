@@ -1,0 +1,314 @@
+diff --git a/src/__tests__/lot8c-decisions.test.ts b/src/__tests__/lot8c-decisions.test.ts
+new file mode 100644
+index 0000000..7d5a3e1
+--- /dev/null
++++ b/src/__tests__/lot8c-decisions.test.ts
+@@ -0,0 +1,75 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { clampBuyUsd, decisionLine, recordPendingSetups, sleepGuard, undecidedSetups } from "../solana/decisions.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++import { saveOrder } from "../solana/orders.js";
++import { averageSpendPerHr, checkLowBalance, estimatedHoursLeft, recordRunpodReading } from "../integration/runpod.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot8c-")), "s.db")).raw;
++const CATE = "Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump";
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const t0 = new Date("2026-10-08T04:30:00Z");
++const later = (min: number) => new Date(t0.getTime() + min * 60_000);
++const setKv = (db: any, k: string, v: string) =>
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(k, v);
++
++describe("memecoin size", () => {
++  it("uses the 5% memecoin cap, so a small capital cannot buy memecoins", () => {
++    expect(clampBuyUsd(20, 57.76, {}, CATE)).toBeNull(); // 5% = $2.89 < $5
++    expect(clampBuyUsd(20, 200, {}, CATE)).toBe(10);
++    expect(clampBuyUsd(20, 57.76, {}, ORCA)).toBe(11.55);
++  });
++});
++
++describe("range setups are paper decisions", () => {
++  const range = { symbol: "CATE", mint: CATE, entry: 0.05613, stop: 0.05382, target: 0.0729, rr: 7, amountUsd: 10, action: "paper" as const };
++  it("asks for a paper trade or a skip, and counts an open paper position as the decision", () => {
++    const db = freshDb();
++    expect(decisionLine(range)).toMatch(/PAPER → paper_trade setup="range" mint=Ai66.* sizeUsd=10 stopPriceUsd=0\.05382 takeProfitPriceUsd=0\.07290/);
++    recordPendingSetups(db, [range], t0);
++    expect("blocked" in sleepGuard(db, 7200, true, later(2))).toBe(true);
++    saveOrder(db, {
++      id: "paper_x_stop", group: "paper_x", kind: "stop_loss", condition: "below", triggerPriceUsd: 0.05382, inputMint: CATE,
++      outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", amount: "0", watchMint: CATE, slippageBps: 0, venue: "jupiter",
++      note: "[range] paper", createdAt: later(3).toISOString(), expiresAt: null, status: "open", attempts: 0,
++      updatedAt: later(3).toISOString(), paper: true, paperUnits: 178, paperEntryUsd: 0.05613,
++    } as any);
++    expect(undecidedSetups(db, later(4))).toBeNull();
++  });
++});
++
++describe("dust positions", () => {
++  it("does not shorten sleep for a $0.11 position", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db);
++    db.prepare("INSERT INTO shui_cost_basis (mint, amount_raw, cost_usd) VALUES (?, '39288', 0.1086)").run(ORCA);
++    expect(sleepGuard(db, 14400, true, t0)).toMatchObject({ durationS: 7200 });
++  });
++});
++
++describe("GPU time left", () => {
++  it("uses the average cost of the last days, not the instant rate", () => {
++    const db = freshDb();
++    const now = new Date("2026-10-08T02:02:00Z");
++    const acc = { balanceUsd: 58.53, spendPerHr: 1.22, hoursLeft: 48, at: now.toISOString() };
++    expect(averageSpendPerHr(db, acc, now)).toBe(1.22);
++    setKv(db, "compute.cost.2026-10-07", "6.72");
++    expect(averageSpendPerHr(db, acc, now)).toBeCloseTo(0.28);
++    expect(estimatedHoursLeft(db, acc, now)! / 24).toBeCloseTo(8.7, 1);
++  });
++
++  it("does not raise a false alarm, and a real one does not wake SHUI", () => {
++    const db = freshDb();
++    const now = new Date("2026-10-08T02:02:00Z");
++    setKv(db, "compute.cost.2026-10-07", "6.72");
++    recordRunpodReading(db, { balanceUsd: 58.53, spendPerHr: 1.22, hoursLeft: 48, at: now.toISOString() });
++    expect(checkLowBalance(db, now)).toBe(false);
++    recordRunpodReading(db, { balanceUsd: 15, spendPerHr: 1.22, hoursLeft: 12, at: now.toISOString() });
++    expect(checkLowBalance(db, now)).toBe(true);
++    expect((db.prepare("SELECT COUNT(*) c FROM wake_events").get() as any).c).toBe(0);
++    expect((db.prepare("SELECT COUNT(*) c FROM inbox_messages WHERE from_address = 'system:compute'").get() as any).c).toBe(1);
++  });
++});
+diff --git a/src/integration/creator-chat.ts b/src/integration/creator-chat.ts
+index 34dfa32..bb76c82 100644
+--- a/src/integration/creator-chat.ts
++++ b/src/integration/creator-chat.ts
+@@ -54,13 +54,13 @@ export function isLocalSystemNotice(fromAddress: string | null | undefined): boo
+   return typeof fromAddress === "string" && fromAddress.startsWith("system:");
+ }
+ 
+-export function queueSystemNotice(db: Database, source: string, content: string, now: Date = new Date()): string {
++export function queueSystemNotice(db: Database, source: string, content: string, now: Date = new Date(), wake = true): string {
+   const id = `notice_${now.getTime()}_${randomUUID().slice(0, 8)}`;
+   db.prepare(
+     `INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status)
+      VALUES (?, ?, 'shui', ?, ?, 'received')`,
+   ).run(id, source, content.slice(0, 2000), now.toISOString());
+-  insertWakeEvent(db, source, content.slice(0, 200), { id });
++  if (wake) insertWakeEvent(db, source, content.slice(0, 200), { id });
+   return id;
+ }
+ 
+diff --git a/src/integration/runpod.ts b/src/integration/runpod.ts
+index b9e65a4..dcc4f6a 100644
+--- a/src/integration/runpod.ts
++++ b/src/integration/runpod.ts
+@@ -117,32 +117,56 @@ export function recordRunpodReading(db: Database, account: RunpodAccount): void
+   setKv(db, CACHE_KEY, JSON.stringify(account));
+ }
+ 
++/**
++ * Lot 8c: serverless only bills while SHUI thinks, so the instant rate
++ * (e.g. $1.22/h while a request runs) overstates the burn. Use the average
++ * cost of the last full days when known.
++ */
++export function averageSpendPerHr(db: Database, acc: RunpodAccount, now: Date = new Date()): number {
++  const costs: number[] = [];
++  for (let d = 1; d <= 3; d++) {
++    const day = new Date(now.getTime() - d * 86_400_000).toISOString().slice(0, 10);
++    if (getKv(db, `${COST_PREFIX}${day}`) !== null) costs.push(computeCostOfDay(db, day));
++  }
++  return costs.length ? costs.reduce((a, b) => a + b, 0) / costs.length / 24 : acc.spendPerHr;
++}
++
++export function estimatedHoursLeft(db: Database, acc: RunpodAccount, now: Date = new Date()): number | null {
++  const perHr = averageSpendPerHr(db, acc, now);
++  return perHr > 0 ? acc.balanceUsd / perHr : null;
++}
++
+ /** One line for the status block, trade_stats and the daily report. */
+ export function formatComputeLine(db: Database, todayPnlUsd: number | null = null, now: Date = new Date()): string | null {
+   const acc = readRunpodCache(db);
+   if (!acc) return null;
+   const day = now.toISOString().slice(0, 10);
+   const cost = computeCostOfDay(db, day);
+-  const left = acc.hoursLeft === null ? "not spending now"
+-    : acc.hoursLeft >= 48 ? `${(acc.hoursLeft / 24).toFixed(1)} days left` : `${acc.hoursLeft.toFixed(0)} h left`;
++  const perHr = averageSpendPerHr(db, acc, now);
++  const hoursLeft = estimatedHoursLeft(db, acc, now);
++  const left = hoursLeft === null ? "not spending now"
++    : hoursLeft >= 48 ? `${(hoursLeft / 24).toFixed(1)} days left` : `${hoursLeft.toFixed(0)} h left`;
+   const signed = (x: number) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
+   const net = todayPnlUsd === null ? "" : ` | today: trading ${signed(todayPnlUsd)} − compute $${cost.toFixed(2)} = NET ${signed(todayPnlUsd - cost)}`;
+-  return `Your GPU (Runpod, pays for your thinking): balance $${acc.balanceUsd.toFixed(2)}, burn $${acc.spendPerHr.toFixed(3)}/h ` +
+-    `($${(acc.spendPerHr * 24).toFixed(2)}/day) → ${left}${net}. Your trading profits should cover it.`;
++  return `Your GPU (Runpod, pays for your thinking): balance $${acc.balanceUsd.toFixed(2)}, average burn $${perHr.toFixed(3)}/h ` +
++    `($${(perHr * 24).toFixed(2)}/day) → ${left}${net}. Your trading profits should cover it.`;
+ }
+ 
+ /** Warn SHUI and the creator once a day when the GPU balance gets low. */
+ export function checkLowBalance(db: Database, now: Date = new Date()): boolean {
+   const acc = readRunpodCache(db);
+-  if (!acc || acc.hoursLeft === null || acc.hoursLeft >= LOW_BALANCE_HOURS) return false;
++  const hoursLeft = acc ? estimatedHoursLeft(db, acc, now) : null;
++  if (!acc || hoursLeft === null || hoursLeft >= LOW_BALANCE_HOURS) return false;
+   const day = now.toISOString().slice(0, 10);
+   if (getKv(db, LOW_ALERT_KEY) === day) return false;
+   setKv(db, LOW_ALERT_KEY, day);
+-  const text = `GPU balance low: $${acc.balanceUsd.toFixed(2)} (~${acc.hoursLeft.toFixed(0)} h at $${acc.spendPerHr.toFixed(3)}/h).`;
++  const perHr = averageSpendPerHr(db, acc, now);
++  const text = `GPU balance low: $${acc.balanceUsd.toFixed(2)} (~${hoursLeft.toFixed(0)} h at an average $${perHr.toFixed(3)}/h).`;
+   saveOutgoingCreatorMessage(db,
+     `${text} To let me pay it: Runpod → Billing → Pay with crypto (Solana, USDC), then send me here: ` +
+     "TOPUP <address> <amount> USDC (I pay it once, from my wallet, within the cap).", now);
+-  queueSystemNotice(db, "system:compute", `${text} Your creator was asked for a top-up address. When a TOPUP request arrives, check your USDC and pay it with runpod_topup_pay.`, now);
++  // Lot 8c: only the creator can act on it, so the notice waits for SHUI's next turn instead of waking it.
++  queueSystemNotice(db, "system:compute", `${text} Your creator was asked for a top-up address. When a TOPUP request arrives, check your USDC and pay it with runpod_topup_pay.`, now, false);
+   return true;
+ }
+ 
+diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
+index 3dfc537..703b9b3 100644
+--- a/src/solana/decisions.ts
++++ b/src/solana/decisions.ts
+@@ -7,7 +7,8 @@
+  *   - in trading focus, sleep lasts 2 h at most (1 h with an open position).
+  */
+ import type { Database } from "better-sqlite3";
+-import { tradeLimits } from "./trade-limits.js";
++import { isMemecoin, tradeLimits } from "./trade-limits.js";
++import { listOrders } from "./orders.js";
+ import { isCreatorToken } from "./token-policy.js";
+ 
+ const PENDING_KEY = "decision.pending";
+@@ -16,6 +17,8 @@ export const PENDING_TTL_MS = 6 * 3_600_000;
+ export const MAX_SLEEP_REFUSALS = 2;
+ export const MAX_SLEEP_S = 2 * 3600;
+ export const MAX_SLEEP_WITH_POSITION_S = 3600;
++/** Positions worth less than this (at cost) are dust: they do not shorten sleep. */
++export const DUST_USD = 1;
+ 
+ const SOL_MINT = "So11111111111111111111111111111111111111112";
+ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+@@ -29,6 +32,8 @@ export interface PendingSetup {
+   target: number;
+   rr: number;
+   amountUsd: number;
++  /** "buy" = real trend trade; "paper" = range setup still being validated in paper. */
++  action?: "buy" | "paper";
+ }
+ 
+ const getKv = (db: Database, key: string): string | null =>
+@@ -38,10 +43,10 @@ const setKv = (db: Database, key: string, value: string): void => {
+ };
+ 
+ /** Buy size within the code limits, or null when the limits leave less than the minimum. */
+-export function clampBuyUsd(sizeUsd: number | null | undefined, capitalUsd: number | null, env: NodeJS.ProcessEnv = process.env): number | null {
++export function clampBuyUsd(sizeUsd: number | null | undefined, capitalUsd: number | null, env: NodeJS.ProcessEnv = process.env, mint = ""): number | null {
+   if (!capitalUsd || capitalUsd <= 0) return null;
+   const L = tradeLimits(env);
+-  const cap = (capitalUsd * L.maxTradePct) / 100;
++  const cap = (capitalUsd * (isMemecoin(mint) ? L.memePerTokenPct : L.maxTradePct)) / 100;
+   const size = Math.min(sizeUsd && sizeUsd > 0 ? sizeUsd : cap, cap);
+   const rounded = Math.floor(size * 100) / 100;
+   return rounded >= L.minTradeUsd ? rounded : null;
+@@ -55,7 +60,7 @@ export function recordPendingSetups(db: Database, setups: PendingSetup[], now: D
+ /** Mints SHUI holds as positions (cost basis), without SOL, USDC, jitoSOL and the creator token. */
+ export function openPositionMints(db: Database): string[] {
+   try {
+-    return (db.prepare("SELECT mint FROM shui_cost_basis").all() as Array<{ mint: string }>)
++    return (db.prepare("SELECT mint FROM shui_cost_basis WHERE cost_usd >= ?").all(DUST_USD) as Array<{ mint: string }>)
+       .map((r) => r.mint)
+       .filter((m) => m !== SOL_MINT && m !== USDC_MINT && m !== JITOSOL && !isCreatorToken(m));
+   } catch {
+@@ -63,7 +68,16 @@ export function openPositionMints(db: Database): string[] {
+   }
+ }
+ 
++function paperOpenedSince(db: Database, mint: string, since: string): boolean {
++  try {
++    return listOrders(db).some((o) => o.paper && o.watchMint === mint && (o.status === "open" || o.createdAt >= since));
++  } catch {
++    return false;
++  }
++}
++
+ function decidedSince(db: Database, mint: string, since: string): boolean {
++  if (paperOpenedSince(db, mint, since)) return true;
+   const journaled = (db.prepare("SELECT value FROM kv WHERE key LIKE 'journal.%' AND key >= ?").all(`journal.${since}`) as Array<{ value: string }>)
+     .some((r) => {
+       try {
+@@ -98,6 +112,11 @@ export function undecidedSetups(db: Database, now: Date = new Date()): { at: str
+ const fmt = (x: number) => (x >= 100 ? x.toFixed(2) : x >= 1 ? x.toFixed(4) : x.toPrecision(4));
+ 
+ export function decisionLine(s: PendingSetup): string {
++  if (s.action === "paper") {
++    return `${s.symbol} (RANGE, paper first): PAPER → paper_trade setup="range" mint=${s.mint} sizeUsd=${s.amountUsd} ` +
++      `stopPriceUsd=${fmt(s.stop)} takeProfitPriceUsd=${fmt(s.target)} (no funds move); ` +
++      `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
++  }
+   return `${s.symbol}: BUY → jupiter_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
+     `then protect_position mint=${s.mint} stopPriceUsd=${fmt(s.stop)} takeProfitPriceUsd=${fmt(s.target)}; ` +
+     `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index da024bf..3722444 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -23,6 +23,7 @@ import { listPaperTrades } from "./orders.js";
+ import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "./quant.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ import { clampBuyUsd, decisionLine, recordPendingSetups, type PendingSetup } from "./decisions.js";
++import { isMemecoin, tradeLimits } from "./trade-limits.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
+@@ -224,7 +225,8 @@ export function evaluateRangeSetup(symbol: string, mint: string, h4: Candle[], h
+   if (r === null || prev === null || !(r < 42)) return no(`1h RSI ${r?.toFixed(0) ?? "?"} not low enough (< 42)`);
+   if (!(r > prev)) return no(`1h RSI ${r.toFixed(0)} still falling: wait for it to turn up`);
+   const stop = support - a;
+-  const target = top - 0.25 * a;
++  // Lot 8c: an isolated old peak made targets like +132%; a range rebound aims at most +30%.
++  const target = Math.min(top - 0.25 * a, price * (1 + RANGE_MAX_TARGET_PCT / 100));
+   const rr = (target - price) / (price - stop);
+   const plan = {
+     entry: price, stop, target, rr,
+@@ -371,17 +373,24 @@ export async function setupScan(
+       (s.trending ? " (trending token: token_safety passed; size small)" : "") + sizingText(s));
+   const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
+   // Lot 8b: live trend setups become pending decisions, sized within the code limits.
++  // Lot 8c: range setups still in paper validation are decisions too (paper_trade or skip).
+   const live: PendingSetup[] = [];
++  const notBuyable: string[] = [];
+   for (const s of setups) {
+-    if (s.side === "range" || s.side === "short" || !s.plan) continue;
+-    const amountUsd = clampBuyUsd(s.sizeUsd, capitalUsd);
+-    if (amountUsd === null) continue;
+-    live.push({ symbol: s.symbol, mint: s.mint, entry: s.plan.entry, stop: s.plan.stop, target: s.plan.target, rr: s.plan.rr, amountUsd });
++    if (s.side === "short" || !s.plan) continue;
++    const paper = s.side === "range" && !rangeRecord.live;
++    const amountUsd = paper ? 10 : clampBuyUsd(s.sizeUsd, capitalUsd, process.env, s.mint);
++    if (amountUsd === null) {
++      notBuyable.push(`- ${s.symbol}: the code limits leave less than the $${tradeLimits().minTradeUsd} minimum for this token` +
++        `${isMemecoin(s.mint) ? ` (memecoin: max ${tradeLimits().memePerTokenPct}% of capital)` : ""}; not tradable now, no decision needed.`);
++      continue;
++    }
++    live.push({ symbol: s.symbol, mint: s.mint, entry: s.plan.entry, stop: s.plan.stop, target: s.plan.target, rr: s.plan.rr, amountUsd, action: paper ? "paper" : "buy" });
+   }
+   if (options.db) recordPendingSetups(options.db, live);
+-  const decide = live.length
+-    ? `\nDECIDE NOW for each live setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}`
+-    : "";
++  const decide = (live.length
++    ? `\nDECIDE NOW for each setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}`
++    : "") + (notBuyable.length ? `\nNot tradable with your capital:\n${notBuyable.join("\n")}` : "");
+   return (setups.length
+     ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}${decide}`
+     : "No real setup right now: stay in USDC. Do not just sleep: keep a paper strategy running (backtest, then strategy_create paper=true) " +
+@@ -492,6 +501,7 @@ export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recen
+ }
+ 
+ const SCAN_CACHE_MS = 15 * 60_000;
++export const RANGE_MAX_TARGET_PCT = 30;
+ let scanCache: { key: string; at: number; text: string } | null = null;
+ 
+ export function createTradingDeskTools(): AutomatonTool[] {

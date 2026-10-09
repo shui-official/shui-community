@@ -1,0 +1,1961 @@
+diff --git a/src/__tests__/agent/simulated-task-guard.test.ts b/src/__tests__/agent/simulated-task-guard.test.ts
+index 39772e5..e5e321e 100644
+--- a/src/__tests__/agent/simulated-task-guard.test.ts
++++ b/src/__tests__/agent/simulated-task-guard.test.ts
+@@ -37,6 +37,13 @@ class WritingHarness extends BaseHarness {
+   }
+ }
+ 
++class DeployHarness extends WritingHarness {
++  live: Array<{ url: string; status: number | null }> = [];
++  protected override async liveServiceUrls() {
++    return this.live;
++  }
++}
++
+ const call = (id: string, name: string, args: Record<string, unknown>) => ({
+   id, type: "function" as const, function: { name, arguments: JSON.stringify(args) },
+ });
+@@ -48,7 +55,7 @@ describe("simulated work is not accepted as a successful task", () => {
+     tempDir = undefined;
+   });
+ 
+-  async function run(content: string, turns: unknown[][]) {
++  async function run(content: string, turns: unknown[][], opts: { title?: string; live?: Array<{ url: string; status: number | null }> } = {}) {
+     tempDir = mkdtempSync(path.join(os.tmpdir(), "sim-guard-"));
+     const workspace = new AgentWorkspace("goal-1", path.join(tempDir, "workspace"));
+     const { mkdirSync } = await import("node:fs");
+@@ -71,12 +78,13 @@ describe("simulated work is not accepted as a successful task", () => {
+       goalId: "goal-1",
+     };
+     const task = {
+-      id: "t1", parentId: null, goalId: "goal-1", title: "Build service", description: "d", status: "assigned",
++      id: "t1", parentId: null, goalId: "goal-1", title: opts.title ?? "Build service", description: "d", status: "assigned",
+       assignedTo: "local://w", agentRole: "generalist", priority: 50, dependencies: [], result: null,
+       metadata: { estimatedCostCents: 1, actualCostCents: 0, maxRetries: 0, retryCount: 0, timeoutMs: 5_000,
+         createdAt: new Date().toISOString(), startedAt: null, completedAt: null },
+     } as TaskNode;
+-    const harness = new WritingHarness();
++    const harness = new DeployHarness();
++    harness.live = opts.live ?? [];
+     await harness.initialize(task, context);
+     void content;
+     return harness.execute();
+@@ -110,4 +118,17 @@ describe("simulated work is not accepted as a successful task", () => {
+     ]);
+     expect(result.success).toBe(true);
+   });
++
++  it("refuses a deploy task as done while no published service answers", async () => {
++    const done = [[call("1", "task_done", { summary: "deployed", success: true })], [call("2", "task_done", { summary: "deployed", success: true })]];
++    const none = await run("", done, { title: "Deploy URL shortener" });
++    expect(none.success).toBe(false);
++    expect(none.output).toContain("no service is published");
++    const down = await run("", done, { title: "Deploy URL shortener", live: [{ url: "https://short.example", status: 502 }] });
++    expect(down.success).toBe(false);
++    const up = await run("", done, { title: "Deploy URL shortener", live: [{ url: "https://short.example", status: 200 }] });
++    expect(up.success).toBe(true);
++    const research = await run("", done, { title: "Research deployment options" });
++    expect(research.success).toBe(true);
++  });
+ });
+diff --git a/src/__tests__/trading-tools.test.ts b/src/__tests__/trading-tools.test.ts
+new file mode 100644
+index 0000000..ea869ed
+--- /dev/null
++++ b/src/__tests__/trading-tools.test.ts
+@@ -0,0 +1,202 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { createDatabase, claimInboxMessages } from "../state/database.js";
++import { buildRaydiumSwapTransactions, USDC_MINT, SOL_MINT } from "../solana/raydium.js";
++import { parseJupiterQuote, validateJupiterSwap, JUPITER_PROGRAM_ID } from "../solana/jupiter.js";
++import { marketScan, formatRow } from "../solana/market-scan.js";
++import { classifySwapResult, isTriggered, listOrders, runOrderTick, saveOrder, type Order } from "../solana/orders.js";
++import { parsePublicListeners, stopPublicListeners } from "../services/public-listeners.js";
++import { listOutgoingCreatorMessages, saveOutgoingCreatorMessage } from "../integration/creator-chat.js";
++import { createPaymentTools } from "../solana/payment-tools.js";
++
++const WALLET = "7VHUFJHWu2CuExkJcJrzhQPJ2oygupTWkL2A2For4BmE";
++const BONK = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
++
++function freshDb() {
++  return createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "trade-")), "state.db"));
++}
++
++afterEach(() => vi.unstubAllGlobals());
++
++describe("raydium build", () => {
++  it("sends the wallet's input token account (fixes REQ_INPUT_ACCOUT_ERROR)", async () => {
++    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true, id: "x", version: "V0", data: [{ transaction: "AA==" }] })));
++    vi.stubGlobal("fetch", fetchMock);
++    await buildRaydiumSwapTransactions({
++      wallet: WALLET, swapResponse: {}, inputMint: USDC_MINT, outputMint: SOL_MINT, inputAccount: "USDCACCOUNT", outputAccount: null,
++    });
++    const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
++    expect(body).toMatchObject({ inputAccount: "USDCACCOUNT", wrapSol: false, unwrapSol: true });
++    expect(body.outputAccount).toBeUndefined();
++  });
++});
++
++describe("jupiter", () => {
++  const quote = { inputMint: USDC_MINT, outputMint: SOL_MINT, inAmount: "5000000", outAmount: "41000000", otherAmountThreshold: "40795000", swapMode: "ExactIn", slippageBps: 50, priceImpactPct: "0.0001" };
++
++  it("parses an exact-in quote and rejects mismatches", () => {
++    const q = parseJupiterQuote(quote, { inputMint: USDC_MINT, outputMint: SOL_MINT, inputAmount: 5_000_000n });
++    expect(q).toMatchObject({ outputAmount: 41_000_000n, minimumOutputAmount: 40_795_000n, slippageBps: 50, priceImpactPct: 0.01 });
++    expect(() => parseJupiterQuote(quote, { inputMint: USDC_MINT, outputMint: SOL_MINT, inputAmount: 1n })).toThrow(/input amount/);
++    expect(() => parseJupiterQuote({ ...quote, swapMode: "ExactOut" }, { inputMint: USDC_MINT, outputMint: SOL_MINT, inputAmount: 5_000_000n })).toThrow(/exact-in/);
++  });
++
++  function routeData(inAmount: bigint, out: bigint, slippage: number): string {
++    const b = Buffer.alloc(8 + 4 + 19);
++    b.writeBigUInt64LE(inAmount, 12);
++    b.writeBigUInt64LE(out, 20);
++    b.writeUInt16LE(slippage, 28);
++    return b.toString("hex");
++  }
++
++  function fakeService(instructions: any[], signers = [WALLET]) {
++    return { address: WALLET, inspectTransaction: async () => ({ payer: WALLET, requiredSigners: signers, programs: [], instructions, addressLookupTables: [] }) } as any;
++  }
++
++  const expected = { inputMint: USDC_MINT, outputMint: SOL_MINT, inputAmount: 5_000_000n, minimumOutputAmount: 40_795_000n };
++  const venueQuote = { outputAmount: 41_000_000n, minimumOutputAmount: 40_795_000n, slippageBps: 50, raw: quote };
++
++  it("accepts the quoted route and refuses tampered transactions", async () => {
++    const route = { programId: JUPITER_PROGRAM_ID, accounts: [], dataHex: routeData(5_000_000n, 41_000_000n, 50), dataLength: 31 };
++    await expect(validateJupiterSwap(fakeService([route]), {} as any, expected, venueQuote)).resolves.toBeUndefined();
++    const other = { ...route, dataHex: routeData(9_000_000n, 41_000_000n, 50) };
++    await expect(validateJupiterSwap(fakeService([other]), {} as any, expected, venueQuote)).rejects.toThrow(/quoted input/);
++    const approve = { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", accounts: [], dataHex: "04", dataLength: 1 };
++    await expect(validateJupiterSwap(fakeService([route, approve]), {} as any, expected, venueQuote)).rejects.toThrow(/authority/);
++    const transfer = { programId: "11111111111111111111111111111111", accounts: [WALLET, "Attacker1111111111111111111111111111111111"], dataHex: "0200000000e1f50500000000", dataLength: 12 };
++    await expect(validateJupiterSwap(fakeService([route, transfer]), {} as any, expected, venueQuote)).rejects.toThrow(/outside/);
++    await expect(validateJupiterSwap(fakeService([route], [WALLET, "X"]), {} as any, expected, venueQuote)).rejects.toThrow(/signers/);
++  });
++});
++
++describe("market_scan", () => {
++  it("formats trending pools with warnings", async () => {
++    const fetcher = async () => ({
++      data: [{
++        attributes: {
++          name: "BONK / SOL", address: "POOL", base_token_price_usd: "0.0000201", reserve_in_usd: "12000",
++          price_change_percentage: { m5: "1.2", h1: "-3", h6: "5", h24: "12.5" }, volume_usd: { h24: "900000" },
++          fdv_usd: "1500000000", pool_created_at: new Date(Date.now() - 3_600_000).toISOString(), transactions: { h24: { buys: 10, sells: 4 } },
++        },
++        relationships: { base_token: { data: { id: `solana_${BONK}` } } },
++      }],
++    });
++    const text = await marketScan({ mode: "trending" }, fetcher);
++    expect(text).toContain(`BONK mint=${BONK}`);
++    expect(text).toContain("24h +12.5%");
++    expect(text).toContain("THIN LIQUIDITY");
++    expect(text).toContain("NEW PAIR");
++  });
++
++  it("summarises the deepest pool and its candles for a token", async () => {
++    const fetcher = async (url: string) => url.includes("dexscreener")
++      ? [
++        { chainId: "solana", baseToken: { symbol: "BONK", address: BONK }, priceUsd: "0.00002", liquidity: { usd: 5_000_000 }, pairAddress: "DEEP", dexId: "raydium", priceChange: { h24: 2 } },
++        { chainId: "solana", baseToken: { symbol: "BONK", address: BONK }, priceUsd: "0.00002", liquidity: { usd: 10_000 }, pairAddress: "SHALLOW" },
++      ]
++      : { data: { attributes: { ohlcv_list: [[2, 1, 3, 0.5, 2, 10], [1, 1, 2, 0.8, 1, 10]] } } };
++    const text = await marketScan({ mode: "token", query: BONK }, fetcher);
++    expect(text).toContain("dex=raydium");
++    expect(text).toContain("2h candles");
++    expect(text).toContain("2 pools");
++  });
++
++  it("formats a row without data", () => {
++    expect(formatRow({ symbol: "X", mint: "M", priceUsd: null, change: {}, volume24hUsd: null, liquidityUsd: null, fdvUsd: null, createdAt: null })).toContain("price=?");
++  });
++});
++
++describe("automatic orders", () => {
++  const base = (over: Partial<Order> = {}): Order => ({
++    id: "ord_1", kind: "stop_loss", inputMint: BONK, outputMint: USDC_MINT, amount: "1000", watchMint: BONK,
++    condition: "below", triggerPriceUsd: 0.00002, slippageBps: 100, venue: "jupiter", note: "protect", createdAt: new Date().toISOString(),
++    expiresAt: null, status: "open", attempts: 0, updatedAt: new Date().toISOString(), ...over,
++  });
++
++  it("triggers on the right side", () => {
++    expect(isTriggered({ condition: "below", triggerPriceUsd: 10 }, 9)).toBe(true);
++    expect(isTriggered({ condition: "below", triggerPriceUsd: 10 }, 11)).toBe(false);
++    expect(isTriggered({ condition: "above", triggerPriceUsd: 10 }, 10)).toBe(true);
++  });
++
++  it("executes a triggered order, then tells SHUI in its inbox", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, base());
++    const swap = vi.fn(async () => JSON.stringify({ success: true, signature: "SIG" }));
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [BONK]: 0.000019 }), swap });
++    expect(swap).toHaveBeenCalledWith(expect.objectContaining({ id: "ord_1" }), "1000");
++    expect(listOrders(db.raw)[0].status).toBe("filled");
++    const [notice] = claimInboxMessages(db.raw, 10);
++    expect(notice.fromAddress).toBe("system:orders");
++    expect(notice.content).toContain("EXECUTED");
++  });
++
++  it("waits while untriggered, retries a pending lock, fails after 3 errors", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, base());
++    const swap = vi.fn(async () => JSON.stringify({ success: false, blocked: true, reason: "PREVIOUS_TRANSACTION_OUTCOME_UNCERTAIN" }));
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [BONK]: 0.00003 }), swap });
++    expect(swap).not.toHaveBeenCalled();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [BONK]: 0.00001 }), swap });
++    expect(listOrders(db.raw)[0]).toMatchObject({ status: "open", attempts: 0 });
++    const failing = vi.fn(async () => "error: Jupiter quote HTTP 500");
++    for (let i = 0; i < 3; i++) await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [BONK]: 0.00001 }), swap: failing });
++    expect(listOrders(db.raw)[0]).toMatchObject({ status: "failed", attempts: 3 });
++  });
++
++  it("expires orders and never retries an interrupted execution", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, base({ id: "ord_old", expiresAt: new Date(Date.now() - 1000).toISOString() }));
++    saveOrder(db.raw, base({ id: "ord_exec", status: "executing", updatedAt: new Date(Date.now() - 3_600_000).toISOString() }));
++    const swap = vi.fn();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({}), swap });
++    const byId = Object.fromEntries(listOrders(db.raw).map((o) => [o.id, o.status]));
++    expect(byId).toEqual({ ord_old: "expired", ord_exec: "failed" });
++    expect(swap).not.toHaveBeenCalled();
++  });
++
++  it("classifies swap results", () => {
++    expect(classifySwapResult(JSON.stringify({ success: true, signature: "S" })).done).toBe(true);
++    expect(classifySwapResult("Blocked: amount must be a positive raw integer.").transient).toBe(false);
++  });
++});
++
++describe("public listeners after exec", () => {
++  const ss = [
++    'LISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=4242,fd=18))',
++    'LISTEN 0 511 127.0.0.1:8101 0.0.0.0:* users:(("python3",pid=4343,fd=3))',
++    'LISTEN 0 511 [::]:5000 [::]:* users:(("python3",pid=4444,fd=3))',
++    "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*",
++  ].join("\n");
++
++  it("finds this user's public listeners only", () => {
++    expect(parsePublicListeners(ss, 1).map((l) => l.pid)).toEqual([4242, 4444]);
++  });
++
++  it("stops them and explains service_deploy", async () => {
++    const killed: number[] = [];
++    const notice = await stopPublicListeners(async () => ss, (pid) => { killed.push(pid); });
++    expect(killed).toEqual([4242, 4444]);
++    expect(notice).toContain("service_deploy");
++    expect(await stopPublicListeners(async () => "", () => {})).toBe("");
++  });
++});
++
++describe("message_creator and payment links", () => {
++  it("stores outgoing messages with an hourly limit", () => {
++    const db = freshDb();
++    const now = new Date();
++    for (let i = 0; i < 6; i++) expect(typeof saveOutgoingCreatorMessage(db.raw, `msg ${i}`, new Date(now.getTime() + i))).toBe("object");
++    expect(saveOutgoingCreatorMessage(db.raw, "one more", new Date(now.getTime() + 10))).toMatch(/Blocked/);
++    expect(listOutgoingCreatorMessages(db.raw).map((m) => m.content)).toEqual(["msg 0", "msg 1", "msg 2", "msg 3", "msg 4", "msg 5"]);
++  });
++
++  it("payment_request says a link is not revenue", async () => {
++    const db = freshDb();
++    const tool = createPaymentTools().find((t) => t.name === "payment_request")!;
++    const out = await tool.execute({ amountUsdc: 1, label: "test" }, { db, identity: { address: WALLET, chainIdentity: { address: WALLET } } } as any);
++    expect(JSON.parse(out).note).toContain("not revenue");
++  });
++});
+diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
+index 625783f..ad99a63 100644
+--- a/src/agent/harnesses/base-harness.ts
++++ b/src/agent/harnesses/base-harness.ts
+@@ -1,4 +1,5 @@
+ import { promises as fs } from "node:fs";
++import { runServiceHelper } from "../../services/service-tools.js";
+ import path from "node:path";
+ import { getDailyGain, utcDay } from "../../solana/ledger.js";
+ import { createLogger } from "../../observability/logger.js";
+@@ -17,6 +18,8 @@ const DATA_SCAN_EXTENSIONS = /\.(csv|json|jsonl|tsv|ya?ml)$/i;
+ const FAKE_MONEY_MARKERS =
+   /test_payment|fake[_ ]?(?:payment|tx|txn|transaction|revenue)|dummy[_ ]?(?:payment|tx|txn|transaction)|sample[_ ]?(?:payment|transaction)|placeholder[_ ]?(?:payment|tx|signature)|\btxn_0{2,}\d\b|pay\.solana\.com|solanapay\.com/i;
+ /** A task summary that claims money came in. */
++/** Task titles that promise a live service (not "deployment notes" or research). */
++const DEPLOY_TASK = /\b(deploy|publish|go live|launch|expose|host)\b/i;
+ const REVENUE_CLAIM =
+   /\b(?:generated|earned|received|made|collected|brought in)\b[^.\n]{0,60}(?:\$\s?(?:0*\.\d*[1-9]|[1-9])|\b(?:0*\.\d*[1-9]|[1-9][\d.]*)\s?(?:usd|usdc|sol)\b)|\brevenue\b[^.\n]{0,30}(?:\$\s?(?:0*\.\d*[1-9]|[1-9])|\b[1-9][\d.]*\s?(?:usd|usdc)\b)/i;
+ const SIMULATION_MARKERS =
+@@ -112,6 +115,44 @@ export abstract class BaseHarness implements AgentHarness {
+     return `summary claims "${claim[0].slice(0, 80)}" but the verified ledger shows no revenue or realized profit today`;
+   }
+ 
++  /** "url -> HTTP status" of the published services (live check, overridable in tests). */
++  protected async liveServiceUrls(): Promise<Array<{ url: string; status: number | null }>> {
++    const listed = await runServiceHelper(["list"]);
++    // No hosting helper on this machine: nothing to check against.
++    if (!listed.ok && /not installed/.test(listed.output)) throw new Error(listed.output);
++    const urls = [...listed.output.matchAll(/: active port=\d+ url=(https:\/\/\S+)/g)].map((m) => m[1]);
++    const checks: Array<{ url: string; status: number | null }> = [];
++    for (const url of urls) {
++      try {
++        const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(10_000) });
++        checks.push({ url, status: response.status });
++      } catch {
++        checks.push({ url, status: null });
++      }
++    }
++    return checks;
++  }
++
++  /**
++   * A task about deploying or publishing is only done when a published
++   * service really answers over HTTPS. Goals were closed as "deployed" with
++   * no service online (the server only ran by exec, or not at all).
++   */
++  protected async unprovenDeployClaim(): Promise<string | null> {
++    if (!DEPLOY_TASK.test(this.task.title)) return null;
++    let live: Array<{ url: string; status: number | null }>;
++    try {
++      live = await this.liveServiceUrls();
++    } catch {
++      return null;
++    }
++    if (live.some((s) => s.status !== null && s.status < 500)) return null;
++    const seen = live.length > 0
++      ? `published services do not answer (${live.map((s) => `${s.url} -> ${s.status ?? "no response"}`).join(", ")})`
++      : "no service is published";
++    return `this is a deploy task but ${seen}; publish it with service_deploy and check the URL with web_fetch`;
++  }
++
+   protected validateTaskCompletion(
+     requestedSuccess: boolean,
+     _summary: string,
+@@ -302,6 +343,8 @@ export abstract class BaseHarness implements AgentHarness {
+                 const simulated = requestedSuccess ? await this.findSimulatedArtifacts() : [];
+                 const revenueClaim = requestedSuccess ? this.unverifiedRevenueClaim(summary) : null;
+                 if (revenueClaim) simulated.push(revenueClaim);
++                const deployClaim = requestedSuccess ? await this.unprovenDeployClaim() : null;
++                if (deployClaim) simulated.push(deployClaim);
+ 
+                 if (simulated.length > 0 && !this.simulationRejected) {
+                   // First claim of success on simulated code: refuse it and
+diff --git a/src/agent/harnesses/coding-harness.ts b/src/agent/harnesses/coding-harness.ts
+index b61c6dc..7a36cfb 100644
+--- a/src/agent/harnesses/coding-harness.ts
++++ b/src/agent/harnesses/coding-harness.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import type { TaskResult } from "../../orchestration/task-graph.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { stopPublicListeners } from "../../services/public-listeners.js";
+ import { binaryNotice, pathArg, workspaceDir, workerShellCommand } from "./worker-environment.js";
+ import { SERVICES_ROOT } from "../../services/service-tools.js";
+ import { buildWorkerEnvironmentSection, isProtectedForWorker } from "./worker-environment.js";
+@@ -88,7 +89,7 @@ When calling task_done, provide:
+           try {
+             const cwd = await workspaceDir(this.context.workspaceRoot);
+             const result = await this.context.conway.exec(workerShellCommand(cwd, command), timeoutMs);
+-            return formatExecResult(result.stdout ?? "", result.stderr ?? "");
++            return formatExecResult(result.stdout ?? "", result.stderr ?? "") + await stopPublicListeners();
+           } catch {
+             return localExec(command, timeoutMs, this.context.workspaceRoot);
+           }
+diff --git a/src/agent/harnesses/general-harness.ts b/src/agent/harnesses/general-harness.ts
+index 2751268..55e52d3 100644
+--- a/src/agent/harnesses/general-harness.ts
++++ b/src/agent/harnesses/general-harness.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import type { AutomatonTool, SpendTrackerInterface } from "../../types.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { stopPublicListeners } from "../../services/public-listeners.js";
+ import { binaryNotice, pathArg, workspaceDir, workerShellCommand } from "./worker-environment.js";
+ import { readOnlyWebFetch } from "../web-fetch.js";
+ import { SERVICES_ROOT } from "../../services/service-tools.js";
+@@ -186,7 +187,7 @@ When calling task_done, provide:
+           try {
+             const cwd = await workspaceDir(this.context.workspaceRoot);
+             const result = await this.context.conway.exec(workerShellCommand(cwd, command), timeoutMs);
+-            return formatExecResult(result.stdout ?? "", result.stderr ?? "");
++            return formatExecResult(result.stdout ?? "", result.stderr ?? "") + await stopPublicListeners();
+           } catch {
+             return localExec(command, timeoutMs, await ensureDir(this.context.workspaceRoot, this.context.allowedEditRoot));
+           }
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index f88b314..2574cd4 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -94,7 +94,7 @@ import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
+ import { ProviderRegistry } from "../inference/provider-registry.js";
+ import { UnifiedInferenceClient } from "../inference/inference-client.js";
+ import { isIdleOnlyTool } from "./idle-only-tools.js";
+-import { formatCreatorChatMessage, isCreatorChatMessage, saveCreatorReplies } from "../integration/creator-chat.js";
++import { formatCreatorChatMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
+ 
+ const logger = createLogger("loop");
+ const MAX_TOOL_CALLS_PER_TURN = 10;
+@@ -701,6 +701,7 @@ export async function runAgentLoop(
+           const formatted = claimedMessages
+             .map((m) => {
+               if (isCreatorChatMessage(m.fromAddress)) return formatCreatorChatMessage(m.content);
++              if (isLocalSystemNotice(m.fromAddress)) return `[Notice from your own ${m.fromAddress.slice(7)} system]: ${m.content}`;
+               const from = sanitizeInput(m.fromAddress, m.fromAddress, "social_address");
+               const content = sanitizeInput(m.content, m.fromAddress, "social_message");
+               if (content.blocked) {
+@@ -965,7 +966,7 @@ export async function runAgentLoop(
+         "system_synopsis",
+         "sleep",
+         "heartbeat_ping",
+-        "distress_signal",
++        "message_creator",
+         "create_goal",
+         "list_goals",
+         "cancel_goal",
+@@ -987,6 +988,11 @@ export async function runAgentLoop(
+           "solana_get_tokens",
+           "raydium_quote",
+           "raydium_swap",
++          "jupiter_swap",
++          "market_scan",
++          "order_create",
++          "order_list",
++          "order_cancel",
+           "solana_transfer",
+           "solana_get_transactions",
+           "check_usdc_balance",
+@@ -1748,7 +1754,7 @@ function mirrorToolToDashboard(
+         steps: typeof args.steps === "string" ? args.steps : JSON.stringify(args.steps ?? ""),
+       });
+     }
+-    if (name === "raydium_swap") {
++    if (name === "raydium_swap" || name === "jupiter_swap") {
+       const trade = tradeFromSwapResult(args, result.result, result.error);
+       client.emit({
+         type: trade.status === "confirmed" ? "trade_result" : "trade",
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 7815a62..097eead 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -45,13 +45,13 @@ repeating the same thing. Plans, documents and simulated services are not value:
+ verified revenue or realized trading profit counts.
+ 
+ What you have: a dedicated Linux server (no root), free local inference (Qwen),
+-${chainType === "solana" ? "a central Solana wallet, Solana and Raydium tools" : "a wallet"}, local worker agents,
++${chainType === "solana" ? "a central Solana wallet, Solana trading tools (market_scan for live market data, jupiter_swap and raydium_swap, automatic stop-loss/take-profit orders with order_create)" : "a wallet"}, local worker agents,
+ self-modification, continuous operation. Conway services are optional and
+ currently unavailable to you.
+ 
+ Machine facts: no root, no Docker, no \`solana\` command-line tool. Python works through
+ \`python3 -m venv\` (system pip is blocked). To put a service on the internet, use
+-service_deploy (HTTPS URL); other ports are not reachable. To get paid, use payment_request.${chainType === "solana" ? " Your wallet can hold and trade any SPL token; 0.01 SOL always stays reserved for network fees and token-account rent." : ""}
++service_deploy (HTTPS URL); other ports are not reachable. To get paid, use payment_request. To reach your creator (results, requests only a human can do), use message_creator.${chainType === "solana" ? " Your wallet can hold and trade any SPL token; 0.01 SOL always stays reserved for network fees and token-account rent." : ""}
+ 
+ If you create value, you live longer. If you don't, your life runs out.`;
+ }
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index 8991e01..a9f90ec 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -1,4 +1,9 @@
+ import { createRaydiumSwapTool } from "../solana/swap-tool.js";
++import { stopPublicListeners } from "../services/public-listeners.js";
++import { createMessageCreatorTool } from "../integration/creator-chat.js";
++import { createJupiterSwapTool } from "../solana/jupiter.js";
++import { createMarketScanTool } from "../solana/market-scan.js";
++import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+ import { createServiceTools } from "../services/service-tools.js";
+ import { readOnlyWebFetch } from "./web-fetch.js";
+@@ -122,6 +127,10 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createSolanaTransactionsTool(),
+     ...createPaymentTools(),
+     ...createServiceTools(),
++    createMessageCreatorTool(),
++    createJupiterSwapTool(),
++    createMarketScanTool(),
++    ...createOrderTools(),
+     {
+       name: "web_fetch",
+       description:
+@@ -298,7 +307,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+           command,
+           (args.timeout as number) || 30000,
+         );
+-        return `exit_code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
++        return `exit_code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}${await stopPublicListeners()}`;
+       },
+     },
+     {
+diff --git a/src/index.ts b/src/index.ts
+index 5bd90d5..0cd9051 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -22,6 +22,7 @@ import {
+ } from "./heartbeat/config.js";
+ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+ import { startCreatorChatServer } from "./integration/creator-chat.js";
++import { startOrderExecutor } from "./solana/orders.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+ import { loadSkills } from "./skills/loader.js";
+@@ -390,6 +391,11 @@ async function run(): Promise<void> {
+   // Creator chat endpoint for the Control Center (127.0.0.1, token required).
+   startCreatorChatServer(db.raw, process.env, (message) => logger.info(message));
+ 
++  // Automatic orders (stop-loss, take-profit, buy_below) run without the model.
++  if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
++    startOrderExecutor({ db, chainIdentity, log: (message) => logger.info(message) });
++  }
++
+   // Handle graceful shutdown
+   const shutdown = () => {
+     logger.info(`[${new Date().toISOString()}] Shutting down...`);
+diff --git a/src/integration/creator-chat.ts b/src/integration/creator-chat.ts
+index 4fa765a..6bb8553 100644
+--- a/src/integration/creator-chat.ts
++++ b/src/integration/creator-chat.ts
+@@ -15,7 +15,7 @@ import http from "node:http";
+ import { randomUUID, timingSafeEqual } from "node:crypto";
+ import type { Database } from "better-sqlite3";
+ import { insertWakeEvent } from "../state/database.js";
+-import type { AgentTurn } from "../types.js";
++import type { AgentTurn, AutomatonTool } from "../types.js";
+ 
+ export const CREATOR_CHAT_SENDER = "creator:control-center";
+ export const DEFAULT_CHAT_PORT = 3334;
+@@ -23,6 +23,15 @@ const MIN_TOKEN_LENGTH = 24;
+ const MAX_MESSAGE_LENGTH = 4000;
+ const MAX_BODY_BYTES = 16 * 1024;
+ const REPLY_KEY_PREFIX = "creator_chat.reply.";
++const OUT_KEY_PREFIX = "creator_chat.out.";
++const MAX_OUTGOING_PER_HOUR = 6;
++const MAX_OUTGOING_LENGTH = 2000;
++
++export interface CreatorChatOutgoing {
++  id: string;
++  content: string;
++  at: string;
++}
+ 
+ export interface CreatorChatReply {
+   turnId: string;
+@@ -39,6 +48,21 @@ export interface CreatorChatEntry {
+   reply: CreatorChatReply | null;
+ }
+ 
++/** Notices written by SHUI's own code (automatic orders…), not by another agent. */
++export function isLocalSystemNotice(fromAddress: string | null | undefined): boolean {
++  return typeof fromAddress === "string" && fromAddress.startsWith("system:");
++}
++
++export function queueSystemNotice(db: Database, source: string, content: string, now: Date = new Date()): string {
++  const id = `notice_${now.getTime()}_${randomUUID().slice(0, 8)}`;
++  db.prepare(
++    `INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status)
++     VALUES (?, ?, 'shui', ?, ?, 'received')`,
++  ).run(id, source, content.slice(0, 2000), now.toISOString());
++  insertWakeEvent(db, source, content.slice(0, 200), { id });
++  return id;
++}
++
+ export function isCreatorChatMessage(fromAddress: string | null | undefined): boolean {
+   return fromAddress === CREATOR_CHAT_SENDER;
+ }
+@@ -110,6 +134,59 @@ export function listCreatorChat(db: Database, since?: string, limit = 100): Crea
+   });
+ }
+ 
++/** A message SHUI sends to its creator on its own initiative. */
++export function saveOutgoingCreatorMessage(db: Database, content: string, now: Date = new Date()): CreatorChatOutgoing | string {
++  const text = content.trim().slice(0, MAX_OUTGOING_LENGTH);
++  if (!text) return "Blocked: message is empty.";
++  const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
++  const recent = db.prepare("SELECT COUNT(*) AS n FROM kv WHERE key > ? AND key < ?")
++    .get(`${OUT_KEY_PREFIX}${hourAgo}`, `${OUT_KEY_PREFIX}~`) as { n: number };
++  if (recent.n >= MAX_OUTGOING_PER_HOUR) {
++    return `Blocked: you already sent ${recent.n} messages to your creator in the last hour. Wait for an answer.`;
++  }
++  const message = { id: `out_${now.getTime()}_${randomUUID().slice(0, 6)}`, content: text, at: now.toISOString() };
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))")
++    .run(`${OUT_KEY_PREFIX}${message.at}_${message.id}`, JSON.stringify(message));
++  return message;
++}
++
++export function listOutgoingCreatorMessages(db: Database, since?: string, limit = 100): CreatorChatOutgoing[] {
++  const rows = db.prepare("SELECT value FROM kv WHERE key > ? AND key < ? ORDER BY key DESC LIMIT ?")
++    .all(`${OUT_KEY_PREFIX}${since ?? ""}`, `${OUT_KEY_PREFIX}~`, limit) as Array<{ value: string }>;
++  const out: CreatorChatOutgoing[] = [];
++  for (const row of rows.reverse()) {
++    try {
++      out.push(JSON.parse(row.value) as CreatorChatOutgoing);
++    } catch {
++      // skip a damaged row
++    }
++  }
++  return out;
++}
++
++export function createMessageCreatorTool(): AutomatonTool {
++  return {
++    name: "message_creator",
++    description:
++      "Write to your creator in the Control Center chat, on your own initiative: report a result (a service is online, " +
++      "a trade closed), ask for something only a human can do (share a service link, buy a domain, create an account), " +
++      "or warn about a problem. Be short and concrete. The creator answers in the same chat; the answer arrives as a " +
++      `message in your inbox. Max ${MAX_OUTGOING_PER_HOUR} messages per hour.`,
++    category: "survival",
++    riskLevel: "safe",
++    parameters: {
++      type: "object",
++      properties: { message: { type: "string", description: "The message to your creator." } },
++      required: ["message"],
++    },
++    execute: async (args, ctx) => {
++      const saved = saveOutgoingCreatorMessage(ctx.db.raw, String(args.message ?? ""));
++      if (typeof saved === "string") return saved;
++      return `Sent to your creator (Control Center chat) at ${saved.at}. Their answer will arrive in your inbox.`;
++    },
++  };
++}
++
+ function tokenMatches(header: string | undefined, token: string): boolean {
+   const given = Buffer.from((header ?? "").replace(/^Bearer\s+/i, ""));
+   const expected = Buffer.from(token);
+@@ -133,7 +210,8 @@ export function createCreatorChatHandler(db: Database, token: string): http.Requ
+       return;
+     }
+     if (req.method === "GET" && url.pathname === "/chat") {
+-      send(res, 200, { messages: listCreatorChat(db, url.searchParams.get("since") ?? undefined) });
++      const since = url.searchParams.get("since") ?? undefined;
++      send(res, 200, { messages: listCreatorChat(db, since), outgoing: listOutgoingCreatorMessages(db, since) });
+       return;
+     }
+     if (req.method === "POST" && url.pathname === "/chat") {
+diff --git a/src/integration/dashboard-bridge.ts b/src/integration/dashboard-bridge.ts
+index da82843..eb4a7db 100644
+--- a/src/integration/dashboard-bridge.ts
++++ b/src/integration/dashboard-bridge.ts
+@@ -153,7 +153,7 @@ export function tradeFromSwapResult(
+     result: error ?? (typeof parsed.reason === "string" ? parsed.reason : typeof parsed.error === "string" ? parsed.error : status),
+     pnl: typeof journal.realizedPnlUsd === "number" ? journal.realizedPnlUsd : undefined,
+     fees: typeof parsed.networkFeeLamports === "number" ? `${parsed.networkFeeLamports} lamports` : undefined,
+-    route: "raydium",
++    route: typeof parsed.venue === "string" ? parsed.venue : "raydium",
+   };
+ }
+ 
+@@ -193,6 +193,9 @@ export const DECISION_TOOLS = new Set([
+   "create_goal",
+   "cancel_goal",
+   "raydium_swap",
++  "jupiter_swap",
++  "order_create",
++  "order_cancel",
+   "solana_transfer",
+   "service_deploy",
+   "service_stop",
+@@ -205,6 +208,11 @@ function describeDecision(tool: string, args: Record<string, unknown>): string {
+       return `New goal: ${String(args.title ?? "").slice(0, 200)}`;
+     case "cancel_goal":
+       return `Cancel goal: ${String(args.goal_id ?? args.goalId ?? args.title ?? "")}`;
++    case "order_create":
++      return `Order ${String(args.kind ?? "")}: ${String(args.amount ?? "")} ${String(args.inputMint ?? "").slice(0, 8)}… -> ${String(args.outputMint ?? "").slice(0, 8)}… when price ${args.kind === "take_profit" ? "≥" : "≤"} $${String(args.triggerPriceUsd ?? "")}`;
++    case "order_cancel":
++      return `Cancel order ${String(args.id ?? "")}`;
++    case "jupiter_swap":
+     case "raydium_swap":
+       return `${args.dryRun === true ? "Simulate" : "Swap"} ${String(args.amount ?? "")} ${String(args.inputMint ?? "").slice(0, 8)}… -> ${String(args.outputMint ?? "").slice(0, 8)}…`;
+     case "solana_transfer":
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index ac7cab7..df235c8 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -55,6 +55,7 @@ const CONWAY_ONLY_TOOLS = new Set([
+  */
+ const WORKER_EXCLUDED_TOOLS = new Set([
+   "edit_own_file",
++  "message_creator",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/orchestration/messaging.ts b/src/orchestration/messaging.ts
+index 958ca3f..2360482 100644
+--- a/src/orchestration/messaging.ts
++++ b/src/orchestration/messaging.ts
+@@ -10,7 +10,7 @@ import type { AutomatonDatabase, InboxMessage } from "../types.js";
+ import { insertEvent } from "../state/database.js";
+ import { createLogger } from "../observability/logger.js";
+ import { ulid } from "ulid";
+-import { isCreatorChatMessage } from "../integration/creator-chat.js";
++import { isCreatorChatMessage, isLocalSystemNotice } from "../integration/creator-chat.js";
+ import type BetterSqlite3 from "better-sqlite3";
+ 
+ const logger = createLogger("orchestration.messaging");
+@@ -167,9 +167,9 @@ export class ColonyMessaging {
+     const processed: ProcessedMessage[] = [];
+ 
+     for (const row of inbox) {
+-      // Creator chat messages are plain text for SHUI's own loop, not colony JSON:
++      // Creator chat messages and SHUI's own notices are plain text for its loop, not colony JSON:
+       // leave them in the inbox instead of rejecting them as malformed.
+-      if (isCreatorChatMessage(row.from)) continue;
++      if (isCreatorChatMessage(row.from) || isLocalSystemNotice(row.from)) continue;
+       try {
+         const message = parseInboundMessage(row);
+         pending.push({ inboxId: row.id, message });
+diff --git a/src/services/public-listeners.ts b/src/services/public-listeners.ts
+new file mode 100644
+index 0000000..80dffc8
+--- /dev/null
++++ b/src/services/public-listeners.ts
+@@ -0,0 +1,59 @@
++import { execFile } from "node:child_process";
++
++/**
++ * Servers started with exec run outside the services sandbox (they can read
++ * /home, including the wallet key) and, when they listen on all interfaces,
++ * outside the reverse proxy. A Node test server was left on 0.0.0.0:3000 this
++ * way. After each exec, processes of this user that listen on a non-loopback
++ * address are stopped; tests on 127.0.0.1 stay allowed. Unprivileged `ss`
++ * only shows the PIDs of this user's own processes.
++ */
++export interface PublicListener {
++  address: string;
++  process: string;
++  pid: number;
++}
++
++const LOOPBACK = /^(127\.|\[::1\]|\[::ffff:127\.|localhost)/;
++
++export function parsePublicListeners(ssOutput: string, ownPid: number = process.pid): PublicListener[] {
++  const out: PublicListener[] = [];
++  for (const line of ssOutput.split("\n")) {
++    const cols = line.trim().split(/\s+/);
++    if (cols.length < 5 || cols[0] !== "LISTEN") continue;
++    const address = cols[3];
++    if (LOOPBACK.test(address)) continue;
++    for (const m of line.matchAll(/\("([^"]+)",pid=(\d+)/g)) {
++      const pid = Number(m[2]);
++      if (pid > 1 && pid !== ownPid) out.push({ address, process: m[1], pid });
++    }
++  }
++  return out;
++}
++
++function listListeners(): Promise<string> {
++  return new Promise((resolve) => {
++    execFile("ss", ["-ltnpH"], { timeout: 5000 }, (error, stdout) => resolve(error ? "" : stdout));
++  });
++}
++
++/** Stop this user's public listeners; returns a notice for the agent, or "" if none. */
++export async function stopPublicListeners(
++  read: () => Promise<string> = listListeners,
++  kill: (pid: number) => void = (pid) => process.kill(pid, "SIGTERM"),
++): Promise<string> {
++  const found = parsePublicListeners(await read());
++  if (found.length === 0) return "";
++  const stopped: string[] = [];
++  for (const l of found) {
++    try {
++      kill(l.pid);
++      stopped.push(`${l.process} (pid ${l.pid}) on ${l.address}`);
++    } catch {
++      // already gone or not ours
++    }
++  }
++  if (stopped.length === 0) return "";
++  return `\n[STOPPED: ${stopped.join(", ")} listened on a public address outside the services sandbox. ` +
++    "Test servers must listen on 127.0.0.1; to publish a service use service_deploy (folder /srv/shui/services/<name>, run.sh, port 8100-8199).]";
++}
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+new file mode 100644
+index 0000000..b2dbb50
+--- /dev/null
++++ b/src/solana/jupiter.ts
+@@ -0,0 +1,189 @@
++/**
++ * Jupiter aggregator: best price across Solana DEXes (Raydium, Orca, Meteora…)
++ * and almost every token. Free "lite" API, no key. Override the base URL with
++ * JUPITER_API_URL if Jupiter moves it.
++ */
++import { PublicKey, SystemProgram, type VersionedTransaction } from "@solana/web3.js";
++import type { AutomatonTool } from "../types.js";
++import {
++  ASSOCIATED_TOKEN_PROGRAM_ID,
++  NATIVE_SOL_MINT,
++  TOKEN_2022_PROGRAM_ID,
++  TOKEN_PROGRAM_ID,
++  type SolanaTradingService,
++} from "./trading.js";
++import { runSwap, type SwapExpectation, type SwapVenue, type VenueQuote } from "./swap-engine.js";
++
++export const JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
++const COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
++const MAX_PRIORITY_FEE_LAMPORTS = 200_000; // 0.0002 SOL cap per swap
++
++export function jupiterBaseUrl(): string {
++  return (process.env.JUPITER_API_URL ?? "https://lite-api.jup.ag/swap/v1").replace(/\/$/, "");
++}
++
++export interface JupiterQuoteResponse {
++  inputMint: string;
++  outputMint: string;
++  inAmount: string;
++  outAmount: string;
++  otherAmountThreshold: string;
++  swapMode: string;
++  slippageBps: number;
++  priceImpactPct?: string;
++  routePlan?: Array<{ swapInfo?: { label?: string } }>;
++  platformFee?: { amount?: string } | null;
++}
++
++export function parseJupiterQuote(raw: unknown, expected: { inputMint: string; outputMint: string; inputAmount: bigint }): VenueQuote {
++  const q = raw as Partial<JupiterQuoteResponse> & { error?: string };
++  if (!q || typeof q !== "object" || q.error) throw new Error(`Jupiter quote rejected: ${JSON.stringify(raw).slice(0, 300)}`);
++  if (q.inputMint !== expected.inputMint || q.outputMint !== expected.outputMint) throw new Error("Jupiter quote mint mismatch");
++  if (q.swapMode !== "ExactIn") throw new Error("Jupiter quote is not exact-in");
++  for (const v of [q.inAmount, q.outAmount, q.otherAmountThreshold]) {
++    if (!/^[1-9][0-9]*$/.test(String(v ?? ""))) throw new Error("Jupiter quote contains invalid amounts");
++  }
++  if (BigInt(q.inAmount!) !== expected.inputAmount) throw new Error("Jupiter quote input amount mismatch");
++  if (q.platformFee && q.platformFee.amount && q.platformFee.amount !== "0") throw new Error("Jupiter quote carries a platform fee");
++  const slippageBps = Number(q.slippageBps);
++  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) throw new Error("Jupiter quote contains invalid slippage");
++  const impact = q.priceImpactPct === undefined ? null : Number(q.priceImpactPct) * 100;
++  return {
++    outputAmount: BigInt(q.outAmount!),
++    minimumOutputAmount: BigInt(q.otherAmountThreshold!),
++    slippageBps,
++    priceImpactPct: impact !== null && Number.isFinite(impact) ? Math.round(impact * 1000) / 1000 : null,
++    raw,
++  };
++}
++
++function u64le(value: bigint): Buffer {
++  const b = Buffer.alloc(8);
++  b.writeBigUInt64LE(value);
++  return b;
++}
++
++function ata(owner: string, mint: string, programId: PublicKey): string {
++  return PublicKey.findProgramAddressSync(
++    [new PublicKey(owner).toBuffer(), programId.toBuffer(), new PublicKey(mint).toBuffer()],
++    ASSOCIATED_TOKEN_PROGRAM_ID,
++  )[0].toBase58();
++}
++
++/**
++ * The built transaction must be exactly the quoted swap for SHUI's wallet:
++ * SHUI is payer and only signer; one Jupiter route instruction whose data
++ * carries our input amount, the quoted output and our slippage (the program
++ * enforces the minimum output on-chain); no token Approve/SetAuthority; SOL
++ * only moves into SHUI's own wrapped-SOL account; accounts are closed only to
++ * SHUI; priority fee capped.
++ */
++export async function validateJupiterSwap(
++  service: SolanaTradingService,
++  transaction: VersionedTransaction,
++  expected: SwapExpectation,
++  quote: VenueQuote,
++): Promise<void> {
++  const inspection = await service.inspectTransaction(transaction);
++  if (inspection.payer !== service.address) throw new Error("Jupiter transaction payer is not SHUI's wallet");
++  if (inspection.requiredSigners.length !== 1 || inspection.requiredSigners[0] !== service.address) {
++    throw new Error("Jupiter transaction contains unexpected required signers");
++  }
++  const wsolAccount = ata(service.address, NATIVE_SOL_MINT, TOKEN_PROGRAM_ID);
++  const routes = inspection.instructions.filter((ix) => ix.programId === JUPITER_PROGRAM_ID);
++  if (routes.length === 0) throw new Error("No Jupiter route instruction in the transaction");
++  const tail = Buffer.concat([u64le(expected.inputAmount), u64le(quote.outputAmount), Buffer.from([quote.slippageBps & 0xff, quote.slippageBps >> 8])]);
++  if (!routes.some((ix) => Buffer.from(ix.dataHex, "hex").includes(tail))) {
++    throw new Error("Jupiter route does not carry the quoted input amount, output and slippage");
++  }
++  for (const ix of inspection.instructions) {
++    const data = Buffer.from(ix.dataHex, "hex");
++    if (ix.programId === TOKEN_PROGRAM_ID.toBase58() || ix.programId === TOKEN_2022_PROGRAM_ID.toBase58()) {
++      if ([4, 6, 13].includes(data[0])) throw new Error("Jupiter transaction delegates or changes token authority");
++      if (data[0] === 9 && ix.accounts[1] !== service.address) throw new Error("Jupiter transaction closes an account to another wallet");
++    } else if (ix.programId === SystemProgram.programId.toBase58()) {
++      const kind = data.readUInt32LE(0);
++      if (kind !== 2 || ix.accounts[1] !== wsolAccount) throw new Error("Jupiter transaction moves SOL outside SHUI's wrapped-SOL account");
++    }
++  }
++  const limitIx = inspection.instructions.find((ix) => ix.programId === COMPUTE_BUDGET_PROGRAM_ID && ix.dataHex.startsWith("02"));
++  const priceIx = inspection.instructions.find((ix) => ix.programId === COMPUTE_BUDGET_PROGRAM_ID && ix.dataHex.startsWith("03"));
++  if (priceIx) {
++    const units = limitIx ? BigInt(Buffer.from(limitIx.dataHex, "hex").readUInt32LE(1)) : 1_400_000n;
++    const microLamports = Buffer.from(priceIx.dataHex, "hex").readBigUInt64LE(1);
++    if ((units * microLamports) / 1_000_000n > BigInt(MAX_PRIORITY_FEE_LAMPORTS) * 2n) {
++      throw new Error("Jupiter transaction priority fee is above the cap");
++    }
++  }
++}
++
++export const jupiterVenue: SwapVenue = {
++  name: "jupiter",
++  async quote({ inputMint, outputMint, amount, slippageBps }) {
++    const url = new URL(`${jupiterBaseUrl()}/quote`);
++    url.searchParams.set("inputMint", inputMint);
++    url.searchParams.set("outputMint", outputMint);
++    url.searchParams.set("amount", amount.toString());
++    url.searchParams.set("slippageBps", String(slippageBps));
++    url.searchParams.set("swapMode", "ExactIn");
++    const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
++    const raw: unknown = await response.json();
++    if (!response.ok) throw new Error(`Jupiter quote HTTP ${response.status}: ${JSON.stringify(raw).slice(0, 300)}`);
++    return parseJupiterQuote(raw, { inputMint, outputMint, inputAmount: amount });
++  },
++  async build(service, { quote }) {
++    const response = await fetch(`${jupiterBaseUrl()}/swap`, {
++      method: "POST",
++      headers: { "content-type": "application/json", accept: "application/json" },
++      body: JSON.stringify({
++        quoteResponse: quote.raw,
++        userPublicKey: service.address,
++        wrapAndUnwrapSol: true,
++        dynamicComputeUnitLimit: true,
++        prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: MAX_PRIORITY_FEE_LAMPORTS, priorityLevel: "medium" } },
++      }),
++      signal: AbortSignal.timeout(20_000),
++    });
++    const body = (await response.json()) as { swapTransaction?: string; error?: string };
++    if (!response.ok || !body.swapTransaction) throw new Error(`Jupiter swap build failed: ${JSON.stringify(body).slice(0, 300)}`);
++    return service.deserializeSwapTransaction(body.swapTransaction);
++  },
++  validate: validateJupiterSwap,
++};
++
++export function createJupiterSwapTool(): AutomatonTool {
++  return {
++    name: "jupiter_swap",
++    description:
++      "Swap tokens through Jupiter, which compares all Solana DEXes (Raydium, Orca, Meteora…) for the best price and supports " +
++      "almost every SPL token. Same rules as raydium_swap: exact input, amount in raw units, 0.01 SOL always kept for fees and " +
++      "token-account rent, dryRun=true to simulate without signing. Check priceImpactPct in the result: above 1% the pool is " +
++      "too thin for that size. Liquid staking also works through it: SOL -> jitoSOL (J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn) " +
++      "or mSOL (mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So) earns about 7%/year, swap back anytime.",
++    category: "financial",
++    riskLevel: "dangerous",
++    parameters: {
++      type: "object",
++      properties: {
++        inputMint: { type: "string" },
++        outputMint: { type: "string" },
++        amount: { type: "string", description: "Positive raw integer amount in smallest token units." },
++        slippageBps: { type: "number", description: "Slippage in basis points (default 50)." },
++        dryRun: { type: "boolean", description: "true: build, validate and simulate only (no signature, no funds moved)." },
++      },
++      required: ["inputMint", "outputMint", "amount"],
++    },
++    execute: async (args, ctx) => {
++      if (ctx.identity.chainType !== "solana" || !ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") {
++        return "Blocked: active Solana chain identity is unavailable.";
++      }
++      return runSwap({ db: ctx.db, chainIdentity: ctx.identity.chainIdentity }, {
++        inputMint: String(args.inputMint ?? ""),
++        outputMint: String(args.outputMint ?? ""),
++        amount: String(args.amount ?? ""),
++        slippageBps: args.slippageBps === undefined ? undefined : Number(args.slippageBps),
++        dryRun: args.dryRun === true,
++      }, jupiterVenue);
++    },
++  };
++}
+diff --git a/src/solana/market-scan.ts b/src/solana/market-scan.ts
+new file mode 100644
+index 0000000..492d19d
+--- /dev/null
++++ b/src/solana/market-scan.ts
+@@ -0,0 +1,188 @@
++/**
++ * Market data for trading decisions, from free public APIs (no key):
++ * GeckoTerminal (trending pools, hourly candles) and DexScreener (token pairs,
++ * search). Compact text: a small local model reads it better than raw JSON.
++ */
++import type { AutomatonTool } from "../types.js";
++
++const GECKO = "https://api.geckoterminal.com/api/v2";
++const DEXSCREENER = "https://api.dexscreener.com";
++const THIN_LIQUIDITY_USD = 50_000;
++const NEW_PAIR_MS = 24 * 3_600_000;
++
++export interface MarketRow {
++  symbol: string;
++  mint: string;
++  priceUsd: number | null;
++  change: { m5?: number; h1?: number; h6?: number; h24?: number };
++  volume24hUsd: number | null;
++  liquidityUsd: number | null;
++  fdvUsd: number | null;
++  createdAt: number | null;
++  buys24h?: number;
++  sells24h?: number;
++  dex?: string;
++  pool?: string;
++}
++
++type Fetcher = (url: string) => Promise<unknown>;
++
++const defaultFetch: Fetcher = async (url) => {
++  const response = await fetch(url, {
++    headers: { accept: "application/json;version=20230302" },
++    signal: AbortSignal.timeout(15_000),
++  });
++  if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
++  return response.json();
++};
++
++const num = (v: unknown): number | null => {
++  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
++  return Number.isFinite(n) ? n : null;
++};
++
++function pct(v: number | undefined): string {
++  return v === undefined || v === null ? "?" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
++}
++
++function usd(v: number | null): string {
++  if (v === null) return "?";
++  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
++  if (v >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
++  if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}k`;
++  return `$${v.toFixed(2)}`;
++}
++
++function price(v: number | null): string {
++  if (v === null) return "?";
++  return v >= 1 ? `$${v.toFixed(4)}` : `$${v.toPrecision(4)}`;
++}
++
++export function formatRow(r: MarketRow, now = Date.now()): string {
++  const warnings: string[] = [];
++  if (r.liquidityUsd !== null && r.liquidityUsd < THIN_LIQUIDITY_USD) warnings.push("THIN LIQUIDITY");
++  if (r.createdAt !== null && now - r.createdAt < NEW_PAIR_MS) warnings.push("NEW PAIR <24h (rug risk)");
++  const flow = r.buys24h !== undefined && r.sells24h !== undefined ? ` buys/sells24h ${r.buys24h}/${r.sells24h}` : "";
++  return `${r.symbol} mint=${r.mint} price=${price(r.priceUsd)} 5m ${pct(r.change.m5)} 1h ${pct(r.change.h1)} ` +
++    `6h ${pct(r.change.h6)} 24h ${pct(r.change.h24)} vol24h=${usd(r.volume24hUsd)} liq=${usd(r.liquidityUsd)} ` +
++    `fdv=${usd(r.fdvUsd)}${flow}${r.dex ? ` dex=${r.dex}` : ""}${warnings.length ? ` ⚠ ${warnings.join(", ")}` : ""}`;
++}
++
++export function rowsFromGeckoPools(body: unknown): MarketRow[] {
++  const data = ((body as { data?: unknown[] })?.data ?? []) as Array<Record<string, any>>;
++  return data.map((pool) => {
++    const a = pool.attributes ?? {};
++    const baseId = String(pool.relationships?.base_token?.data?.id ?? "");
++    const ch = a.price_change_percentage ?? {};
++    return {
++      symbol: String(a.name ?? "?").split(" / ")[0],
++      mint: baseId.replace(/^solana_/, ""),
++      priceUsd: num(a.base_token_price_usd),
++      change: { m5: num(ch.m5) ?? undefined, h1: num(ch.h1) ?? undefined, h6: num(ch.h6) ?? undefined, h24: num(ch.h24) ?? undefined },
++      volume24hUsd: num(a.volume_usd?.h24),
++      liquidityUsd: num(a.reserve_in_usd),
++      fdvUsd: num(a.fdv_usd),
++      createdAt: a.pool_created_at ? Date.parse(a.pool_created_at) : null,
++      buys24h: num(a.transactions?.h24?.buys) ?? undefined,
++      sells24h: num(a.transactions?.h24?.sells) ?? undefined,
++      pool: String(a.address ?? ""),
++    };
++  });
++}
++
++export function rowsFromDexPairs(pairs: unknown): MarketRow[] {
++  const list = (Array.isArray(pairs) ? pairs : []) as Array<Record<string, any>>;
++  return list
++    .filter((p) => p.chainId === undefined || p.chainId === "solana")
++    .map((p) => ({
++      symbol: String(p.baseToken?.symbol ?? "?"),
++      mint: String(p.baseToken?.address ?? ""),
++      priceUsd: num(p.priceUsd),
++      change: { m5: num(p.priceChange?.m5) ?? undefined, h1: num(p.priceChange?.h1) ?? undefined, h6: num(p.priceChange?.h6) ?? undefined, h24: num(p.priceChange?.h24) ?? undefined },
++      volume24hUsd: num(p.volume?.h24),
++      liquidityUsd: num(p.liquidity?.usd),
++      fdvUsd: num(p.fdv),
++      createdAt: num(p.pairCreatedAt),
++      buys24h: num(p.txns?.h24?.buys) ?? undefined,
++      sells24h: num(p.txns?.h24?.sells) ?? undefined,
++      dex: String(p.dexId ?? ""),
++      pool: String(p.pairAddress ?? ""),
++    }));
++}
++
++export function candleSummary(body: unknown): string {
++  const list = ((body as any)?.data?.attributes?.ohlcv_list ?? []) as number[][];
++  if (list.length === 0) return "no candles";
++  const ordered = [...list].sort((a, b) => a[0] - b[0]);
++  const closes = ordered.map((c) => c[4]);
++  const high = Math.max(...ordered.map((c) => c[2]));
++  const low = Math.min(...ordered.map((c) => c[3]));
++  const last = closes[closes.length - 1];
++  const sma = closes.reduce((s, c) => s + c, 0) / closes.length;
++  return `${ordered.length}h candles: low ${price(low)} high ${price(high)} last ${price(last)} ` +
++    `avg ${price(sma)} (last is ${last >= sma ? "above" : "below"} the ${ordered.length}h average); ` +
++    `closes: ${closes.slice(-12).map((c) => c.toPrecision(4)).join(" ")}`;
++}
++
++export async function marketScan(
++  args: { mode?: string; query?: string; limit?: number },
++  fetcher: Fetcher = defaultFetch,
++): Promise<string> {
++  const mode = String(args.mode ?? "trending");
++  const limit = Math.min(20, Math.max(1, Math.floor(Number(args.limit ?? 10)) || 10));
++  if (mode === "trending") {
++    const rows = rowsFromGeckoPools(await fetcher(`${GECKO}/networks/solana/trending_pools?include=base_token`)).slice(0, limit);
++    return `Trending Solana pools (GeckoTerminal):\n${rows.map((r) => `- ${formatRow(r)}`).join("\n")}`;
++  }
++  const query = String(args.query ?? "").trim();
++  if (!query) return "Blocked: query is required (token mint for mode=token, text for mode=search).";
++  if (mode === "search") {
++    const body = (await fetcher(`${DEXSCREENER}/latest/dex/search?q=${encodeURIComponent(query)}`)) as { pairs?: unknown[] };
++    const rows = rowsFromDexPairs(body.pairs ?? []).filter((r) => r.mint).slice(0, limit);
++    return rows.length ? `Search "${query}" (DexScreener, Solana):\n${rows.map((r) => `- ${formatRow(r)}`).join("\n")}` : `No Solana pair found for "${query}".`;
++  }
++  if (mode === "token") {
++    const rows = rowsFromDexPairs(await fetcher(`${DEXSCREENER}/tokens/v1/solana/${encodeURIComponent(query)}`))
++      .sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0));
++    if (rows.length === 0) return `No pair found for mint ${query}.`;
++    const top = rows[0];
++    let candles = "";
++    if (top.pool) {
++      try {
++        candles = candleSummary(await fetcher(`${GECKO}/networks/solana/pools/${top.pool}/ohlcv/hour?limit=24`));
++      } catch (error) {
++        candles = `candles unavailable (${error instanceof Error ? error.message : String(error)})`;
++      }
++    }
++    return `Token ${query} — deepest pool:\n- ${formatRow(top)}\n${candles}\n${rows.length} pools in total.`;
++  }
++  return 'Blocked: mode must be "trending", "search" or "token".';
++}
++
++export function createMarketScanTool(): AutomatonTool {
++  return {
++    name: "market_scan",
++    description:
++      "Live Solana market data (free public APIs): mode=trending lists trending pools with price changes (5m/1h/6h/24h), " +
++      "24h volume, liquidity, FDV and buy/sell counts; mode=search finds tokens by name or symbol (query); mode=token gives " +
++      "the deepest pool of a mint (query) plus a 24h hourly-candle summary. Warns about thin liquidity and pairs younger " +
++      "than 24h. Use it before any trade; never trade a token you have not scanned.",
++    category: "financial",
++    riskLevel: "safe",
++    parameters: {
++      type: "object",
++      properties: {
++        mode: { type: "string", description: '"trending" (default), "search" or "token".' },
++        query: { type: "string", description: "Token mint (mode=token) or name/symbol (mode=search)." },
++        limit: { type: "number", description: "Max rows (default 10, max 20)." },
++      },
++    },
++    execute: async (args) => {
++      try {
++        return await marketScan(args as { mode?: string; query?: string; limit?: number });
++      } catch (error) {
++        return `market_scan failed: ${error instanceof Error ? error.message : String(error)}`;
++      }
++    },
++  };
++}
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+new file mode 100644
+index 0000000..2689507
+--- /dev/null
++++ b/src/solana/orders.ts
+@@ -0,0 +1,331 @@
++/**
++ * Automatic orders: stop-loss, take-profit and price-triggered buys.
++ *
++ * A turn of the local model takes one to two minutes and SHUI sleeps between
++ * turns, so it cannot watch a price itself. Orders are stored in kv and a
++ * background executor (every 30 s, no model involved) checks Jupiter prices
++ * and runs the swap through the same safe engine as the swap tools. SHUI is
++ * told the outcome in its inbox.
++ */
++import { randomUUID } from "node:crypto";
++import { PublicKey } from "@solana/web3.js";
++import type { Database } from "better-sqlite3";
++import type { AutomatonDatabase, AutomatonTool } from "../types.js";
++import type { ChainIdentity } from "../identity/chain.js";
++import { NATIVE_SOL_MINT, SolanaTradingService } from "./trading.js";
++import { runSwap, type SwapVenue } from "./swap-engine.js";
++import { jupiterVenue } from "./jupiter.js";
++import { raydiumVenue } from "./swap-tool.js";
++import { queueSystemNotice } from "../integration/creator-chat.js";
++
++const ORDER_PREFIX = "order.";
++const MAX_OPEN_ORDERS = 20;
++const MAX_ATTEMPTS = 3;
++export const ORDER_CHECK_MS = 30_000;
++
++export type OrderStatus = "open" | "executing" | "filled" | "failed" | "cancelled" | "expired";
++
++export interface Order {
++  id: string;
++  kind: "stop_loss" | "take_profit" | "buy_below" | "custom";
++  inputMint: string;
++  outputMint: string;
++  /** Raw input units, or "all" (whole balance of a non-SOL input at trigger time). */
++  amount: string;
++  watchMint: string;
++  condition: "below" | "above";
++  triggerPriceUsd: number;
++  slippageBps: number;
++  venue: "jupiter" | "raydium";
++  note: string;
++  createdAt: string;
++  expiresAt: string | null;
++  status: OrderStatus;
++  attempts: number;
++  lastError?: string;
++  triggeredPriceUsd?: number;
++  result?: string;
++  updatedAt: string;
++}
++
++export function saveOrder(db: Database, order: Order): void {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))")
++    .run(`${ORDER_PREFIX}${order.id}`, JSON.stringify(order));
++}
++
++export function listOrders(db: Database): Order[] {
++  const rows = db.prepare("SELECT value FROM kv WHERE key LIKE 'order.%' ORDER BY key").all() as Array<{ value: string }>;
++  const out: Order[] = [];
++  for (const row of rows) {
++    try {
++      out.push(JSON.parse(row.value) as Order);
++    } catch {
++      // ignore damaged rows
++    }
++  }
++  return out;
++}
++
++export function isTriggered(order: Pick<Order, "condition" | "triggerPriceUsd">, priceUsd: number): boolean {
++  return order.condition === "below" ? priceUsd <= order.triggerPriceUsd : priceUsd >= order.triggerPriceUsd;
++}
++
++export type PriceFetcher = (mints: string[]) => Promise<Record<string, number>>;
++
++export const jupiterPrices: PriceFetcher = async (mints) => {
++  const base = (process.env.JUPITER_PRICE_URL ?? "https://lite-api.jup.ag/price/v3").replace(/\/$/, "");
++  const response = await fetch(`${base}?ids=${mints.join(",")}`, { signal: AbortSignal.timeout(10_000) });
++  if (!response.ok) throw new Error(`Jupiter price HTTP ${response.status}`);
++  const body = (await response.json()) as Record<string, { usdPrice?: number; price?: string } | null>;
++  const data = ((body as { data?: unknown }).data ?? body) as Record<string, { usdPrice?: number; price?: string } | null>;
++  const prices: Record<string, number> = {};
++  for (const mint of mints) {
++    const entry = data[mint];
++    const value = entry ? Number(entry.usdPrice ?? entry.price) : NaN;
++    if (Number.isFinite(value) && value > 0) prices[mint] = value;
++  }
++  return prices;
++};
++
++function venueOf(order: Order): SwapVenue {
++  return order.venue === "raydium" ? raydiumVenue : jupiterVenue;
++}
++
++/** Outcome of one swap attempt from the engine's text result. */
++export function classifySwapResult(text: string): { done: boolean; transient: boolean; message: string } {
++  let parsed: Record<string, unknown> | null = null;
++  try {
++    parsed = JSON.parse(text) as Record<string, unknown>;
++  } catch {
++    parsed = null;
++  }
++  if (parsed?.success === true) return { done: true, transient: false, message: `filled, signature ${String(parsed.signature)}` };
++  // A previous transaction still unresolved: try again on a later tick.
++  if (typeof parsed?.reason === "string" && parsed.reason.startsWith("PREVIOUS_TRANSACTION")) {
++    return { done: false, transient: true, message: String(parsed.message ?? parsed.reason) };
++  }
++  return { done: false, transient: false, message: (parsed?.reason ? String(parsed.reason) : text).slice(0, 300) };
++}
++
++export interface OrderExecutorDeps {
++  db: AutomatonDatabase;
++  chainIdentity: ChainIdentity;
++  prices?: PriceFetcher;
++  swap?: (order: Order, amount: string) => Promise<string>;
++  now?: () => Date;
++  log?: (message: string) => void;
++}
++
++async function resolveAmount(deps: OrderExecutorDeps, order: Order): Promise<string> {
++  if (order.amount !== "all") return order.amount;
++  const service = new SolanaTradingService(deps.chainIdentity);
++  const total = (await service.getTokenBalances())
++    .filter((t) => t.mint === order.inputMint)
++    .reduce((sum, t) => sum + BigInt(t.amount), 0n);
++  return total.toString();
++}
++
++/** One pass over open orders. Returns the ids of orders that changed. */
++export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
++  const db = deps.db.raw;
++  const now = (deps.now ?? (() => new Date()))();
++  const open = listOrders(db).filter((o) => o.status === "open");
++  if (open.length === 0 && !listOrders(db).some((o) => o.status === "executing")) return [];
++  const changed: string[] = [];
++
++  for (const order of open) {
++    if (order.expiresAt && Date.parse(order.expiresAt) <= now.getTime()) {
++      saveOrder(db, { ...order, status: "expired", updatedAt: now.toISOString() });
++      queueSystemNotice(db, "system:orders", `Order ${order.id} (${order.kind}) expired without triggering.`);
++      changed.push(order.id);
++    }
++  }
++  // An order left "executing" by a restart may or may not have swapped: never
++  // retry it blindly; the pending-transaction lock covers a real broadcast.
++  for (const order of listOrders(db).filter((o) => o.status === "executing")) {
++    if (now.getTime() - Date.parse(order.updatedAt) > 10 * 60_000) {
++      saveOrder(db, { ...order, status: "failed", lastError: "interrupted while executing; check the wallet", updatedAt: now.toISOString() });
++      queueSystemNotice(db, "system:orders", `Order ${order.id} was interrupted while executing. Check the wallet before re-creating it.`);
++      changed.push(order.id);
++    }
++  }
++  const live = listOrders(db).filter((o) => o.status === "open");
++  if (live.length === 0) return changed;
++
++  const prices = await (deps.prices ?? jupiterPrices)([...new Set(live.map((o) => o.watchMint))]);
++  for (const order of live) {
++    const price = prices[order.watchMint];
++    if (price === undefined || !isTriggered(order, price)) continue;
++
++    saveOrder(db, { ...order, status: "executing", triggeredPriceUsd: price, updatedAt: now.toISOString() });
++    let text: string;
++    try {
++      const amount = await resolveAmount(deps, order);
++      text = amount === "0"
++        ? "Blocked: nothing left to sell for this order."
++        : await (deps.swap ?? ((o, a) => runSwap(
++          { db: deps.db, chainIdentity: deps.chainIdentity },
++          { inputMint: o.inputMint, outputMint: o.outputMint, amount: a, slippageBps: o.slippageBps },
++          venueOf(o),
++        )))(order, amount);
++    } catch (error) {
++      text = `error: ${error instanceof Error ? error.message : String(error)}`;
++    }
++    const outcome = classifySwapResult(text);
++    const attempts = order.attempts + 1;
++    const status: OrderStatus = outcome.done ? "filled" : outcome.transient || attempts < MAX_ATTEMPTS ? "open" : "failed";
++    saveOrder(db, {
++      ...order,
++      status,
++      attempts: outcome.transient ? order.attempts : attempts,
++      triggeredPriceUsd: price,
++      lastError: outcome.done ? undefined : outcome.message,
++      result: outcome.done ? text.slice(0, 1000) : order.result,
++      updatedAt: now.toISOString(),
++    });
++    changed.push(order.id);
++    deps.log?.(`[ORDERS] ${order.id} ${order.kind} at $${price}: ${status} (${outcome.message.slice(0, 120)})`);
++    if (status === "filled" || status === "failed") {
++      queueSystemNotice(db, "system:orders",
++        `Order ${order.id} (${order.kind}, ${order.note || "no note"}) ${status === "filled" ? "EXECUTED" : "FAILED"} ` +
++        `when the price of ${order.watchMint} was $${price} (trigger ${order.condition} $${order.triggerPriceUsd}): ${outcome.message}`);
++    }
++  }
++  return changed;
++}
++
++export function startOrderExecutor(deps: OrderExecutorDeps): () => void {
++  let running = false;
++  const timer = setInterval(() => {
++    if (running) return;
++    running = true;
++    runOrderTick(deps)
++      .catch((error) => deps.log?.(`[ORDERS] tick failed: ${error instanceof Error ? error.message : String(error)}`))
++      .finally(() => { running = false; });
++  }, ORDER_CHECK_MS);
++  timer.unref?.();
++  return () => clearInterval(timer);
++}
++
++function validMint(mint: string): boolean {
++  try {
++    new PublicKey(mint);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function createOrderTools(): AutomatonTool[] {
++  return [
++    {
++      name: "order_create",
++      description:
++        "Create an automatic order executed by code without waiting for you (checked every 30 s with Jupiter prices): " +
++        "kind=stop_loss (sell when the price falls below), take_profit (sell when it rises above), buy_below (buy when it " +
++        "falls below). For a sell: inputMint = the token you hold, outputMint = USDC (or SOL), watchMint = that token, " +
++        'amount = raw units or "all". For buy_below: inputMint = USDC, outputMint = watchMint = the token to buy. ' +
++        "You get an inbox message when an order executes or fails. Protect every position with a stop_loss.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: {
++        type: "object",
++        properties: {
++          kind: { type: "string", description: '"stop_loss", "take_profit" or "buy_below".' },
++          inputMint: { type: "string" },
++          outputMint: { type: "string" },
++          amount: { type: "string", description: 'Raw input units, or "all" for the whole balance of a non-SOL input.' },
++          watchMint: { type: "string", description: "Token whose USD price triggers the order." },
++          triggerPriceUsd: { type: "number" },
++          slippageBps: { type: "number", description: "Default 100 (1%)." },
++          expiresHours: { type: "number", description: "Optional lifetime in hours." },
++          venue: { type: "string", description: '"jupiter" (default) or "raydium".' },
++          note: { type: "string", description: "Why this order exists." },
++        },
++        required: ["kind", "inputMint", "outputMint", "amount", "watchMint", "triggerPriceUsd"],
++      },
++      execute: async (args, ctx) => {
++        const kind = String(args.kind ?? "") as Order["kind"];
++        const condition = kind === "take_profit" ? "above" : kind === "stop_loss" || kind === "buy_below" ? "below" : null;
++        if (!condition) return 'Blocked: kind must be "stop_loss", "take_profit" or "buy_below".';
++        const inputMint = String(args.inputMint ?? "");
++        const outputMint = String(args.outputMint ?? "");
++        const watchMint = String(args.watchMint ?? "");
++        if (![inputMint, outputMint, watchMint].every(validMint) || inputMint === outputMint) return "Blocked: invalid mints.";
++        const amount = String(args.amount ?? "");
++        if (amount === "all" ? inputMint === NATIVE_SOL_MINT : !/^[1-9][0-9]*$/.test(amount)) {
++          return 'Blocked: amount must be a positive raw integer, or "all" for a non-SOL input.';
++        }
++        const trigger = Number(args.triggerPriceUsd);
++        if (!Number.isFinite(trigger) || trigger <= 0) return "Blocked: triggerPriceUsd must be a positive number.";
++        const slippageBps = Number(args.slippageBps ?? 100);
++        if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) return "Blocked: slippage must be 1-500 bps.";
++        const db = ctx.db.raw;
++        if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN_ORDERS) {
++          return `Blocked: ${MAX_OPEN_ORDERS} orders are already open; cancel some first.`;
++        }
++        const now = new Date();
++        const hours = Number(args.expiresHours);
++        const order: Order = {
++          id: `ord_${now.getTime().toString(36)}_${randomUUID().slice(0, 4)}`,
++          kind,
++          inputMint,
++          outputMint,
++          amount,
++          watchMint,
++          condition,
++          triggerPriceUsd: trigger,
++          slippageBps,
++          venue: args.venue === "raydium" ? "raydium" : "jupiter",
++          note: String(args.note ?? "").slice(0, 200),
++          createdAt: now.toISOString(),
++          expiresAt: Number.isFinite(hours) && hours > 0 ? new Date(now.getTime() + hours * 3_600_000).toISOString() : null,
++          status: "open",
++          attempts: 0,
++          updatedAt: now.toISOString(),
++        };
++        let current = "";
++        try {
++          const prices = await jupiterPrices([watchMint]);
++          if (prices[watchMint] !== undefined) {
++            current = ` Current price $${prices[watchMint]}.`;
++            if (isTriggered(order, prices[watchMint])) current += " WARNING: the condition is already met, it will execute at the next check.";
++          }
++        } catch {
++          current = " (current price unavailable)";
++        }
++        saveOrder(db, order);
++        return `Order ${order.id} created: ${kind} ${amount} of ${inputMint} -> ${outputMint} when ${watchMint} is ${condition} $${trigger}.${current}`;
++      },
++    },
++    {
++      name: "order_list",
++      description: "List your automatic orders (open first) with their status, trigger and last error.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: { all: { type: "boolean", description: "Include closed orders." } } },
++      execute: async (args, ctx) => {
++        const orders = listOrders(ctx.db.raw).filter((o) => args.all === true || o.status === "open" || o.status === "executing");
++        if (orders.length === 0) return "No open orders.";
++        return orders.map((o) =>
++          `${o.id} ${o.status} ${o.kind} ${o.amount} ${o.inputMint.slice(0, 6)}…->${o.outputMint.slice(0, 6)}… ` +
++          `when ${o.watchMint.slice(0, 6)}… ${o.condition} $${o.triggerPriceUsd}` +
++          `${o.lastError ? ` last error: ${o.lastError}` : ""}${o.note ? ` (${o.note})` : ""}`).join("\n");
++      },
++    },
++    {
++      name: "order_cancel",
++      description: "Cancel an open automatic order.",
++      category: "financial",
++      riskLevel: "caution",
++      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
++      execute: async (args, ctx) => {
++        const order = listOrders(ctx.db.raw).find((o) => o.id === String(args.id ?? ""));
++        if (!order) return `Unknown order ${String(args.id ?? "")}.`;
++        if (order.status !== "open") return `Order ${order.id} is ${order.status}, nothing to cancel.`;
++        saveOrder(ctx.db.raw, { ...order, status: "cancelled", updatedAt: new Date().toISOString() });
++        return `Order ${order.id} cancelled.`;
++      },
++    },
++  ];
++}
+diff --git a/src/solana/payment-tools.ts b/src/solana/payment-tools.ts
+index db64acc..689de17 100644
+--- a/src/solana/payment-tools.ts
++++ b/src/solana/payment-tools.ts
+@@ -122,7 +122,15 @@ export function createPaymentTools(chain: () => PaymentChain = rpcChain): Automa
+           status: "pending",
+         };
+         save(ctx.db, request);
+-        return JSON.stringify({ url: buildSolanaPayUrl(request), reference: request.reference, amountUsdc: request.amountUsdc });
++        return JSON.stringify({
++          url: buildSolanaPayUrl(request),
++          reference: request.reference,
++          amountUsdc: request.amountUsdc,
++          note:
++            "This link is not revenue. Nobody pays it unless a real customer sees it: show it on a published " +
++            "service page (service_deploy) or send it to someone who asked for your service. Revenue only " +
++            "counts once payment_check confirms the USDC arrived in the wallet.",
++        });
+       },
+     },
+     {
+diff --git a/src/solana/raydium.ts b/src/solana/raydium.ts
+index 6578d0a..60420e7 100644
+--- a/src/solana/raydium.ts
++++ b/src/solana/raydium.ts
+@@ -94,6 +94,10 @@ export async function buildRaydiumSwapTransactions(params: {
+   swapResponse: unknown;
+   inputMint: string;
+   outputMint: string;
++  /** Wallet token account of the input mint (required unless the input is SOL). */
++  inputAccount?: string | null;
++  /** Existing token account of the output mint; omitted, Raydium creates it. */
++  outputAccount?: string | null;
+   computeUnitPriceMicroLamports?: string;
+ }): Promise<RaydiumBuildResult> {
+   const wrapSol = params.inputMint === SOL_MINT;
+@@ -116,6 +120,8 @@ export async function buildRaydiumSwapTransactions(params: {
+       wallet: params.wallet,
+       wrapSol,
+       unwrapSol,
++      ...(wrapSol || !params.inputAccount ? {} : { inputAccount: params.inputAccount }),
++      ...(unwrapSol || !params.outputAccount ? {} : { outputAccount: params.outputAccount }),
+     }),
+   });
+ 
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+new file mode 100644
+index 0000000..6a8ec03
+--- /dev/null
++++ b/src/solana/swap-engine.ts
+@@ -0,0 +1,179 @@
++/**
++ * One safe path for every swap venue (Raydium, Jupiter) and for automatic
++ * orders: confirmed on-chain balance check with the 0.01 SOL reserve, the
++ * pending-transaction lock, venue-specific validation of the built
++ * transaction, simulation, then signing and journaling in the ledger.
++ */
++import { PublicKey, type VersionedTransaction } from "@solana/web3.js";
++import type { AutomatonDatabase } from "../types.js";
++import type { ChainIdentity } from "../identity/chain.js";
++import {
++  NATIVE_SOL_MINT,
++  SOL_FEE_RESERVE_LAMPORTS,
++  SolanaTradingService,
++  SolanaTransactionUncertainError,
++} from "./trading.js";
++import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
++import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
++
++export interface SwapExpectation {
++  inputMint: string;
++  outputMint: string;
++  inputAmount: bigint;
++  minimumOutputAmount: bigint;
++}
++
++export interface VenueQuote {
++  outputAmount: bigint;
++  minimumOutputAmount: bigint;
++  slippageBps: number;
++  priceImpactPct?: number | null;
++  raw: unknown;
++}
++
++export interface SwapVenue {
++  name: "raydium" | "jupiter";
++  quote(params: { inputMint: string; outputMint: string; amount: bigint; slippageBps: number }): Promise<VenueQuote>;
++  build(service: SolanaTradingService, params: {
++    quote: VenueQuote; inputMint: string; outputMint: string; inputAccount: string | null; outputAccount: string | null;
++  }): Promise<VersionedTransaction>;
++  /** Throws if the built transaction is not exactly the quoted swap for SHUI's wallet. */
++  validate(service: SolanaTradingService, transaction: VersionedTransaction, expected: SwapExpectation, quote: VenueQuote): Promise<void>;
++}
++
++export interface SwapRequest {
++  inputMint: string;
++  outputMint: string;
++  amount: string;
++  slippageBps?: number;
++  dryRun?: boolean;
++}
++
++export async function runSwap(
++  ctx: { db: AutomatonDatabase; chainIdentity: ChainIdentity },
++  request: SwapRequest,
++  venue: SwapVenue,
++): Promise<string> {
++  const service = new SolanaTradingService(ctx.chainIdentity);
++  const pendingCheck = await checkPendingTransaction(ctx.db, service);
++  if (pendingCheck.blocked) return pendingCheck.response;
++  if (pendingCheck.resolved) await journalResolvedPending(ctx.db, service, pendingCheck.resolved);
++
++  const { inputMint, outputMint } = request;
++  const amountString = String(request.amount ?? "");
++  const slippageBps = Number(request.slippageBps ?? 50);
++  if (!/^[1-9][0-9]*$/.test(amountString)) return "Blocked: amount must be a positive raw integer.";
++  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) return "Blocked: slippage must be between 1 and 500 bps.";
++  try { new PublicKey(inputMint); new PublicKey(outputMint); } catch { return "Blocked: invalid Solana mint address."; }
++  if (inputMint === outputMint) return "Blocked: input and output mints must differ.";
++  const inputAmount = BigInt(amountString);
++
++  // Never trust model arithmetic: re-read the confirmed on-chain balance.
++  const solLamports = BigInt((await service.getSolBalance()).lamports);
++  let availableRaw: bigint;
++  if (inputMint === NATIVE_SOL_MINT) {
++    availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS ? solLamports - SOL_FEE_RESERVE_LAMPORTS : 0n;
++  } else {
++    if (solLamports < SOL_FEE_RESERVE_LAMPORTS) {
++      return JSON.stringify({
++        success: false,
++        blocked: true,
++        reason: "INSUFFICIENT_SOL_FOR_FEES",
++        requiredLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++        availableLamports: solLamports.toString(),
++        message: "Not enough SOL to pay network fees and token-account rent.",
++      });
++    }
++    availableRaw = (await service.getTokenBalances())
++      .filter((token) => token.mint === inputMint)
++      .reduce((total, token) => total + BigInt(token.amount), 0n);
++  }
++  if (inputAmount > availableRaw) {
++    return JSON.stringify({
++      success: false,
++      blocked: true,
++      reason: "INSUFFICIENT_CONFIRMED_ONCHAIN_BALANCE",
++      inputMint,
++      requestedRaw: inputAmount.toString(),
++      availableRaw: availableRaw.toString(),
++      ...(inputMint === NATIVE_SOL_MINT ? { note: `${SOL_FEE_RESERVE_LAMPORTS} lamports are kept for network fees.` } : {}),
++    });
++  }
++
++  const quote = await venue.quote({ inputMint, outputMint, amount: inputAmount, slippageBps });
++  if (quote.slippageBps !== slippageBps) throw new Error(`${venue.name} quote slippage mismatch`);
++  const [inputAccount, outputAccount] = await Promise.all([
++    service.getTokenAccountFor(inputMint),
++    service.getTokenAccountFor(outputMint),
++  ]);
++  if (inputMint !== NATIVE_SOL_MINT && !inputAccount) return "Blocked: the wallet has no token account for the input mint.";
++  const transaction = await venue.build(service, { quote, inputMint, outputMint, inputAccount, outputAccount });
++  const expected: SwapExpectation = { inputMint, outputMint, inputAmount, minimumOutputAmount: quote.minimumOutputAmount };
++  await venue.validate(service, transaction, expected, quote);
++
++  const summary = {
++    venue: venue.name,
++    inputMint,
++    outputMint,
++    inputAmount: inputAmount.toString(),
++    quotedOutputAmount: quote.outputAmount.toString(),
++    minimumOutputAmount: quote.minimumOutputAmount.toString(),
++    slippageBps,
++    ...(quote.priceImpactPct != null ? { priceImpactPct: quote.priceImpactPct } : {}),
++  };
++
++  const simulation = await service.simulateTransaction(transaction);
++  if (request.dryRun === true) {
++    let networkFeeLamports: number | null = null;
++    try {
++      const fee = await service.connection.getFeeForMessage(transaction.message);
++      networkFeeLamports = typeof fee.value === "number" ? fee.value : null;
++    } catch {
++      networkFeeLamports = null;
++    }
++    return JSON.stringify({
++      dryRun: true,
++      signed: false,
++      broadcast: false,
++      wouldSucceed: !simulation.value.err,
++      error: simulation.value.err ? JSON.stringify(simulation.value.err) : null,
++      unitsConsumed: simulation.value.unitsConsumed,
++      networkFeeLamports,
++      logsTail: (simulation.value.logs ?? []).slice(-5),
++      ...summary,
++      solReserveLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
++    });
++  }
++  if (simulation.value.err) throw new Error(`Solana simulation failed: ${JSON.stringify(simulation.value.err)}`);
++
++  try {
++    const signed = service.signTransactionLocally(transaction);
++    const result = await service.broadcastAndConfirm(signed);
++    const journal = await journalConfirmedSwap(ctx.db, service, {
++      signature: result.signature,
++      inputMint,
++      outputMint,
++      inputAmount,
++      quotedOutputAmount: quote.outputAmount,
++    });
++    return JSON.stringify({
++      success: true,
++      ...(journal ? { journal } : {}),
++      signature: result.signature,
++      slot: result.slot,
++      confirmationStatus: result.confirmationStatus,
++      unitsConsumed: simulation.value.unitsConsumed,
++      ...summary,
++    });
++  } catch (error) {
++    if (error instanceof SolanaTransactionUncertainError) {
++      recordPendingTransaction(ctx.db, error, "swap", {
++        inputMint,
++        outputMint,
++        inputAmount: inputAmount.toString(),
++        quotedOutputAmount: quote.outputAmount.toString(),
++      });
++    }
++    throw error;
++  }
++}
+diff --git a/src/solana/swap-tool.ts b/src/solana/swap-tool.ts
+index 9c2301f..89f5e6f 100644
+--- a/src/solana/swap-tool.ts
++++ b/src/solana/swap-tool.ts
+@@ -1,14 +1,30 @@
+ import type { AutomatonTool } from "../types.js";
+-import { PublicKey } from "@solana/web3.js";
+-import {
+-  NATIVE_SOL_MINT,
+-  SOL_FEE_RESERVE_LAMPORTS,
+-  SolanaTradingService,
+-  SolanaTransactionUncertainError,
+-} from "./trading.js";
+-import { RaydiumQuoteService, buildRaydiumSwapTransactions } from "./raydium.js";
+-import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
+-import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
++import { RaydiumQuoteService, buildRaydiumSwapTransactions, parseRaydiumQuote } from "./raydium.js";
++import { runSwap, type SwapVenue } from "./swap-engine.js";
++
++export const raydiumVenue: SwapVenue = {
++  name: "raydium",
++  async quote({ inputMint, outputMint, amount, slippageBps }) {
++    const quote = await new RaydiumQuoteService().getQuote({ inputMint, outputMint, amount, slippageBps });
++    const parsed = parseRaydiumQuote(quote.raw, { inputMint, outputMint, inputAmount: amount });
++    return {
++      outputAmount: parsed.outputAmount,
++      minimumOutputAmount: parsed.minimumOutputAmount,
++      slippageBps: parsed.slippageBps,
++      raw: quote.raw,
++    };
++  },
++  async build(service, { quote, inputMint, outputMint, inputAccount, outputAccount }) {
++    const built = await buildRaydiumSwapTransactions({
++      wallet: service.address, swapResponse: quote.raw, inputMint, outputMint, inputAccount, outputAccount,
++    });
++    if (!built.data || built.data.length !== 1) throw new Error("Blocked: expected exactly one Raydium transaction");
++    return service.deserializeSwapTransaction(built.data[0].transaction);
++  },
++  async validate(service, transaction, expected) {
++    await service.validateRaydiumSwapOrder(transaction, expected);
++  },
++};
+ 
+ export function createRaydiumSwapTool(): AutomatonTool {
+   return {
+@@ -37,149 +53,13 @@ export function createRaydiumSwapTool(): AutomatonTool {
+     },
+     execute: async (args, ctx) => {
+       if (ctx.identity.chainType !== "solana" || !ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Blocked: active Solana chain identity is unavailable.";
+-      const pendingService = new SolanaTradingService(ctx.identity.chainIdentity!);
+-      const pendingCheck = await checkPendingTransaction(ctx.db, pendingService);
+-      if (pendingCheck.blocked) {
+-        return pendingCheck.response;
+-      }
+-      if (pendingCheck.resolved) {
+-        await journalResolvedPending(ctx.db, pendingService, pendingCheck.resolved);
+-      }
+-
+-      const inputMint = String(args.inputMint ?? "");
+-      const outputMint = String(args.outputMint ?? "");
+-      const amountString = String(args.amount ?? "");
+-      const slippageBps = Number(args.slippageBps ?? 50);
+-      if (!/^[1-9][0-9]*$/.test(amountString)) return "Blocked: amount must be a positive raw integer.";
+-      if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) return "Blocked: slippage must be between 1 and 500 bps.";
+-      try { new PublicKey(inputMint); new PublicKey(outputMint); } catch { return "Blocked: invalid Solana mint address."; }
+-      if (inputMint === outputMint) return "Blocked: input and output mints must differ.";
+-      const inputAmount = BigInt(amountString);
+-
+-      // Financial integrity guard:
+-      // Never trust model reasoning or human-readable balance conversions.
+-      // Re-read the confirmed on-chain balance and compare raw integer units
+-      // immediately before requesting a swap quote.
+-      const service = new SolanaTradingService(ctx.identity.chainIdentity);
+-
+-      let availableRaw: bigint;
+-      const solBalance = await service.getSolBalance();
+-      const solLamports = BigInt(solBalance.lamports);
+-
+-      if (inputMint === NATIVE_SOL_MINT) {
+-        // Keep SOL for fees and token-account rent: swapping the whole SOL
+-        // balance always fails on-chain.
+-        availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS
+-          ? solLamports - SOL_FEE_RESERVE_LAMPORTS
+-          : 0n;
+-      } else {
+-        if (solLamports < SOL_FEE_RESERVE_LAMPORTS) {
+-          return JSON.stringify({
+-            success: false,
+-            blocked: true,
+-            reason: "INSUFFICIENT_SOL_FOR_FEES",
+-            requiredLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
+-            availableLamports: solLamports.toString(),
+-            message: "Not enough SOL to pay network fees and token-account rent.",
+-          });
+-        }
+-
+-        const tokenBalances = await service.getTokenBalances();
+-        const matchingBalances = tokenBalances.filter(
+-          (token) => token.mint === inputMint,
+-        );
+-
+-        availableRaw = matchingBalances.reduce(
+-          (total, token) => total + BigInt(token.amount),
+-          0n,
+-        );
+-      }
+-
+-      if (inputAmount > availableRaw) {
+-        return JSON.stringify({
+-          success: false,
+-          blocked: true,
+-          reason: "INSUFFICIENT_CONFIRMED_ONCHAIN_BALANCE",
+-          inputMint,
+-          requestedRaw: inputAmount.toString(),
+-          availableRaw: availableRaw.toString(),
+-          ...(inputMint === NATIVE_SOL_MINT
+-            ? { note: `${SOL_FEE_RESERVE_LAMPORTS} lamports are kept for network fees.` }
+-            : {}),
+-        });
+-      }
+-
+-      const raydium = new RaydiumQuoteService();
+-      const quote = await raydium.getQuote({ inputMint, outputMint, amount: inputAmount, slippageBps });
+-      const { parseRaydiumQuote } = await import("./raydium.js");
+-      const parsed = parseRaydiumQuote(quote.raw, { inputMint, outputMint, inputAmount });
+-      if (parsed.slippageBps !== slippageBps) throw new Error("Raydium quote slippage mismatch");
+-      const built = await buildRaydiumSwapTransactions({ wallet: service.address, swapResponse: quote.raw, inputMint, outputMint });
+-      if (!built.data || built.data.length !== 1) throw new Error("Blocked: expected exactly one Raydium transaction");
+-      const transaction = service.deserializeSwapTransaction(built.data[0].transaction);
+-      if (args.dryRun === true) {
+-        const simulation = await service.dryRunValidatedRaydiumSwap(transaction, {
+-          inputMint,
+-          outputMint,
+-          inputAmount,
+-          minimumOutputAmount: parsed.minimumOutputAmount,
+-        });
+-        return JSON.stringify({
+-          dryRun: true,
+-          signed: false,
+-          broadcast: false,
+-          ...simulation,
+-          inputMint,
+-          outputMint,
+-          inputAmount: inputAmount.toString(),
+-          quotedOutputAmount: parsed.outputAmount.toString(),
+-          minimumOutputAmount: parsed.minimumOutputAmount.toString(),
+-          slippageBps,
+-          solReserveLamports: SOL_FEE_RESERVE_LAMPORTS.toString(),
+-        });
+-      }
+-      try {
+-        const result = await service.executeValidatedRaydiumSwap(transaction, {
+-          inputMint,
+-          outputMint,
+-          inputAmount,
+-          minimumOutputAmount: parsed.minimumOutputAmount,
+-        });
+-
+-        const journal = await journalConfirmedSwap(ctx.db, service, {
+-          signature: result.signature,
+-          inputMint,
+-          outputMint,
+-          inputAmount,
+-          quotedOutputAmount: parsed.outputAmount,
+-        });
+-
+-        return JSON.stringify({
+-          success: true,
+-          ...(journal ? { journal } : {}),
+-          signature: result.signature,
+-          slot: result.slot,
+-          confirmationStatus: result.confirmationStatus,
+-          unitsConsumed: result.unitsConsumed,
+-          inputMint,
+-          outputMint,
+-          inputAmount: inputAmount.toString(),
+-          quotedOutputAmount: parsed.outputAmount.toString(),
+-          minimumOutputAmount: parsed.minimumOutputAmount.toString(),
+-          slippageBps,
+-        });
+-      } catch (error) {
+-        if (error instanceof SolanaTransactionUncertainError) {
+-          recordPendingTransaction(ctx.db, error, "swap", {
+-            inputMint,
+-            outputMint,
+-            inputAmount: inputAmount.toString(),
+-            quotedOutputAmount: parsed.outputAmount.toString(),
+-          });
+-        }
+-
+-        throw error;
+-      }
++      return runSwap({ db: ctx.db, chainIdentity: ctx.identity.chainIdentity }, {
++        inputMint: String(args.inputMint ?? ""),
++        outputMint: String(args.outputMint ?? ""),
++        amount: String(args.amount ?? ""),
++        slippageBps: args.slippageBps === undefined ? undefined : Number(args.slippageBps),
++        dryRun: args.dryRun === true,
++      }, raydiumVenue);
+     }
+   };
+ }
+diff --git a/src/solana/trading.ts b/src/solana/trading.ts
+index 96703bf..5e378ff 100644
+--- a/src/solana/trading.ts
++++ b/src/solana/trading.ts
+@@ -132,6 +132,27 @@ export class SolanaTradingService {
+     });
+   }
+ 
++  /**
++   * The wallet's token account for a mint (the one holding the most), or null
++   * if the wallet has none. Swap APIs need it explicitly for a non-SOL input:
++   * without it Raydium answered REQ_INPUT_ACCOUT_ERROR on every USDC swap.
++   */
++  async getTokenAccountFor(mint: string): Promise<string | null> {
++    if (mint === NATIVE_SOL_MINT) return null;
++    const owner = new PublicKey(this.address);
++    const accounts = await this.connection.getParsedTokenAccountsByOwner(
++      owner,
++      { mint: new PublicKey(mint) },
++      "confirmed",
++    );
++    let best: { address: string; amount: bigint } | null = null;
++    for (const { pubkey, account } of accounts.value) {
++      const amount = BigInt(account.data.parsed.info.tokenAmount.amount);
++      if (!best || amount > best.amount) best = { address: pubkey.toBase58(), amount };
++    }
++    return best?.address ?? null;
++  }
++
+   deserializeSwapTransaction(base64Transaction: string): VersionedTransaction {
+     const bytes = Buffer.from(base64Transaction, "base64");
+     return VersionedTransaction.deserialize(bytes);

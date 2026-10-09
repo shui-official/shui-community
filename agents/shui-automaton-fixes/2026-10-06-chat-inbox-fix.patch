@@ -1,0 +1,54 @@
+diff --git a/src/__tests__/creator-chat.test.ts b/src/__tests__/creator-chat.test.ts
+index 5434dad..57552d3 100644
+--- a/src/__tests__/creator-chat.test.ts
++++ b/src/__tests__/creator-chat.test.ts
+@@ -71,3 +71,15 @@ describe("creator chat", () => {
+     expect(workerShellCommand(null, "ls")).toBe("bash -c 'ls'");
+   });
+ });
++
++describe("creator chat and colony messaging", () => {
++  it("colony messaging leaves creator chat messages for SHUI's loop", async () => {
++    const { ColonyMessaging, LocalDBTransport } = await import("../orchestration/messaging.js");
++    const db = freshDb();
++    const id = queueCreatorMessage(db.raw, "Bonjour SHUI");
++    const messaging = new ColonyMessaging(new LocalDBTransport(db), db);
++    const processed = await messaging.processInbox();
++    expect(processed).toHaveLength(0);
++    expect(claimInboxMessages(db.raw, 10).map((m) => m.id)).toEqual([id]);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 2da79ba..f88b314 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -143,6 +143,7 @@ const CONWAY_DEPENDENT_TOOLS = new Set([
+   "spawn_child",
+   "fund_child",
+   "start_child",
++  "distress_signal",
+ ]);
+ 
+ /** Conway credits unavailable since (ms); used to log the outage once. */
+diff --git a/src/orchestration/messaging.ts b/src/orchestration/messaging.ts
+index 267eedb..958ca3f 100644
+--- a/src/orchestration/messaging.ts
++++ b/src/orchestration/messaging.ts
+@@ -10,6 +10,7 @@ import type { AutomatonDatabase, InboxMessage } from "../types.js";
+ import { insertEvent } from "../state/database.js";
+ import { createLogger } from "../observability/logger.js";
+ import { ulid } from "ulid";
++import { isCreatorChatMessage } from "../integration/creator-chat.js";
+ import type BetterSqlite3 from "better-sqlite3";
+ 
+ const logger = createLogger("orchestration.messaging");
+@@ -166,6 +167,9 @@ export class ColonyMessaging {
+     const processed: ProcessedMessage[] = [];
+ 
+     for (const row of inbox) {
++      // Creator chat messages are plain text for SHUI's own loop, not colony JSON:
++      // leave them in the inbox instead of rejecting them as malformed.
++      if (isCreatorChatMessage(row.from)) continue;
+       try {
+         const message = parseInboundMessage(row);
+         pending.push({ inboxId: row.id, message });

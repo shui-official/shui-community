@@ -1,0 +1,1058 @@
+diff --git a/src/__tests__/janitor.test.ts b/src/__tests__/janitor.test.ts
+index d8e08bb..6e9de16 100644
+--- a/src/__tests__/janitor.test.ts
++++ b/src/__tests__/janitor.test.ts
+@@ -113,7 +113,10 @@ describe("janitor", () => {
+   it("stays silent when there is nothing to clean", async () => {
+     const { db, paths } = setup();
+     const report = await runJanitor({ db: db.raw, paths, helper: noServices, untracked: async () => [] });
+-    expect(Object.values(report).every((v) => (Array.isArray(v) ? v.length === 0 : v === 0))).toBe(true);
++    // The daily state.db backup is routine, not cleanup: it stays silent too.
++    const { backup, ...cleanup } = report;
++    expect(backup).toMatch(/state-daily/);
++    expect(Object.values(cleanup).every((v) => (Array.isArray(v) ? v.length === 0 : v === 0))).toBe(true);
+     expect(claimInboxMessages(db.raw, 10)).toHaveLength(0);
+   });
+ });
+diff --git a/src/__tests__/lot8-trading.test.ts b/src/__tests__/lot8-trading.test.ts
+new file mode 100644
+index 0000000..3e82ad5
+--- /dev/null
++++ b/src/__tests__/lot8-trading.test.ts
+@@ -0,0 +1,206 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { checkBuyLimits, checkPriceImpact, isMemecoin, tradeLimits } from "../solana/trade-limits.js";
++import { readableAmount } from "../solana/wallet-tools.js";
++import { initUntrackedSolBasisOnce, scanWalletHistory, type WalletHistorySource } from "../solana/ledger.js";
++import { resetValuationBaselinesOnce } from "../survival/risk-guard.js";
++import { getForbiddenCommandMatch } from "../agent/policy-rules/command-safety.js";
++import { TRADING_FOCUS_HIDDEN_TOOLS, tradingFocusPrompt } from "../solana/trading-desk.js";
++import { ProviderRegistry } from "../inference/provider-registry.js";
++import { alignLocalProvidersWithEndpoint } from "../agent/loop.js";
++import { checkGpuCap, computeCostOfDay, gpuDailyCapUsd, recordRunpodReading } from "../integration/runpod.js";
++import { hasPendingCreatorMessage, listOutgoingCreatorMessages, CREATOR_CHAT_SENDER } from "../integration/creator-chat.js";
++import { runJanitor, type JanitorPaths } from "../maintenance/janitor.js";
++
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot8-")), "s.db"));
++const SOL = "So11111111111111111111111111111111111111112";
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const MEME = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hrpump";
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const setKv = (db: any, k: string, v: string) =>
++  db.raw.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(k, v);
++const getKv = (db: any, k: string) => (db.raw.prepare("SELECT value FROM kv WHERE key = ?").get(k) as any)?.value;
++
++describe("buy limits", () => {
++  const ok = { outputMint: ORCA, buyUsd: 10, capitalUsd: 100, holdingUsd: 0, memeTotalUsd: 0, slippageBps: 50 };
++  it("accepts a sane buy and blocks dust, oversize and wide slippage", () => {
++    expect(checkBuyLimits(ok)).toBeNull();
++    expect(checkBuyLimits({ ...ok, buyUsd: 0.11 })).toMatch(/below the \$5 minimum/);
++    expect(checkBuyLimits({ ...ok, buyUsd: 25 })).toMatch(/max 20% per buy/);
++    expect(checkBuyLimits({ ...ok, holdingUsd: 30 })).toMatch(/max 35%/);
++    expect(checkBuyLimits({ ...ok, slippageBps: 300 })).toMatch(/slippage/);
++  });
++  it("keeps pump.fun memecoins in a small risk pocket", () => {
++    expect(isMemecoin(MEME)).toBe(true);
++    expect(isMemecoin(ORCA)).toBe(false);
++    const cap = 200;
++    expect(checkBuyLimits({ ...ok, outputMint: MEME, buyUsd: 10, capitalUsd: cap })).toBeNull();
++    expect(checkBuyLimits({ ...ok, outputMint: MEME, buyUsd: 12, capitalUsd: cap })).toMatch(/memecoin exposure.*max 5%/);
++    expect(checkBuyLimits({ ...ok, outputMint: MEME, buyUsd: 10, capitalUsd: cap, memeTotalUsd: 25 })).toMatch(/max 15% in total/);
++  });
++  it("limits price impact, tighter for big trades, and reads env overrides", () => {
++    expect(checkPriceImpact(100, 0.8)).toBeNull();
++    expect(checkPriceImpact(100, 1.5)).toMatch(/price impact/);
++    expect(checkPriceImpact(2000, 0.8)).toMatch(/> 0.5%/);
++    expect(checkPriceImpact(100, null)).toBeNull();
++    expect(tradeLimits({ SHUI_MIN_TRADE_USD: "2", SHUI_MAX_TRADE_PCT: "10" })).toMatchObject({ minTradeUsd: 2, maxTradePct: 10 });
++    expect(tradeLimits({ SHUI_MIN_TRADE_USD: "abc" }).minTradeUsd).toBe(5);
++  });
++});
++
++describe("readable amounts", () => {
++  it("shows SOL and USDC in units and labels other tokens raw", () => {
++    expect(readableAmount("529000", SOL)).toBe("0.000529 SOL");
++    expect(readableAmount("21980000", USDC)).toBe("21.98 USDC");
++    expect(readableAmount("39288", ORCA)).toMatch(/raw units of .*divide by 10\^decimals/);
++    expect(readableAmount(null, ORCA)).toMatch(/^\?/);
++  });
++});
++
++describe("ledger migrations", () => {
++  it("gives untracked SOL a reference cost once", () => {
++    const db = freshDb();
++    expect(initUntrackedSolBasisOnce(db.raw, 2_000_000_000n, 150)).toBe(true);
++    const row = db.raw.prepare("SELECT amount_raw, cost_usd FROM shui_cost_basis WHERE mint = ?").get(SOL) as any;
++    expect(row.amount_raw).toBe("2000000000");
++    expect(row.cost_usd).toBeCloseTo(300);
++    expect(initUntrackedSolBasisOnce(db.raw, 5_000_000_000n, 200)).toBe(false);
++  });
++
++  it("backfills a token account since a date on its first scan, then follows the cursor", async () => {
++    const db = freshDb();
++    const delta = (signature: string, blockTime: number) => ({
++      signature, blockTime, failed: false, signedByWallet: false, feePayer: "Creator11111111111111111111111111111111111",
++      solLamportsDelta: 0n, feeLamports: 5000n, tokenDeltas: [{ mint: USDC, deltaRaw: 21_980_000n, decimals: 6 }],
++    });
++    let sigs = [
++      { signature: "new", failed: false, blockTime: 2_000 },
++      { signature: "old", failed: false, blockTime: 500 },
++    ];
++    const source: WalletHistorySource = {
++      getSignaturesSince: async () => sigs,
++      getWalletDelta: async (s) => delta(s, s === "old" ? 500 : 2_000),
++      getLatestSignature: async () => "new",
++    };
++    const params = { creatorAddress: "Creator11111111111111111111111111111111111", solPriceUsd: 150, cursorKey: "ledger.scan_cursor.usdc_account", backfillSince: 1_000 };
++    const first = await scanWalletHistory(db.raw, source, params);
++    expect(first.created.map((e) => e.signature)).toEqual(["new"]);
++    expect(getKv(db, "ledger.scan_cursor.usdc_account")).toBe("new");
++    sigs = [];
++    expect((await scanWalletHistory(db.raw, source, params)).created).toHaveLength(0);
++  });
++
++  it("resets the drawdown peak and unjudged week capitals once", () => {
++    const db = freshDb();
++    setKv(db, "risk.peak_value_usd", "500");
++    setKv(db, "lifespan.week_capital.2026-10-05", "480");
++    expect(resetValuationBaselinesOnce(db.raw)).toBe(true);
++    expect(getKv(db, "risk.peak_value_usd")).toBeUndefined();
++    expect(getKv(db, "lifespan.week_capital.2026-10-05")).toBeUndefined();
++    setKv(db, "risk.peak_value_usd", "120");
++    expect(resetValuationBaselinesOnce(db.raw)).toBe(false);
++    expect(getKv(db, "risk.peak_value_usd")).toBe("120");
++  });
++});
++
++describe("secrets stay out of reach", () => {
++  it("blocks reading the wallet, the env file and process environments", () => {
++    for (const cmd of [
++      "cat ~/.automaton/wallet.json", "cat /etc/shui-agent/chat.env", "printenv", "cat /proc/1/environ",
++      "cp ~/.automaton/automaton.json /tmp/x",
++    ]) {
++      expect(getForbiddenCommandMatch(cmd), cmd).not.toBeNull();
++    }
++    expect(getForbiddenCommandMatch("ls ~/.automaton/workspace")).toBeNull();
++  });
++});
++
++describe("trading focus", () => {
++  it("hides code and shell tools and states the rules", () => {
++    for (const t of ["exec", "edit_own_file", "git_clone", "install_npm_package", "system_synopsis"]) {
++      expect(TRADING_FOCUS_HIDDEN_TOOLS.has(t), t).toBe(true);
++    }
++    const prompt = tradingFocusPrompt({});
++    expect(prompt).toMatch(/amountUsd/);
++    expect(prompt).toMatch(/RANGE/);
++  });
++});
++
++describe("serverless endpoint", () => {
++  it("points loopback providers at the https endpoint, never at http", () => {
++    const make = () => new ProviderRegistry([
++      { id: "local", name: "local", baseUrl: "http://127.0.0.1:11435/v1", apiKeyEnvVar: "LOT8_TEST_KEY", models: [], maxRequestsPerMinute: 60, maxTokensPerMinute: 1e6, priority: 1, enabled: true } as any,
++      { id: "cloud", name: "cloud", baseUrl: "https://api.example.com/v1", apiKeyEnvVar: "X", models: [], maxRequestsPerMinute: 60, maxTokensPerMinute: 1e6, priority: 2, enabled: true } as any,
++    ]);
++    const reg = make();
++    expect(alignLocalProvidersWithEndpoint(reg, { OLLAMA_BASE_URL: "http://10.0.0.1:11434" })).toEqual([]);
++    delete process.env.LOT8_TEST_KEY;
++    expect(alignLocalProvidersWithEndpoint(reg, { OLLAMA_BASE_URL: "https://api.runpod.ai/v2/abc/openai/", OLLAMA_API_KEY: "k" })).toEqual(["local"]);
++    expect((reg as any).providers.find((p: any) => p.id === "local").baseUrl).toBe("https://api.runpod.ai/v2/abc/openai/v1");
++    expect((reg as any).providers.find((p: any) => p.id === "cloud").baseUrl).toBe("https://api.example.com/v1");
++    expect(process.env.LOT8_TEST_KEY).toBe("k");
++    delete process.env.LOT8_TEST_KEY;
++  });
++});
++
++describe("GPU daily budget", () => {
++  it("counts the balance drop as cost, ignoring top-ups", () => {
++    const db = freshDb();
++    recordRunpodReading(db.raw, { balanceUsd: 50, spendPerHr: 0, hoursLeft: null, at: "2026-10-07T10:00:00.000Z" });
++    recordRunpodReading(db.raw, { balanceUsd: 48.8, spendPerHr: 0, hoursLeft: null, at: "2026-10-07T10:15:00.000Z" });
++    expect(computeCostOfDay(db.raw, "2026-10-07")).toBeCloseTo(1.2);
++    recordRunpodReading(db.raw, { balanceUsd: 248.8, spendPerHr: 0, hoursLeft: null, at: "2026-10-07T10:30:00.000Z" });
++    expect(computeCostOfDay(db.raw, "2026-10-07")).toBeCloseTo(1.2);
++  });
++
++  it("puts SHUI to sleep until 00:00 UTC once the cap is reached, telling the creator once", () => {
++    const db = freshDb();
++    expect(gpuDailyCapUsd({})).toBe(8);
++    expect(gpuDailyCapUsd({ SHUI_GPU_DAILY_CAP_USD: "5" })).toBe(5);
++    const now = new Date("2026-10-07T18:00:00Z");
++    expect(checkGpuCap(db.raw, now, {}).capped).toBe(false); // Runpod not connected
++    recordRunpodReading(db.raw, { balanceUsd: 50, spendPerHr: 1.2, hoursLeft: 40, at: "2026-10-07T17:00:00.000Z" });
++    recordRunpodReading(db.raw, { balanceUsd: 41, spendPerHr: 1.2, hoursLeft: 34, at: "2026-10-07T17:45:00.000Z" });
++    const cap = checkGpuCap(db.raw, now, {});
++    expect(cap).toMatchObject({ capped: true, capUsd: 8, resumeAt: "2026-10-08T00:00:00.000Z" });
++    checkGpuCap(db.raw, now, {});
++    expect(listOutgoingCreatorMessages(db.raw).filter((m) => /GPU budget reached/.test(m.content))).toHaveLength(1);
++    expect(checkGpuCap(db.raw, now, { SHUI_GPU_DAILY_CAP_USD: "0" }).capped).toBe(false);
++    expect(checkGpuCap(db.raw, new Date("2026-10-08T01:00:00Z"), {}).capped).toBe(false);
++  });
++
++  it("sees a waiting creator message", () => {
++    const db = freshDb();
++    expect(hasPendingCreatorMessage(db.raw)).toBe(false);
++    db.raw.prepare("INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status) VALUES ('m1', ?, 'shui', 'hi', ?, 'received')")
++      .run(CREATOR_CHAT_SENDER, new Date().toISOString());
++    expect(hasPendingCreatorMessage(db.raw)).toBe(true);
++  });
++});
++
++describe("janitor (lot 8)", () => {
++  it("expires messages stuck in progress for 2 h and backs up state.db once a day", async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), "lot8-jan-"));
++    const paths: JanitorPaths = {
++      home: root, workspaceRoot: path.join(root, "w"), servicesRoot: path.join(root, "s"),
++      archiveRoot: path.join(root, "a"), repoRoot: path.join(root, "r"),
++    };
++    for (const p of [paths.workspaceRoot, paths.servicesRoot, paths.archiveRoot, paths.repoRoot]) fs.mkdirSync(p, { recursive: true });
++    const db = createDatabase(path.join(root, "state.db"));
++    const ins = db.raw.prepare("INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status) VALUES (?, 'x', 'shui', 'c', ?, 'in_progress')");
++    ins.run("old", new Date(Date.now() - 3 * 3_600_000).toISOString());
++    ins.run("recent", new Date(Date.now() - 10 * 60_000).toISOString());
++    db.raw.prepare("INSERT INTO inbox_messages (id, from_address, to_address, content, received_at, status) VALUES ('sqlfmt', 'x', 'shui', 'c', datetime('now'), 'in_progress')").run();
++    const deps = { db: db.raw, paths, helper: async () => ({ ok: true, output: "" }), untracked: async () => [] };
++    const report = await runJanitor(deps);
++    expect(report.expiredMessages).toBe(1);
++    const status = Object.fromEntries((db.raw.prepare("SELECT id, status FROM inbox_messages WHERE from_address = 'x'").all() as any[]).map((m) => [m.id, m.status]));
++    expect(status).toEqual({ old: "failed", recent: "in_progress", sqlfmt: "in_progress" });
++    expect(report.backup).toMatch(/state-daily\/state-\d{4}-\d{2}-\d{2}\.db$/);
++    expect(fs.existsSync(report.backup!)).toBe(true);
++    expect((await runJanitor(deps)).backup ?? null).toBeNull();
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 0ab1087..b4d1cf9 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -58,6 +58,9 @@ import {
+   buildCentralWalletValuation,
+ } from "../solana/wallet-valuation.js";
+ import { perpValuationAsset } from "../solana/perps.js";
++import { isCreatorToken } from "../solana/token-policy.js";
++import { resetValuationBaselinesOnce } from "../survival/risk-guard.js";
++import { initUntrackedSolBasisOnce } from "../solana/ledger.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+ import { scanWalletHistory, getDailyGain, utcDay, reclassifyRevenueAsFunding } from "../solana/ledger.js";
+ import {
+@@ -99,7 +102,8 @@ import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
+ import { ProviderRegistry } from "../inference/provider-registry.js";
+ import { UnifiedInferenceClient } from "../inference/inference-client.js";
+ import { isIdleOnlyTool } from "./idle-only-tools.js";
+-import { formatCreatorChatMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
++import { formatCreatorChatMessage, hasPendingCreatorMessage, isCreatorChatMessage, isLocalSystemNotice, saveCreatorReplies } from "../integration/creator-chat.js";
++import { checkGpuCap } from "../integration/runpod.js";
+ 
+ const logger = createLogger("loop");
+ const MAX_TOOL_CALLS_PER_TURN = 10;
+@@ -189,6 +193,18 @@ export async function runLifespanTick(params: {
+           creatorAddress: params.config.creatorAddress ?? null,
+           solPriceUsd,
+         });
++        // Lot 8: USDC deposits land on the USDC token account; scan it too
++        // (first run journals what arrived since the v2 rules started).
++        const usdcAccount = await service.getTokenAccountFor("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
++        if (usdcAccount) {
++          const v2 = raw.prepare("SELECT value FROM kv WHERE key = 'lifespan.rules_v2_start'").get() as { value: string } | undefined;
++          await scanWalletHistory(raw, service.tokenAccountHistory(usdcAccount), {
++            creatorAddress: params.config.creatorAddress ?? null,
++            solPriceUsd,
++            cursorKey: "ledger.scan_cursor.usdc_account",
++            backfillSince: v2 ? Math.floor(Date.parse(`${v2.value}T00:00:00Z`) / 1000) : undefined,
++          });
++        }
+       } catch (error) {
+         logger.warn(`[LIFESPAN] Wallet history scan failed (no penalty): ${error instanceof Error ? error.message : String(error)}`);
+       }
+@@ -196,6 +212,7 @@ export async function runLifespanTick(params: {
+ 
+     ensureRulesV2(raw);
+     reclassifyRevenueAsFunding(raw);
++    resetValuationBaselinesOnce(raw);
+     recordWeekCapital(raw, params.verifiedWalletValueUsd ?? null);
+     updateDrawdownGuard(raw, params.verifiedWalletValueUsd ?? null);
+     const evaluated = evaluateCompletedDays(raw);
+@@ -336,6 +353,9 @@ export async function runAgentLoop(
+         "inference-providers.json",
+       );
+       const registry = ProviderRegistry.fromConfig(providersPath);
++      // Lot 8: when the main model runs on a remote endpoint (Runpod Serverless),
++      // the planner and workers must use it too instead of the old local tunnel.
++      alignLocalProvidersWithEndpoint(registry);
+ 
+       // If OPENAI_BASE_URL was set (Conway fallback), update the default
+       // provider's baseUrl so the OpenAI client points to Conway Compute.
+@@ -708,6 +728,17 @@ export async function runAgentLoop(
+         break;
+       }
+ 
++      // Daily GPU budget: sleep until 00:00 UTC unless the creator is waiting.
++      const gpuCap = checkGpuCap(db.raw);
++      if (gpuCap.capped && !pendingInput && !hasPendingCreatorMessage(db.raw)) {
++        log(config, `[COMPUTE] GPU budget reached ($${gpuCap.costUsd.toFixed(2)} / $${gpuCap.capUsd.toFixed(2)}) — sleeping until ${gpuCap.resumeAt}`);
++        db.setKV("sleep_until", gpuCap.resumeAt);
++        db.setAgentState("sleeping");
++        onStateChange?.("sleeping");
++        running = false;
++        break;
++      }
++
+       // Check for unprocessed inbox messages using the state machine:
+       // received → in_progress (claim) → processed (on success) or received/failed (on failure)
+       if (!pendingInput) {
+@@ -1617,6 +1648,12 @@ export async function runAgentLoop(
+ let _lastKnownCredits = 0;
+ let _lastKnownUsdc = 0;
+ 
++export function alignLocalProvidersWithEndpoint(registry: { alignLoopbackProviders(baseUrl: string, apiKey: string | undefined): string[] }, env: NodeJS.ProcessEnv = process.env): string[] {
++  const base = (env.OLLAMA_BASE_URL ?? "").trim();
++  if (!/^https:\/\//i.test(base)) return [];
++  return registry.alignLoopbackProviders(base, env.OLLAMA_API_KEY);
++}
++
+ /** Pause after a failed turn: until the circuit breaker closes, else 5 s, 10 s, 20 s… (max 60 s). */
+ export function failedTurnBackoffMs(err: unknown, consecutiveErrors: number, now = Date.now()): number {
+   const match = /Circuit breaker is open until (\S+)/.exec(String((err as { message?: string })?.message ?? ""));
+@@ -1676,11 +1713,21 @@ async function getFinancialState(
+   if (chainType === "solana" && chainIdentity?.chainType === "solana") {
+     try {
+       const tradingService = new SolanaTradingService(chainIdentity);
+-      const balances = await readCentralWalletBalances(tradingService);
++      const balancesAll = await readCentralWalletBalances(tradingService);
++      // Lot 8 (audit #5): the creator's own token is not SHUI's capital; it must
++      // not move the drawdown peak or the weekly capital.
++      const balances = { ...balancesAll, tokens: balancesAll.tokens.filter((t) => !isCreatorToken(t.mint)) };
+ 
+       const quoteService = new RaydiumQuoteService();
+       const solPriceUsd =
+         await fetchSolUsdPriceFromRaydium(quoteService);
++      if (db && solPriceUsd) {
++        try {
++          initUntrackedSolBasisOnce(db.raw, BigInt(Math.round(balances.sol * 1e9)), solPriceUsd);
++        } catch {
++          // basis init is best-effort
++        }
++      }
+ 
+       const tokenValuesUsd = balances.tokens.length > 0
+         ? await fetchTokenUsdValuesFromRaydium(quoteService, balances.tokens)
+diff --git a/src/agent/policy-rules/command-safety.ts b/src/agent/policy-rules/command-safety.ts
+index 187ab78..0b1686b 100644
+--- a/src/agent/policy-rules/command-safety.ts
++++ b/src/agent/policy-rules/command-safety.ts
+@@ -62,6 +62,8 @@ const FORBIDDEN_COMMAND_PATTERNS: { pattern: RegExp; description: string }[] = [
+   { pattern: /cat\s+.*\.gnupg/, description: "Read GPG keys" },
+   { pattern: /cat\s+.*\.env/, description: "Read environment file" },
+   { pattern: /cat\s+.*wallet\.json/, description: "Read wallet file" },
++  // Lot 8 (audit #1): any program touching the key or the secrets, not only cat
++  { pattern: /wallet\.json|\.automaton\/(automaton\.json|wallet)|\/etc\/shui-agent|chat\.env|\/proc\/[^\s]*\/environ|\bprintenv\b/i, description: "Access the wallet key or secrets" },
+   // Policy engine modification via shell
+   { pattern: /sed\s+.*policy-engine/, description: "Modify policy engine via sed" },
+   { pattern: /sed\s+.*policy-rules/, description: "Modify policy rules via sed" },
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index 887d73e..9054287 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -119,6 +119,8 @@ const FORBIDDEN_COMMAND_PATTERNS = [
+   /cat\s+.*\.gnupg/,
+   /cat\s+.*\.env/,
+   /cat\s+.*wallet\.json/,
++  // Lot 8 (audit #1): head/python/node/base64/cp… can read the key too
++  /wallet\.json|\.automaton\/(automaton\.json|wallet)|\/etc\/shui-agent|chat\.env|\/proc\/[^\s]*\/environ|\bprintenv\b/i,
+ ];
+ 
+ function isForbiddenCommand(command: string, sandboxId: string): string | null {
+diff --git a/src/inference/provider-registry.ts b/src/inference/provider-registry.ts
+index b5f2fcd..1a02f7e 100644
+--- a/src/inference/provider-registry.ts
++++ b/src/inference/provider-registry.ts
+@@ -262,6 +262,21 @@ export class ProviderRegistry {
+     this.emergencyStopCredits = emergencyStopCredits;
+   }
+ 
++  /**
++   * Point every provider configured on a loopback URL (old Ollama tunnel) to
++   * OLLAMA_BASE_URL, with OLLAMA_API_KEY as its key. Returns the provider ids changed.
++   */
++  alignLoopbackProviders(baseUrl: string, apiKey: string | undefined): string[] {
++    const changed: string[] = [];
++    for (const provider of this.providers) {
++      if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(provider.baseUrl)) continue;
++      provider.baseUrl = `${baseUrl.replace(/\/$/, "")}/v1`;
++      if (apiKey && !process.env[provider.apiKeyEnvVar]) process.env[provider.apiKeyEnvVar] = apiKey;
++      changed.push(provider.id);
++    }
++    return changed;
++  }
++
+   overrideBaseUrl(providerId: string, baseUrl: string): void {
+     const provider = this.providers.find((p) => p.id === providerId);
+     if (provider) {
+diff --git a/src/inference/router.ts b/src/inference/router.ts
+index 23766a1..8244a84 100644
+--- a/src/inference/router.ts
++++ b/src/inference/router.ts
+@@ -105,7 +105,8 @@ export class InferenceRouter {
+     // 5. Build inference options
+     const preference = this.getPreference(tier, taskType);
+     const maxTokens = request.maxTokens || preference?.maxTokens || model.maxTokens;
+-    const timeout = model.provider === "ollama" && taskType === "agent_turn"
++    // Lot 8 (audit #12): the same 6-minute turn timeout whatever the provider.
++    const timeout = taskType === "agent_turn"
+       ? localTurnTimeoutMs()
+       : TASK_TIMEOUTS[taskType] || 120_000;
+ 
+diff --git a/src/integration/creator-chat.ts b/src/integration/creator-chat.ts
+index 05620f6..34dfa32 100644
+--- a/src/integration/creator-chat.ts
++++ b/src/integration/creator-chat.ts
+@@ -68,6 +68,13 @@ export function isCreatorChatMessage(fromAddress: string | null | undefined): bo
+   return fromAddress === CREATOR_CHAT_SENDER;
+ }
+ 
++/** True when a creator chat message is waiting to be read. */
++export function hasPendingCreatorMessage(db: Database): boolean {
++  return !!db.prepare(
++    "SELECT 1 FROM inbox_messages WHERE from_address = ? AND COALESCE(status, 'received') = 'received' AND processed_at IS NULL LIMIT 1",
++  ).get(CREATOR_CHAT_SENDER);
++}
++
+ /**
+  * Prompt text for an authenticated creator message. It skips the injection
+  * detectors meant for strangers (they flag ordinary French instructions) but
+diff --git a/src/integration/runpod.ts b/src/integration/runpod.ts
+index fced01c..b9e65a4 100644
+--- a/src/integration/runpod.ts
++++ b/src/integration/runpod.ts
+@@ -22,6 +22,8 @@ const CACHE_KEY = "compute.runpod";
+ const COST_PREFIX = "compute.cost.";
+ const TOPUP_KEY = "compute.topup_request";
+ const LOW_ALERT_KEY = "compute.low_alert_day";
++const CAP_ALERT_KEY = "compute.cap_alert_day";
++export const DEFAULT_GPU_DAILY_CAP_USD = 8;
+ const POLL_MS = 15 * 60_000;
+ export const LOW_BALANCE_HOURS = 72;
+ export const TOPUP_REQUEST_TTL_MS = 55 * 60_000;
+@@ -103,7 +105,10 @@ export function recordRunpodReading(db: Database, account: RunpodAccount): void
+   const prev = readRunpodCache(db);
+   if (prev) {
+     const hours = Math.min(1, Math.max(0, (Date.parse(account.at) - Date.parse(prev.at)) / 3_600_000));
+-    const cost = hours * prev.spendPerHr;
++    // Serverless bills in bursts between two readings: the balance drop is the
++    // real spend. A rise is a top-up, so fall back to the spend rate then.
++    const drop = prev.balanceUsd - account.balanceUsd;
++    const cost = drop > 0 && drop < 50 ? drop : hours * prev.spendPerHr;
+     if (cost > 0) {
+       const key = `${COST_PREFIX}${account.at.slice(0, 10)}`;
+       setKv(db, key, String(computeCostOfDay(db, account.at.slice(0, 10)) + cost));
+@@ -141,6 +146,33 @@ export function checkLowBalance(db: Database, now: Date = new Date()): boolean {
+   return true;
+ }
+ 
++/** Daily GPU budget (SHUI_GPU_DAILY_CAP_USD, default $8, 0 = no cap). */
++export function gpuDailyCapUsd(env: NodeJS.ProcessEnv = process.env): number {
++  const raw = (env.SHUI_GPU_DAILY_CAP_USD ?? "").trim();
++  const v = raw === "" ? DEFAULT_GPU_DAILY_CAP_USD : Number(raw);
++  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_GPU_DAILY_CAP_USD;
++}
++
++/**
++ * When today's GPU cost reaches the cap, SHUI sleeps until 00:00 UTC (its
++ * creator's messages still wake it). Tells SHUI and the creator once a day.
++ */
++export function checkGpuCap(db: Database, now: Date = new Date(), env: NodeJS.ProcessEnv = process.env):
++  { capped: boolean; costUsd: number; capUsd: number; resumeAt: string } {
++  const capUsd = gpuDailyCapUsd(env);
++  const day = now.toISOString().slice(0, 10);
++  const costUsd = computeCostOfDay(db, day);
++  const resumeAt = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString();
++  const capped = capUsd > 0 && readRunpodCache(db) !== null && costUsd >= capUsd;
++  if (capped && getKv(db, CAP_ALERT_KEY) !== day) {
++    setKv(db, CAP_ALERT_KEY, day);
++    const text = `GPU budget reached: $${costUsd.toFixed(2)} spent today (cap $${capUsd.toFixed(2)}/day). I sleep until ${resumeAt.slice(11, 16)} UTC; your messages still wake me.`;
++    saveOutgoingCreatorMessage(db, text, now);
++    queueSystemNotice(db, "system:compute", `${text} Your open orders and stops keep running without you.`, now);
++  }
++  return { capped, costUsd, capUsd, resumeAt };
++}
++
+ // ─── Top-up requests (from the authenticated creator chat only) ──
+ 
+ const TOPUP_RE = /^\s*TOPUP\s+([1-9A-HJ-NP-Za-km-z]{32,44})\s+([0-9]+(?:[.,][0-9]+)?)\s*(USDC|SOL)?\s*$/im;
+diff --git a/src/maintenance/janitor.ts b/src/maintenance/janitor.ts
+index 7e76632..155cd43 100644
+--- a/src/maintenance/janitor.ts
++++ b/src/maintenance/janitor.ts
+@@ -68,6 +68,10 @@ export interface JanitorReport {
+   prunedEvents: number;
+   deletedArchives: string[];
+   forgottenPaymentFacts: number;
++  /** Inbox messages stuck "in_progress" for 2 h+ (expired, never replayed). */
++  expiredMessages?: number;
++  /** Path of today's state.db backup, when one was made. */
++  backup?: string | null;
+ }
+ 
+ const defaultProbe = async (url: string): Promise<number | null> => {
+@@ -287,6 +291,34 @@ export async function runJanitor(deps: JanitorDeps): Promise<JanitorReport> {
+     // no archive folder yet
+   }
+ 
++  // g) Lot 8 (audit #8): messages stuck "in_progress" (a crash during the turn)
++  // are expired, not replayed: old instructions must not come back days later.
++  if (tableExists(db, "inbox_messages")) {
++    const cutoff = new Date(now.getTime() - 2 * HOUR).toISOString();
++    report.expiredMessages = db.prepare(
++      // received_at is ISO or SQLite format: compare as datetimes.
++      "UPDATE inbox_messages SET status = 'failed' WHERE status = 'in_progress' AND datetime(received_at) < datetime(?)",
++    ).run(cutoff).changes;
++  }
++
++  // h) Lot 8 (audit #7): one backup of state.db per day, 14 kept.
++  try {
++    const day = now.toISOString().slice(0, 10);
++    const last = (db.prepare("SELECT value FROM kv WHERE key = 'backup.last_day'").get() as { value: string } | undefined)?.value;
++    if (last !== day && typeof (db as unknown as { backup?: unknown }).backup === "function") {
++      const dir = path.join(paths.home, "backups", "state-daily");
++      await fs.mkdir(dir, { recursive: true });
++      const file = path.join(dir, `state-${day}.db`);
++      await (db as unknown as { backup: (p: string) => Promise<unknown> }).backup(file);
++      db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('backup.last_day', ?, datetime('now'))").run(day);
++      report.backup = file;
++      const files = (await fs.readdir(dir)).filter((f) => /^state-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
++      for (const old of files.slice(0, Math.max(0, files.length - 14))) await fs.rm(path.join(dir, old), { force: true });
++    }
++  } catch (error) {
++    deps.log?.(`[JANITOR] backup failed: ${error instanceof Error ? error.message : String(error)}`);
++  }
++
+   const summary = summarizeJanitor(report);
+   if (summary && deps.notify !== false) queueSystemNotice(db, "system:janitor", summary);
+   if (summary) deps.log?.(`[JANITOR] ${summary}`);
+@@ -303,6 +335,7 @@ export function summarizeJanitor(r: JanitorReport): string {
+   if (r.forgottenPaymentFacts) parts.push(`forgot ${r.forgottenPaymentFacts} unpaid payment link(s) older than 3 days (they were never revenue)`);
+   if (r.prunedEvents) parts.push(`forgot ${r.prunedEvents} planner events older than 3 days`);
+   if (r.deletedArchives.length) parts.push(`deleted archives older than 14 days: ${r.deletedArchives.join(", ")}`);
++  if (r.expiredMessages) parts.push(`expired ${r.expiredMessages} old inbox message(s) stuck in progress (not replayed)`);
+   if (parts.length === 0) return "";
+   return `Automatic cleanup: ${parts.join(". ")}. Archived files are in ~/archive for 14 days. Focus on one goal at a time and finish it.`;
+ }
+diff --git a/src/solana/jupiter.ts b/src/solana/jupiter.ts
+index c7a8279..2aae136 100644
+--- a/src/solana/jupiter.ts
++++ b/src/solana/jupiter.ts
+@@ -214,11 +214,12 @@ export function createJupiterSwapTool(): AutomatonTool {
+       properties: {
+         inputMint: { type: "string" },
+         outputMint: { type: "string" },
+-        amount: { type: "string", description: "Positive raw integer amount in smallest token units." },
++        amount: { type: "string", description: "Positive raw integer amount in smallest token units (or use amountUsd)." },
++        amountUsd: { type: "number", description: "Easier for buys: USD value to spend when the input is USDC or SOL (e.g. 12 = $12). The code converts it to raw units." },
+         slippageBps: { type: "number", description: "Slippage in basis points (default 50)." },
+         dryRun: { type: "boolean", description: "true: build, validate and simulate only (no signature, no funds moved)." },
+       },
+-      required: ["inputMint", "outputMint", "amount"],
++      required: ["inputMint", "outputMint"],
+     },
+     execute: async (args, ctx) => {
+       if (ctx.identity.chainType !== "solana" || !ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") {
+@@ -228,6 +229,7 @@ export function createJupiterSwapTool(): AutomatonTool {
+         inputMint: String(args.inputMint ?? ""),
+         outputMint: String(args.outputMint ?? ""),
+         amount: String(args.amount ?? ""),
++        amountUsd: args.amountUsd === undefined ? undefined : Number(args.amountUsd),
+         slippageBps: args.slippageBps === undefined ? undefined : Number(args.slippageBps),
+         dryRun: args.dryRun === true,
+       }, jupiterVenue);
+diff --git a/src/solana/ledger.ts b/src/solana/ledger.ts
+index 06e5a4d..d6a18fe 100644
+--- a/src/solana/ledger.ts
++++ b/src/solana/ledger.ts
+@@ -417,6 +417,25 @@ export function reclassifyRevenueAsFunding(db: Database, env: NodeJS.ProcessEnv
+   return db.prepare("UPDATE shui_ledger SET kind = 'funding', revenue_usd = 0 WHERE kind = 'revenue'").run().changes;
+ }
+ 
++/**
++ * Lot 8 (audit #16): SOL held before the ledger existed had no cost, so the
++ * PnL of selling it was unknown. Once, give the untracked SOL a dated
++ * reference price (the current one).
++ */
++export function initUntrackedSolBasisOnce(db: Database, heldLamports: bigint, solPriceUsd: number): boolean {
++  ensureLedgerSchema(db);
++  const flag = db.prepare("SELECT value FROM kv WHERE key = 'migration.lot8_sol_basis'").get();
++  if (flag || !(solPriceUsd > 0)) return false;
++  const basis = getBasis(db, SOL_MINT);
++  if (heldLamports > basis.amountRaw) {
++    const missing = heldLamports - basis.amountRaw;
++    addBasis(db, SOL_MINT, missing, rawToUi(missing, SOL_DECIMALS) * solPriceUsd);
++  }
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('migration.lot8_sol_basis', ?, datetime('now'))")
++    .run(JSON.stringify({ at: new Date().toISOString(), solPriceUsd }));
++  return true;
++}
++
+ export interface WalletHistorySource {
+   /** Signatures newer than `until`, newest first (Solana RPC order). */
+   getSignaturesSince(until: string | null, limit: number): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>>;
+@@ -433,26 +452,32 @@ export async function scanWalletHistory(db: Database, source: WalletHistorySourc
+   creatorAddress: string | null;
+   solPriceUsd: number | null;
+   maxTransactions?: number;
++  /** Separate cursor, e.g. for a token account of the wallet (lot 8). */
++  cursorKey?: string;
++  /** First run of a new cursor: also journal transactions since this unix time. */
++  backfillSince?: number;
+ }): Promise<{ processed: number; created: LedgerEntry[] }> {
+   ensureLedgerSchema(db);
+-  const cursorRow = db.prepare("SELECT value FROM kv WHERE key = ?").get(SCAN_CURSOR_KEY) as { value: string } | undefined;
++  const cursorKey = params.cursorKey ?? SCAN_CURSOR_KEY;
++  const cursorRow = db.prepare("SELECT value FROM kv WHERE key = ?").get(cursorKey) as { value: string } | undefined;
+   const setKv = db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))");
+ 
+-  if (!cursorRow) {
++  if (!cursorRow && params.backfillSince === undefined) {
+     const latest = await source.getLatestSignature();
+-    setKv.run(SCAN_CURSOR_KEY, latest ?? "");
++    setKv.run(cursorKey, latest ?? "");
+     setKv.run(SCAN_LAST_OK_KEY, new Date().toISOString());
+     return { processed: 0, created: [] };
+   }
+ 
+-  const until = cursorRow.value || null;
++  const until = cursorRow?.value || null;
+   const limit = params.maxTransactions ?? 200;
+   const signatures = await source.getSignaturesSince(until, limit);
+   const created: LedgerEntry[] = [];
+ 
+   // Oldest first, so the cursor only advances over processed transactions.
+   for (const sig of [...signatures].reverse()) {
+-    if (!sig.failed && !hasEntry(db, sig.signature)) {
++    const tooOld = !cursorRow && params.backfillSince !== undefined && (sig.blockTime ?? 0) < params.backfillSince;
++    if (!tooOld && !sig.failed && !hasEntry(db, sig.signature)) {
+       const delta = await source.getWalletDelta(sig.signature);
+       if (!delta) {
+         throw new Error(`Transaction ${sig.signature} could not be read`);
+@@ -460,7 +485,7 @@ export async function scanWalletHistory(db: Database, source: WalletHistorySourc
+       const entry = recordIncoming(db, delta, params);
+       if (entry) created.push(entry);
+     }
+-    setKv.run(SCAN_CURSOR_KEY, sig.signature);
++    setKv.run(cursorKey, sig.signature);
+   }
+ 
+   setKv.run(SCAN_LAST_OK_KEY, new Date().toISOString());
+diff --git a/src/solana/market-regime.ts b/src/solana/market-regime.ts
+index 498c077..2aebbee 100644
+--- a/src/solana/market-regime.ts
++++ b/src/solana/market-regime.ts
+@@ -150,7 +150,7 @@ export async function marketRegime(): Promise<string> {
+     ? "Tailwind: setups on SOL and liquid altcoins are favoured; keep normal size and stops."
+     : r.regime === "RISK-OFF"
+       ? "Headwind: most altcoins fall with the market. Prefer USDC, or only the strongest setups at half size."
+-      : "Mixed: trade only clean setups, normal size, no memecoins.";
++      : "Mixed: trade only clean setups, normal size; memecoins only in the small risk pocket (5% each, 15% total).";
+   return `Market regime: ${r.regime} (score ${r.score}). ${r.reasons.join("; ") || "no data"}.\n${advice}`;
+ }
+ 
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 09c8efb..378aaa9 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -307,7 +307,7 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     }
+     if (status === "filled" || status === "failed") {
+       queueSystemNotice(db, "system:orders",
+-        `Order ${order.id} (${order.kind}, ${order.note || "no note"}) ${status === "filled" ? "EXECUTED" : "FAILED"} ` +
++        `${order.paper ? "PAPER (simulated, no funds moved) " : ""}Order ${order.id} (${order.kind}, ${order.note || "no note"}) ${status === "filled" ? (order.paper ? "CLOSED the paper position" : "EXECUTED") : "FAILED"} ` +
+         `when the price of ${order.watchMint} was $${price} (trigger ${order.condition} $${order.triggerPriceUsd}): ${outcome.message}.${siblingsNote}` +
+         (status === "filled" ? " Write the lesson with journal_add." : ""));
+     }
+diff --git a/src/solana/strategies.ts b/src/solana/strategies.ts
+index 3051d9d..76622a2 100644
+--- a/src/solana/strategies.ts
++++ b/src/solana/strategies.ts
+@@ -218,7 +218,7 @@ export function createStrategyTools(): AutomatonTool[] {
+         const rule = String(args.rule ?? "") as Rule;
+         if (!RULES.includes(rule)) return `Blocked: rule must be one of ${RULES.join(", ")}.`;
+         const sizeUsd = Number(args.sizeUsd);
+-        if (!(sizeUsd >= 1)) return "Blocked: sizeUsd must be at least 1 USDC.";
++        if (!(sizeUsd >= (args.paper === true ? 1 : 5))) return "Blocked: sizeUsd must be at least 5 USDC for a real strategy (1 for paper).";
+         const db = ctx.db.raw;
+         const paper = args.paper === true;
+         if (listStrategies(db).filter((s) => s.active && !!s.paper === paper).length >= (paper ? 5 : MAX_ACTIVE_STRATEGIES)) {
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+index 3acee85..731b977 100644
+--- a/src/solana/swap-engine.ts
++++ b/src/solana/swap-engine.ts
+@@ -15,8 +15,12 @@ import {
+ } from "./trading.js";
+ import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
+ import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
+-import { findCreatorToken, creatorTokenBlock } from "./token-policy.js";
+-import { isBuy, lossStopUntil, tradingPausedUntil } from "../survival/risk-guard.js";
++import { findCreatorToken, creatorTokenBlock, isCreatorToken } from "./token-policy.js";
++import { isBuy, lastCapitalUsd, lossStopUntil, tradingPausedUntil } from "../survival/risk-guard.js";
++import { checkBuyLimits, checkPriceImpact, isMemecoin } from "./trade-limits.js";
++import { jupiterPrices } from "./orders.js";
++const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const JITOSOL = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+ 
+ export interface SwapExpectation {
+   inputMint: string;
+@@ -47,6 +51,8 @@ export interface SwapRequest {
+   inputMint: string;
+   outputMint: string;
+   amount: string;
++  /** Alternative to amount when the input is USDC or SOL: the USD value to spend (code converts it). */
++  amountUsd?: number;
+   slippageBps?: number;
+   dryRun?: boolean;
+ }
+@@ -62,7 +68,24 @@ export async function runSwap(
+   if (pendingCheck.resolved) await journalResolvedPending(ctx.db, service, pendingCheck.resolved);
+ 
+   const { inputMint, outputMint } = request;
+-  const amountString = String(request.amount ?? "");
++  let amountString = String(request.amount ?? "");
++  // Lot 8: the model confused raw units (it once bought $0.11 instead of ~$11):
++  // amountUsd lets it say "spend $12" and the code converts.
++  let solPrice: number | null = null;
++  const getSolPrice = async () => {
++    if (solPrice === null) solPrice = (await jupiterPrices([NATIVE_SOL_MINT]).catch(() => ({} as Record<string, number>)))[NATIVE_SOL_MINT] ?? 0;
++    return solPrice;
++  };
++  if (request.amountUsd !== undefined && request.amountUsd !== null) {
++    const usd = Number(request.amountUsd);
++    if (!(usd > 0)) return "Blocked: amountUsd must be positive.";
++    if (inputMint === USDC_MINT) amountString = String(Math.floor(usd * 1e6));
++    else if (inputMint === NATIVE_SOL_MINT) {
++      const p = await getSolPrice();
++      if (!(p > 0)) return "Blocked: SOL price unavailable to convert amountUsd.";
++      amountString = String(Math.floor((usd / p) * 1e9));
++    } else return "Blocked: amountUsd only works when the input is USDC or SOL; give a raw amount instead.";
++  }
+   const slippageBps = Number(request.slippageBps ?? 50);
+   if (!/^[1-9][0-9]*$/.test(amountString)) return "Blocked: amount must be a positive raw integer.";
+   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) return "Blocked: slippage must be between 1 and 500 bps.";
+@@ -96,6 +119,7 @@ export async function runSwap(
+ 
+   // Never trust model arithmetic: re-read the confirmed on-chain balance.
+   const solLamports = BigInt((await service.getSolBalance()).lamports);
++  let buyUsdForImpact: number | null = null;
+   let availableRaw: bigint;
+   if (inputMint === NATIVE_SOL_MINT) {
+     availableRaw = solLamports > SOL_FEE_RESERVE_LAMPORTS ? solLamports - SOL_FEE_RESERVE_LAMPORTS : 0n;
+@@ -114,6 +138,24 @@ export async function runSwap(
+       .filter((token) => token.mint === inputMint)
+       .reduce((total, token) => total + BigInt(token.amount), 0n);
+   }
++  // Lot 8: hard limits on buys (sales and stops are never limited).
++  if (isBuy(outputMint) && outputMint !== JITOSOL && (inputMint === USDC_MINT || inputMint === NATIVE_SOL_MINT)) {
++    const buyUsd = inputMint === USDC_MINT ? Number(inputAmount) / 1e6 : (Number(inputAmount) / 1e9) * (await getSolPrice());
++    const tokens = await service.getTokenBalances();
++    const memeMints = [...new Set(tokens.filter((t) => isMemecoin(t.mint) && !isCreatorToken(t.mint)).map((t) => t.mint))];
++    const prices = await jupiterPrices([...new Set([outputMint, ...memeMints])]).catch(() => ({} as Record<string, number>));
++    const valueOf = (mint: string) => tokens.filter((t) => t.mint === mint)
++      .reduce((s, t) => s + (t.uiAmount ?? Number(t.amount) / 10 ** t.decimals) * (prices[mint] ?? 0), 0);
++    const usdc = tokens.filter((t) => t.mint === USDC_MINT).reduce((s, t) => s + (t.uiAmount ?? Number(t.amount) / 1e6), 0);
++    const capitalUsd = lastCapitalUsd(ctx.db.raw) ?? usdc + (Number(solLamports) / 1e9) * (await getSolPrice());
++    const reason = checkBuyLimits({
++      outputMint, buyUsd, capitalUsd, slippageBps,
++      holdingUsd: valueOf(outputMint),
++      memeTotalUsd: memeMints.reduce((s, m) => s + valueOf(m), 0),
++    });
++    if (reason) return JSON.stringify({ success: false, blocked: true, reason: "TRADE_LIMIT", message: `Blocked by trade limits: ${reason}.` });
++    buyUsdForImpact = buyUsd;
++  }
+   if (inputAmount > availableRaw) {
+     return JSON.stringify({
+       success: false,
+@@ -128,6 +170,10 @@ export async function runSwap(
+ 
+   const quote = await venue.quote({ inputMint, outputMint, amount: inputAmount, slippageBps });
+   if (quote.slippageBps !== slippageBps) throw new Error(`${venue.name} quote slippage mismatch`);
++  if (buyUsdForImpact !== null) {
++    const impact = checkPriceImpact(buyUsdForImpact, quote.priceImpactPct);
++    if (impact) return JSON.stringify({ success: false, blocked: true, reason: "TRADE_LIMIT", message: `Blocked by trade limits: ${impact}.` });
++  }
+   const [inputAccount, outputAccount] = await Promise.all([
+     service.getTokenAccountFor(inputMint),
+     service.getTokenAccountFor(outputMint),
+diff --git a/src/solana/swap-tool.ts b/src/solana/swap-tool.ts
+index 89f5e6f..a8d3341 100644
+--- a/src/solana/swap-tool.ts
++++ b/src/solana/swap-tool.ts
+@@ -45,11 +45,12 @@ export function createRaydiumSwapTool(): AutomatonTool {
+       properties: {
+         inputMint: { type: "string" },
+         outputMint: { type: "string" },
+-        amount: { type: "string", description: "Positive raw integer amount in smallest token units." },
++        amount: { type: "string", description: "Positive raw integer amount in smallest token units (or use amountUsd)." },
++        amountUsd: { type: "number", description: "Easier for buys: USD value to spend when the input is USDC or SOL (e.g. 12 = $12). The code converts it to raw units." },
+         slippageBps: { type: "number", description: "Slippage in basis points." },
+         dryRun: { type: "boolean", description: "true: build, validate and simulate only (no signature, no broadcast, no funds moved)." }
+       },
+-      required: ["inputMint", "outputMint", "amount"]
++      required: ["inputMint", "outputMint"]
+     },
+     execute: async (args, ctx) => {
+       if (ctx.identity.chainType !== "solana" || !ctx.identity.chainIdentity || ctx.identity.chainIdentity.chainType !== "solana") return "Blocked: active Solana chain identity is unavailable.";
+@@ -57,6 +58,7 @@ export function createRaydiumSwapTool(): AutomatonTool {
+         inputMint: String(args.inputMint ?? ""),
+         outputMint: String(args.outputMint ?? ""),
+         amount: String(args.amount ?? ""),
++        amountUsd: args.amountUsd === undefined ? undefined : Number(args.amountUsd),
+         slippageBps: args.slippageBps === undefined ? undefined : Number(args.slippageBps),
+         dryRun: args.dryRun === true,
+       }, raydiumVenue);
+diff --git a/src/solana/trade-limits.ts b/src/solana/trade-limits.ts
+new file mode 100644
+index 0000000..cfd397f
+--- /dev/null
++++ b/src/solana/trade-limits.ts
+@@ -0,0 +1,70 @@
++/**
++ * Lot 8 — hard limits on BUYS, enforced by code (audit #3). Sales and stops
++ * are never limited: protecting capital is always allowed.
++ *   - minimum trade $5 (smaller trades are eaten by fees);
++ *   - at most 20% of capital per buy and 35% of capital in one token;
++ *   - memecoins (pump.fun mints): 5% per token, 15% in total;
++ *   - buy slippage at most 100 bps;
++ *   - price impact at most 1% (0.5% above $1,000).
++ * Values can be tuned with SHUI_MIN_TRADE_USD / SHUI_MAX_TRADE_PCT.
++ */
++export function tradeLimits(env: NodeJS.ProcessEnv = process.env) {
++  const num = (v: string | undefined, d: number) => {
++    const n = Number(v);
++    return Number.isFinite(n) && n > 0 ? n : d;
++  };
++  return {
++    minTradeUsd: num(env.SHUI_MIN_TRADE_USD, 5),
++    maxTradePct: num(env.SHUI_MAX_TRADE_PCT, 20),
++    maxTokenPct: 35,
++    memePerTokenPct: 5,
++    memeTotalPct: 15,
++    maxBuySlippageBps: 100,
++    maxImpactPct: 1,
++    bigTradeUsd: 1000,
++    bigTradeImpactPct: 0.5,
++  };
++}
++
++/** pump.fun tokens have mint addresses ending in "pump". */
++export function isMemecoin(mint: string): boolean {
++  return /pump$/.test(mint);
++}
++
++export interface BuyCheck {
++  outputMint: string;
++  buyUsd: number;
++  capitalUsd: number;
++  /** Value already held in the output token. */
++  holdingUsd: number;
++  /** Value held in all memecoins (excluding the creator's token). */
++  memeTotalUsd: number;
++  slippageBps: number;
++}
++
++/** Returns a blocking reason, or null when the buy is within the limits. */
++export function checkBuyLimits(c: BuyCheck, env: NodeJS.ProcessEnv = process.env): string | null {
++  const L = tradeLimits(env);
++  const pct = (x: number) => (c.capitalUsd > 0 ? (x / c.capitalUsd) * 100 : Infinity);
++  if (c.slippageBps > L.maxBuySlippageBps) return `slippage ${c.slippageBps} bps > ${L.maxBuySlippageBps} bps allowed on buys`;
++  if (c.buyUsd < L.minTradeUsd) return `buy of $${c.buyUsd.toFixed(2)} is below the $${L.minTradeUsd} minimum (fees would eat the gain). Use amountUsd.`;
++  if (pct(c.buyUsd) > L.maxTradePct + 1e-9) {
++    return `buy of $${c.buyUsd.toFixed(2)} is ${pct(c.buyUsd).toFixed(1)}% of capital ($${c.capitalUsd.toFixed(2)}); max ${L.maxTradePct}% per buy ($${((c.capitalUsd * L.maxTradePct) / 100).toFixed(2)})`;
++  }
++  const meme = isMemecoin(c.outputMint);
++  const tokenCap = meme ? L.memePerTokenPct : L.maxTokenPct;
++  if (pct(c.holdingUsd + c.buyUsd) > tokenCap + 1e-9) {
++    return `${meme ? "memecoin " : ""}exposure would be ${pct(c.holdingUsd + c.buyUsd).toFixed(1)}% of capital in this token; max ${tokenCap}%`;
++  }
++  if (meme && pct(c.memeTotalUsd + c.buyUsd) > L.memeTotalPct + 1e-9) {
++    return `memecoins would be ${pct(c.memeTotalUsd + c.buyUsd).toFixed(1)}% of capital; max ${L.memeTotalPct}% in total`;
++  }
++  return null;
++}
++
++export function checkPriceImpact(buyUsd: number, impactPct: number | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
++  if (impactPct === null || impactPct === undefined || !Number.isFinite(impactPct)) return null;
++  const L = tradeLimits(env);
++  const max = buyUsd > L.bigTradeUsd ? L.bigTradeImpactPct : L.maxImpactPct;
++  return impactPct > max ? `price impact ${impactPct.toFixed(2)}% > ${max}% (pool too thin for this size: buy less)` : null;
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index b1f1d15..81ad985 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -27,6 +27,9 @@ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
+   // A trader does not need goals, workers or commits: they produced documentation instead of trades.
+   "create_goal", "set_goal", "spawn_child", "start_child", "fund_child", "git_commit", "git_push",
++  // Lot 8 (audit #1): a trader never needs a shell, self-editing, git or installs; system_synopsis only fed loops.
++  "exec", "edit_own_file", "git_status", "git_diff", "git_log", "git_clone", "git_branch",
++  "install_npm_package", "install_mcp_server", "system_synopsis",
+ ]);
+ 
+ export function isTradingFocus(env: NodeJS.ProcessEnv = process.env): boolean {
+@@ -41,16 +44,21 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+    After 2 real losing trades today the code blocks new entries until 00:00 UTC (trade_stats gives the time):
+    never sleep longer than that. In RISK-OFF, prefer USDC.
+ 2. setup_scan: find setups that follow the playbook (long in a 4h uptrend, 1h entry, reward/risk >= 2). It also
+-   scans the 10 most active liquid tokens of the moment, and RANGE setups (rebound at the bottom of a trendless
+-   4h range, R/R >= 1.5): trade range setups with paper_trade setup="range" until 20 of them show a positive total.
++   scans the most active liquid tokens of the moment, and RANGE setups (rebound at the bottom of a trendless
++   4h range, R/R >= 1.5). The "20 paper trades first" rule applies ONLY to RANGE setups (paper_trade setup="range").
++   A trend SETUP line is a REAL trade, allowed now. For every valid setup write journal_add: taken or skipped, and why.
+    No real setup = stay in USDC, but use the wait to learn: keep at
+    least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+-5. Buy with jupiter_swap (or raydium_swap) using the size setup_scan gives (risk 2%, less on volatile tokens);
++5. Buy with jupiter_swap using amountUsd = the size setup_scan gives (e.g. amountUsd=12 spends $12; never raw amounts
++   for buys). Code limits: min $5, max 20% of capital per buy, 35% per token; memecoins (mints ending in "pump")
++   max 5% each and 15% in total, always with a stop;
+    among several setups, take the first one (strongest steady momentum).
+ 6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+-7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
++7. When an order executes or a paper position closes you get an inbox notice: only then write journal_add kind=lesson.
++Orders, stops and paper trades run in code: never sleep "to wait for results". With no setup, sleep 1-2 h, not more.
++Amounts: SOL has 9 decimals (1 SOL = 1,000,000,000 lamports), USDC 6. Read positions before claiming what you hold.
+ To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
+ trade it for you (buy + automatic OCO protection). Test new methods with paper_trade or a paper strategy first
+ (paper_stats). dca_create accumulates over time; idle SOL can earn ~7%/year with stake_sol (jitoSOL).
+@@ -234,7 +242,7 @@ export function rangePaperRecord(db: Database | null): { trades: number; pnlUsd:
+ 
+ const TRENDING_MIN_LIQUIDITY_USD = 250_000;
+ const TRENDING_MIN_AGE_MS = 7 * 24 * 3_600_000;
+-const TRENDING_MAX = 10;
++const TRENDING_MAX = 6;
+ const STABLES = new Set([USDC_MINT, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]);
+ 
+ /** 5a: the most active liquid tokens of the moment, outside the default watchlist. */
+diff --git a/src/solana/trading-extras.ts b/src/solana/trading-extras.ts
+index 81b7463..4f0ead2 100644
+--- a/src/solana/trading-extras.ts
++++ b/src/solana/trading-extras.ts
+@@ -62,7 +62,7 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         const count = Math.floor(Number(args.count));
+         if (!validMint(mint) || mint === USDC_MINT) return "Blocked: invalid mint.";
+         if (isCreatorToken(mint)) return creatorTokenBlock(mint);
+-        if (!(usdc >= 0.5) || !(hours >= 1) || !(count >= 1 && count <= 100)) return "Blocked: usdcPerBuy >= 0.5, everyHours >= 1, count 1-100.";
++        if (!(usdc >= 5) || !(hours >= 1) || !(count >= 1 && count <= 100)) return "Blocked: usdcPerBuy >= 5 (smaller buys are eaten by fees), everyHours >= 1, count 1-100.";
+         const db = ctx.db.raw;
+         if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN) return "Blocked: too many open orders.";
+         const now = new Date();
+@@ -113,6 +113,8 @@ export function createTradingExtraTools(): AutomatonTool[] {
+         if (!(stopPrice < price && tp > price)) return `Blocked: stop must be below and target above the current price ($${price}).`;
+         const db = ctx.db.raw;
+         if (listOrders(db).filter((o) => o.status === "open").length + 2 > MAX_OPEN) return "Blocked: too many open orders.";
++        const already = listOrders(db).find((o) => o.status === "open" && o.paper && o.watchMint === mint);
++        if (already) return `Blocked: a paper position on this token is already open (${already.group}). One simulation per token: wait for it to close (you get a notice).`;
+         const now = new Date();
+         const group = `paper_${now.getTime().toString(36)}`;
+         const units = size / price;
+diff --git a/src/solana/trading.ts b/src/solana/trading.ts
+index 5e378ff..fb44f9e 100644
+--- a/src/solana/trading.ts
++++ b/src/solana/trading.ts
+@@ -571,13 +571,27 @@ export class SolanaTradingService {
+     return sigs[0]?.signature ?? null;
+   }
+ 
++  /**
++   * Lot 8: deposits of a token land on the wallet's token account, not on the
++   * wallet address, so the wallet scan missed them (21.98 USDC). Same history
++   * interface, reading the signatures of that token account.
++   */
++  tokenAccountHistory(tokenAccount: string) {
++    return {
++      getLatestSignature: async () => (await this.getSignaturesSince(null, 1, tokenAccount))[0]?.signature ?? null,
++      getSignaturesSince: (until: string | null, limit: number) => this.getSignaturesSince(until, limit, tokenAccount),
++      getWalletDelta: (signature: string) => this.getWalletDelta(signature),
++    };
++  }
++
+   /** Signatures newer than `until` (exclusive), newest first. */
+   async getSignaturesSince(
+     until: string | null,
+     limit: number,
++    address: string = this.address,
+   ): Promise<Array<{ signature: string; failed: boolean; blockTime: number | null }>> {
+     const sigs = await this.connection.getSignaturesForAddress(
+-      new PublicKey(this.address),
++      new PublicKey(address),
+       { limit, ...(until ? { until } : {}) },
+       "confirmed",
+     );
+diff --git a/src/solana/wallet-tools.ts b/src/solana/wallet-tools.ts
+index 42fb773..ae7ed02 100644
+--- a/src/solana/wallet-tools.ts
++++ b/src/solana/wallet-tools.ts
+@@ -146,6 +146,18 @@ export function createSolanaTransferTool(): AutomatonTool {
+   };
+ }
+ 
++/**
++ * Lot 8: raw units were misread (529000 lamports read as "529,000 SOL ≈ $6,150").
++ * SOL and USDC are shown in real units; other tokens are labelled raw.
++ */
++export function readableAmount(raw: string | null, mint: string): string {
++  if (raw === null || !/^[0-9]+$/.test(raw)) return `? ${mint}`;
++  const n = BigInt(raw);
++  if (mint === NATIVE_SOL_MINT) return `${(Number(n) / 1e9).toFixed(9).replace(/0+$/, "").replace(/\.$/, "")} SOL`;
++  if (mint === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") return `${(Number(n) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "")} USDC`;
++  return `${raw} raw units of ${mint} (divide by 10^decimals)`;
++}
++
+ export function createSolanaTransactionsTool(): AutomatonTool {
+   return {
+     name: "solana_get_transactions",
+@@ -185,9 +197,11 @@ export function createSolanaTransactionsTool(): AutomatonTool {
+         "",
+         entries.length === 0 ? "No journal entries yet." : "Recent entries (newest first):",
+         ...entries.map((entry) => {
+-          const parts = [`${entry.ts} ${entry.kind}`];
+-          if (entry.inputMint) parts.push(`in ${entry.inputAmountRaw} ${entry.inputMint}`);
+-          if (entry.outputMint) parts.push(`out ${entry.outputAmountRaw} ${entry.outputMint}`);
++          const label = entry.kind === "funding" ? "funding (deposit from your creator, NOT revenue)"
++            : entry.kind === "creator_deposit" ? "creator deposit (NOT revenue)" : entry.kind;
++          const parts = [`${entry.ts} ${label}`];
++          if (entry.inputMint) parts.push(`in ${readableAmount(entry.inputAmountRaw, entry.inputMint)}`);
++          if (entry.outputMint) parts.push(`out ${readableAmount(entry.outputAmountRaw, entry.outputMint)}`);
+           if (entry.revenueUsd) parts.push(`revenue $${entry.revenueUsd.toFixed(2)}`);
+           if (entry.realizedPnlUsd) parts.push(`realized $${entry.realizedPnlUsd.toFixed(2)}`);
+           if (entry.counterparty) parts.push(`counterparty ${entry.counterparty}`);
+diff --git a/src/survival/risk-guard.ts b/src/survival/risk-guard.ts
+index 6906196..d36ff7b 100644
+--- a/src/survival/risk-guard.ts
++++ b/src/survival/risk-guard.ts
+@@ -110,3 +110,23 @@ export function lossStopUntil(db: Database, now: Date = new Date()): string | nu
+   next.setUTCHours(24, 0, 0, 0);
+   return next.toISOString();
+ }
++
++/**
++ * Lot 8 (audit #5): the creator's token used to be counted in the wallet value,
++ * inflating the drawdown peak and the weekly capital. Reset both once so they
++ * are re-recorded from the corrected valuation (weeks already judged are kept).
++ */
++export function resetValuationBaselinesOnce(db: Database): boolean {
++  if (getKv(db, "migration.lot8_valuation")) return false;
++  db.prepare("DELETE FROM kv WHERE key = ?").run(PEAK_KEY);
++  try {
++    db.prepare(
++      `DELETE FROM kv WHERE key LIKE 'lifespan.week_capital.%'
++       AND substr(key, 23) NOT IN (SELECT week_start FROM shui_lifespan_weeks)`,
++    ).run();
++  } catch {
++    db.prepare("DELETE FROM kv WHERE key LIKE 'lifespan.week_capital.%'").run();
++  }
++  setKv(db, "migration.lot8_valuation", new Date().toISOString());
++  return true;
++}

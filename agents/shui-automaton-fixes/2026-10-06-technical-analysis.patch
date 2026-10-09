@@ -1,0 +1,448 @@
+diff --git a/src/__tests__/technical-analysis.test.ts b/src/__tests__/technical-analysis.test.ts
+new file mode 100644
+index 0000000..0d91925
+--- /dev/null
++++ b/src/__tests__/technical-analysis.test.ts
+@@ -0,0 +1,69 @@
++import { describe, expect, it } from "vitest";
++import {
++  analyze, atr, bollinger, candlesFromGecko, emaSeries, fibonacci, macd, rsi, sma, swings, technicalAnalysis, TRADING_PLAYBOOK, type Candle,
++} from "../solana/technical-analysis.js";
++
++const series = (closes: number[]): Candle[] =>
++  closes.map((c, i) => ({ t: i, o: c, h: c * 1.01, l: c * 0.99, c, v: 100 + (i % 5) }));
++
++describe("indicators", () => {
++  it("computes moving averages, RSI extremes, ATR and Bollinger", () => {
++    expect(sma([1, 2, 3, 4], 2)).toBe(3.5);
++    expect(emaSeries([10, 10, 10], 3)).toEqual([10, 10, 10]);
++    const up = Array.from({ length: 40 }, (_, i) => 100 + i);
++    expect(rsi(up)).toBe(100);
++    expect(rsi(up.slice().reverse())!).toBeLessThan(1);
++    expect(macd(up)!.macd).toBeGreaterThan(0);
++    expect(atr(series(up))!).toBeGreaterThan(0);
++    const bb = bollinger(Array(20).fill(5))!;
++    expect(bb.upper).toBe(5);
++  });
++
++  it("finds swing points and Fibonacci levels of an up move", () => {
++    const zigzag = [10, 12, 14, 13, 11, 12, 15, 18, 20, 19, 17, 16, 18];
++    const s = swings(series(zigzag), 2);
++    expect(s.highs.length).toBeGreaterThan(0);
++    const fib = fibonacci(series([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 19]))!;
++    expect(fib.direction).toBe("up");
++    const r618 = fib.retracements.find((l) => l.ratio === 0.618)!.price;
++    expect(r618).toBeCloseTo(20.2 - (20.2 - 9.9) * 0.618, 6);
++    expect(fib.extensions[0].price).toBeCloseTo(9.9 + (20.2 - 9.9) * 1.272, 6);
++  });
++});
++
++describe("analysis", () => {
++  it("gives a bias, Fibonacci zones and a sized trade plan", () => {
++    const closes = Array.from({ length: 120 }, (_, i) => 100 + i * 0.5 + Math.sin(i / 3) * 3);
++    const text = analyze(series(closes), { walletUsd: 36, riskPct: 2 });
++    expect(text).toMatch(/EMA20 above EMA50 \(uptrend\)/);
++    expect(text).toMatch(/RSI \d+ overbought: late to buy/);
++    expect(text).toContain("Fibonacci (swing up");
++    expect(text).toMatch(/Long plan: entry ~\S+, stop-loss/);
++    expect(text).toMatch(/Sizing: risking 2% of the \$36\.00 wallet/);
++  });
++
++  it("refuses to analyse too few candles", () => {
++    expect(analyze(series([1, 2, 3]))).toMatch(/Not enough candles/);
++  });
++
++  it("fetches the deepest pool and its candles", async () => {
++    const ohlcv = Array.from({ length: 60 }, (_, i) => [1000 - i, 2 + i * 0.01, 2.05 + i * 0.01, 1.95 + i * 0.01, 2 + i * 0.01, 50]);
++    const calls: string[] = [];
++    const fetcher = async (url: string) => {
++      calls.push(url);
++      return url.includes("dexscreener")
++        ? [{ chainId: "solana", pairAddress: "SHALLOW", liquidity: { usd: 1000 } }, { chainId: "solana", pairAddress: "DEEP", dexId: "orca", liquidity: { usd: 2_000_000 }, baseToken: { symbol: "TKN" } }]
++        : { data: { attributes: { ohlcv_list: ohlcv } } };
++    };
++    const text = await technicalAnalysis({ mint: "MINT", timeframe: "4h" }, { walletUsd: 36 }, fetcher);
++    expect(calls[1]).toContain("/pools/DEEP/ohlcv/hour?aggregate=4");
++    expect(text).toContain("TKN 4h candles (60)");
++    expect(text).toContain("order_create stop_loss");
++    expect(candlesFromGecko({ data: { attributes: { ohlcv_list: ohlcv } } })[0].t).toBe(941);
++  });
++
++  it("has a playbook with the core risk rules", () => {
++    expect(TRADING_PLAYBOOK).toMatch(/1-2% of the wallet/);
++    expect(TRADING_PLAYBOOK).toMatch(/reward\/risk >= 2/);
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 2574cd4..d03a1c6 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -990,6 +990,8 @@ export async function runAgentLoop(
+           "raydium_swap",
+           "jupiter_swap",
+           "market_scan",
++          "technical_analysis",
++          "trading_playbook",
+           "order_create",
+           "order_list",
+           "order_cancel",
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index 097eead..6ec202d 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -45,7 +45,7 @@ repeating the same thing. Plans, documents and simulated services are not value:
+ verified revenue or realized trading profit counts.
+ 
+ What you have: a dedicated Linux server (no root), free local inference (Qwen),
+-${chainType === "solana" ? "a central Solana wallet, Solana trading tools (market_scan for live market data, jupiter_swap and raydium_swap, automatic stop-loss/take-profit orders with order_create)" : "a wallet"}, local worker agents,
++${chainType === "solana" ? "a central Solana wallet, Solana trading tools (market_scan for live market data, technical_analysis and trading_playbook before any trade, jupiter_swap and raydium_swap, automatic stop-loss/take-profit orders with order_create)" : "a wallet"}, local worker agents,
+ self-modification, continuous operation. Conway services are optional and
+ currently unavailable to you.
+ 
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index a9f90ec..6c54ffb 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -3,6 +3,7 @@ import { stopPublicListeners } from "../services/public-listeners.js";
+ import { createMessageCreatorTool } from "../integration/creator-chat.js";
+ import { createJupiterSwapTool } from "../solana/jupiter.js";
+ import { createMarketScanTool } from "../solana/market-scan.js";
++import { createTechnicalAnalysisTools } from "../solana/technical-analysis.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+ import { createServiceTools } from "../services/service-tools.js";
+@@ -130,6 +131,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createMessageCreatorTool(),
+     createJupiterSwapTool(),
+     createMarketScanTool(),
++    ...createTechnicalAnalysisTools(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+new file mode 100644
+index 0000000..cb7f255
+--- /dev/null
++++ b/src/solana/technical-analysis.ts
+@@ -0,0 +1,321 @@
++/**
++ * Technical analysis for SHUI's trading decisions: trend, momentum,
++ * volatility, support/resistance, Fibonacci levels and a sized trade plan
++ * with stop-loss and take-profit, from real candles (GeckoTerminal, pool
++ * found through DexScreener). Pure functions are exported for tests. The
++ * output is a compact text summary a local model can act on; the rules of
++ * the trading playbook are advice, never enforced.
++ */
++import type { AutomatonTool } from "../types.js";
++import { fetchJson } from "./http-json.js";
++
++export interface Candle {
++  t: number;
++  o: number;
++  h: number;
++  l: number;
++  c: number;
++  v: number;
++}
++
++export const sma = (xs: number[], n: number): number | null =>
++  xs.length < n ? null : xs.slice(-n).reduce((s, x) => s + x, 0) / n;
++
++export function emaSeries(xs: number[], n: number): number[] {
++  if (xs.length === 0) return [];
++  const k = 2 / (n + 1);
++  const out = [xs[0]];
++  for (let i = 1; i < xs.length; i++) out.push(xs[i] * k + out[i - 1] * (1 - k));
++  return out;
++}
++
++export function rsi(closes: number[], n = 14): number | null {
++  if (closes.length <= n) return null;
++  let gain = 0;
++  let loss = 0;
++  for (let i = 1; i <= n; i++) {
++    const d = closes[i] - closes[i - 1];
++    if (d >= 0) gain += d; else loss -= d;
++  }
++  gain /= n;
++  loss /= n;
++  for (let i = n + 1; i < closes.length; i++) {
++    const d = closes[i] - closes[i - 1];
++    gain = (gain * (n - 1) + Math.max(d, 0)) / n;
++    loss = (loss * (n - 1) + Math.max(-d, 0)) / n;
++  }
++  if (loss === 0) return 100;
++  return 100 - 100 / (1 + gain / loss);
++}
++
++export function macd(closes: number[]): { macd: number; signal: number; hist: number; prevHist: number } | null {
++  if (closes.length < 35) return null;
++  const fast = emaSeries(closes, 12);
++  const slow = emaSeries(closes, 26);
++  const line = fast.map((f, i) => f - slow[i]);
++  const signal = emaSeries(line, 9);
++  const last = line.length - 1;
++  return { macd: line[last], signal: signal[last], hist: line[last] - signal[last], prevHist: line[last - 1] - signal[last - 1] };
++}
++
++export function atr(candles: Candle[], n = 14): number | null {
++  if (candles.length <= n) return null;
++  const trs = candles.slice(1).map((c, i) => Math.max(c.h - c.l, Math.abs(c.h - candles[i].c), Math.abs(c.l - candles[i].c)));
++  let value = trs.slice(0, n).reduce((s, x) => s + x, 0) / n;
++  for (let i = n; i < trs.length; i++) value = (value * (n - 1) + trs[i]) / n;
++  return value;
++}
++
++export function bollinger(closes: number[], n = 20, k = 2): { mid: number; upper: number; lower: number } | null {
++  if (closes.length < n) return null;
++  const window = closes.slice(-n);
++  const mid = window.reduce((s, x) => s + x, 0) / n;
++  const sd = Math.sqrt(window.reduce((s, x) => s + (x - mid) ** 2, 0) / n);
++  return { mid, upper: mid + k * sd, lower: mid - k * sd };
++}
++
++/** Swing highs/lows: a candle higher (lower) than `w` candles on each side. */
++export function swings(candles: Candle[], w = 3): { highs: number[]; lows: number[] } {
++  const highs: number[] = [];
++  const lows: number[] = [];
++  for (let i = w; i < candles.length - w; i++) {
++    const around = [...candles.slice(i - w, i), ...candles.slice(i + 1, i + w + 1)];
++    if (around.every((c) => c.h <= candles[i].h)) highs.push(candles[i].h);
++    if (around.every((c) => c.l >= candles[i].l)) lows.push(candles[i].l);
++  }
++  return { highs, lows };
++}
++
++export interface FibLevels {
++  direction: "up" | "down";
++  swingLow: number;
++  swingHigh: number;
++  retracements: Array<{ ratio: number; price: number }>;
++  extensions: Array<{ ratio: number; price: number }>;
++}
++
++/** Fibonacci from the main swing of the window: the move from the lowest low to the highest high (or back). */
++export function fibonacci(candles: Candle[]): FibLevels | null {
++  if (candles.length < 10) return null;
++  let hi = 0;
++  let lo = 0;
++  candles.forEach((c, i) => {
++    if (c.h > candles[hi].h) hi = i;
++    if (c.l < candles[lo].l) lo = i;
++  });
++  const high = candles[hi].h;
++  const low = candles[lo].l;
++  const range = high - low;
++  if (range <= 0) return null;
++  const direction = lo < hi ? "up" : "down";
++  const R = [0.236, 0.382, 0.5, 0.618, 0.786];
++  const E = [1.272, 1.618, 2.618];
++  return direction === "up"
++    ? {
++      direction, swingLow: low, swingHigh: high,
++      retracements: R.map((r) => ({ ratio: r, price: high - range * r })),
++      extensions: E.map((r) => ({ ratio: r, price: low + range * r })),
++    }
++    : {
++      direction, swingLow: low, swingHigh: high,
++      retracements: R.map((r) => ({ ratio: r, price: low + range * r })),
++      extensions: E.map((r) => ({ ratio: r, price: high - range * r })),
++    };
++}
++
++const fmt = (x: number | null | undefined): string =>
++  x === null || x === undefined || !Number.isFinite(x) ? "?" : x >= 1 ? x.toFixed(4) : x.toPrecision(4);
++const pct = (x: number): string => `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`;
++
++export interface AnalysisOptions {
++  walletUsd?: number | null;
++  riskPct?: number;
++}
++
++export function analyze(candles: Candle[], opts: AnalysisOptions = {}): string {
++  if (candles.length < 30) return `Not enough candles (${candles.length}) for an analysis; use a shorter timeframe.`;
++  const closes = candles.map((c) => c.c);
++  const price = closes[closes.length - 1];
++  const ema20 = emaSeries(closes, 20).at(-1)!;
++  const ema50 = closes.length >= 50 ? emaSeries(closes, 50).at(-1)! : null;
++  const sma200 = sma(closes, 200);
++  const ema20Prev = emaSeries(closes.slice(0, -5), 20).at(-1)!;
++  const r = rsi(closes);
++  const m = macd(closes);
++  const a = atr(candles);
++  const bb = bollinger(closes);
++  const { highs, lows } = swings(candles);
++  const fib = fibonacci(candles);
++  const recentVol = candles.slice(-5).reduce((s, c) => s + c.v, 0) / 5;
++  const baseVol = candles.slice(-30, -5).reduce((s, c) => s + c.v, 0) / 25;
++
++  const reasons: string[] = [];
++  let score = 0;
++  if (price > ema20 && ema20 > ema20Prev) { score += 1; reasons.push("price above a rising EMA20"); }
++  if (price < ema20 && ema20 < ema20Prev) { score -= 1; reasons.push("price below a falling EMA20"); }
++  if (ema50 !== null) {
++    if (ema20 > ema50) { score += 1; reasons.push("EMA20 above EMA50 (uptrend)"); } else { score -= 1; reasons.push("EMA20 below EMA50 (downtrend)"); }
++  }
++  if (r !== null) {
++    if (r >= 70) { score -= 1; reasons.push(`RSI ${r.toFixed(0)} overbought: late to buy`); }
++    else if (r <= 30) { score += 1; reasons.push(`RSI ${r.toFixed(0)} oversold: bounce possible, wait for confirmation`); }
++  }
++  if (m) {
++    if (m.hist > 0 && m.prevHist <= 0) { score += 1; reasons.push("MACD bullish cross"); }
++    else if (m.hist < 0 && m.prevHist >= 0) { score -= 1; reasons.push("MACD bearish cross"); }
++    else reasons.push(`MACD momentum ${m.hist > 0 ? "positive" : "negative"}`);
++  }
++  if (baseVol > 0 && recentVol > baseVol * 1.5) reasons.push(`volume x${(recentVol / baseVol).toFixed(1)} vs average (move has participation)`);
++  const bias = score >= 2 ? "BULLISH" : score <= -2 ? "BEARISH" : "NEUTRAL";
++
++  const resistances = [...new Set(highs.filter((h) => h > price).sort((x, y) => x - y))].slice(0, 3);
++  const supports = [...new Set(lows.filter((l) => l < price).sort((x, y) => y - x))].slice(0, 3);
++
++  const lines = [
++    `Price ${fmt(price)} | bias ${bias} (score ${score}): ${reasons.join("; ") || "no clear signal"}.`,
++    `Trend: EMA20 ${fmt(ema20)}, EMA50 ${fmt(ema50)}, SMA200 ${fmt(sma200)}.`,
++    `Momentum: RSI14 ${r === null ? "?" : r.toFixed(1)}, MACD hist ${fmt(m?.hist)}.`,
++    `Volatility: ATR14 ${fmt(a)}${a ? ` (${((a / price) * 100).toFixed(2)}% of price)` : ""}; Bollinger ${fmt(bb?.lower)} / ${fmt(bb?.mid)} / ${fmt(bb?.upper)}.`,
++    `Supports: ${supports.map(fmt).join(", ") || "none below in this window"}. Resistances: ${resistances.map(fmt).join(", ") || "none above (price discovery)"}.`,
++  ];
++  if (fib) {
++    lines.push(
++      `Fibonacci (swing ${fib.direction === "up" ? "up" : "down"} ${fmt(fib.swingLow)} -> ${fmt(fib.swingHigh)}): retracements ` +
++      fib.retracements.map((l) => `${l.ratio}=${fmt(l.price)}`).join(", ") +
++      `; extensions ${fib.extensions.map((l) => `${l.ratio}=${fmt(l.price)}`).join(", ")}. ` +
++      (fib.direction === "up"
++        ? "In an uptrend, buy pullbacks to 0.382-0.618 that hold; below 0.786 the move is likely over."
++        : "In a downtrend, rallies to 0.382-0.618 are selling zones; reclaiming 0.786 invalidates the downtrend."),
++    );
++  }
++
++  if (a) {
++    const supportStop = supports.length ? supports[0] - 0.5 * a : null;
++    const stop = Math.max(supportStop ?? -Infinity, price - 2 * a);
++    const stopPct = ((price - stop) / price) * 100;
++    const fibTarget = fib?.direction === "up" ? fib.extensions[0].price : null;
++    const target1 = resistances[0] ?? fibTarget ?? price + 3 * a;
++    const target2 = resistances[1] ?? (fib?.direction === "up" ? fib.extensions[1].price : price + 5 * a);
++    const rr = (target1 - price) / (price - stop);
++    lines.push(
++      `Long plan: entry ~${fmt(price)}, stop-loss ${fmt(stop)} (${pct(-stopPct)}), TP1 ${fmt(target1)} (${pct(((target1 - price) / price) * 100)}), ` +
++      `TP2 ${fmt(target2)} (${pct(((target2 - price) / price) * 100)}), reward/risk to TP1 ${rr.toFixed(2)}${rr < 2 ? " — BELOW 2: skip or wait for a better entry" : ""}.`,
++    );
++    const riskPct = opts.riskPct ?? 2;
++    if (opts.walletUsd && opts.walletUsd > 0 && stopPct > 0) {
++      const riskUsd = (opts.walletUsd * riskPct) / 100;
++      const size = Math.min(opts.walletUsd, (riskUsd / stopPct) * 100);
++      lines.push(`Sizing: risking ${riskPct}% of the $${opts.walletUsd.toFixed(2)} wallet ($${riskUsd.toFixed(2)}) with this stop allows a position of about $${size.toFixed(2)}.`);
++    }
++  }
++  return lines.join("\n");
++}
++
++const TIMEFRAMES: Record<string, { unit: "minute" | "hour" | "day"; aggregate: number }> = {
++  "5m": { unit: "minute", aggregate: 5 },
++  "15m": { unit: "minute", aggregate: 15 },
++  "1h": { unit: "hour", aggregate: 1 },
++  "4h": { unit: "hour", aggregate: 4 },
++  "1d": { unit: "day", aggregate: 1 },
++};
++
++export function candlesFromGecko(body: unknown): Candle[] {
++  const list = ((body as any)?.data?.attributes?.ohlcv_list ?? []) as number[][];
++  return list
++    .map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v }))
++    .filter((c) => [c.o, c.h, c.l, c.c].every((x) => Number.isFinite(x) && x > 0))
++    .sort((a, b) => a.t - b.t);
++}
++
++type Fetcher = (url: string) => Promise<unknown>;
++const defaultFetcher: Fetcher = async (url) => {
++  const response = await fetchJson(url, { headers: { accept: "application/json;version=20230302" } });
++  if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
++  return response.body;
++};
++
++export async function technicalAnalysis(
++  args: { mint?: string; timeframe?: string; riskPct?: number },
++  context: { walletUsd?: number | null } = {},
++  fetcher: Fetcher = defaultFetcher,
++): Promise<string> {
++  const mint = String(args.mint ?? "").trim();
++  if (!mint) return "Blocked: mint is required.";
++  const tf = TIMEFRAMES[String(args.timeframe ?? "1h")] ?? TIMEFRAMES["1h"];
++  const tfName = Object.entries(TIMEFRAMES).find(([, v]) => v === tf)![0];
++  const pairs = (await fetcher(`https://api.dexscreener.com/tokens/v1/solana/${encodeURIComponent(mint)}`)) as Array<Record<string, any>>;
++  const deepest = (Array.isArray(pairs) ? pairs : [])
++    .filter((p) => p.chainId === undefined || p.chainId === "solana")
++    .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
++  if (!deepest?.pairAddress) return `No liquid pool found for ${mint}.`;
++  const body = await fetcher(
++    `https://api.geckoterminal.com/api/v2/networks/solana/pools/${deepest.pairAddress}/ohlcv/${tf.unit}?aggregate=${tf.aggregate}&limit=300`,
++  );
++  const candles = candlesFromGecko(body);
++  const liq = Number(deepest.liquidity?.usd ?? 0);
++  const header = `${deepest.baseToken?.symbol ?? mint} ${tfName} candles (${candles.length}), pool ${deepest.dexId ?? ""} liquidity $${Math.round(liq).toLocaleString("en-US")}` +
++    (liq < 50_000 ? " ⚠ THIN LIQUIDITY: indicators are unreliable and slippage is high" : "");
++  return `${header}\n${analyze(candles, { walletUsd: context.walletUsd, riskPct: args.riskPct })}\n` +
++    "Confirm on a second timeframe before trading. After entering, place order_create stop_loss and take_profit at these levels.";
++}
++
++export const TRADING_PLAYBOOK = `Trading playbook (rules of experienced traders; they protect the capital that keeps you alive):
++1. Capital first. Risk at most 1-2% of the wallet on one trade (risk = position size x distance to the stop). Never all-in.
++2. Every position gets a stop-loss and a take-profit the moment it is opened (order_create). No stop, no trade.
++3. Only take trades with reward/risk >= 2 to the first target. Below that, wait.
++4. Trade with the trend: the higher timeframe decides the direction (4h/1d), the lower one the entry (15m/1h). Do not buy below a falling EMA50.
++5. Confluence: enter where several things agree (support + Fibonacci 0.5-0.618 + RSI turning up + volume). One signal alone is noise.
++6. Liquidity: avoid pools under $50k and tokens younger than 24 h; check priceImpactPct (< 1%) before every swap. Fees and slippage are real costs.
++7. Do not chase: after a +30% candle or with RSI > 75, wait for a pullback. FOMO is how capital is lost.
++8. Cut losers fast, let winners run: move the stop to break-even after TP1, never widen a stop.
++9. Most new memecoins go to zero (rug pulls, dev dumps). Treat them as lottery tickets, tiny size only.
++10. Keep a journal: every trade's reason, entry, stop, target and result (remember_fact). Review it: repeat what worked, drop what did not.
++11. No trade is a position too. Sitting in USDC while waiting for a clean setup costs nothing.
++12. Revenge trading after a loss is forbidden: after 2 losing trades in a row, stop trading for the day.`;
++
++export function createTechnicalAnalysisTools(): AutomatonTool[] {
++  return [
++    {
++      name: "technical_analysis",
++      description:
++        "Senior technical analysis of a Solana token from real candles: trend (EMA20/50, SMA200), momentum (RSI14, MACD), " +
++        "volatility (ATR, Bollinger), supports/resistances from swing points, Fibonacci retracements (0.236-0.786) and " +
++        "extensions (1.272/1.618/2.618), a bias score with reasons, and a long trade plan (entry, stop-loss, TP1/TP2, " +
++        "reward/risk, position size for your wallet). timeframe: 5m, 15m, 1h (default), 4h, 1d. Read trading_playbook first.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string", description: "Token mint address." },
++          timeframe: { type: "string", description: '"5m", "15m", "1h", "4h" or "1d".' },
++          riskPct: { type: "number", description: "Percent of the wallet to risk for the sizing (default 2)." },
++        },
++        required: ["mint"],
++      },
++      execute: async (args, ctx) => {
++        let walletUsd: number | null = null;
++        try {
++          const row = ctx.db.raw.prepare("SELECT value FROM kv WHERE key = 'last_known_balance'").get() as { value: string } | undefined;
++          const parsed = row ? (JSON.parse(row.value) as { walletValueUsd?: number }) : null;
++          walletUsd = typeof parsed?.walletValueUsd === "number" ? parsed.walletValueUsd : null;
++        } catch {
++          walletUsd = null;
++        }
++        try {
++          return await technicalAnalysis(args as { mint?: string; timeframe?: string; riskPct?: number }, { walletUsd });
++        } catch (error) {
++          return `technical_analysis failed: ${error instanceof Error ? error.message : String(error)}`;
++        }
++      },
++    },
++    {
++      name: "trading_playbook",
++      description: "The trading rules experienced traders follow (risk per trade, stops, reward/risk, trend, confluence, liquidity, discipline). Read before trading.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async () => TRADING_PLAYBOOK,
++    },
++  ];
++}

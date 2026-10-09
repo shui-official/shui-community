@@ -1,0 +1,159 @@
+diff --git a/src/__tests__/orchestration/worker-attempts.test.ts b/src/__tests__/orchestration/worker-attempts.test.ts
+new file mode 100644
+index 0000000..aa4334c
+--- /dev/null
++++ b/src/__tests__/orchestration/worker-attempts.test.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import { extractProgressFiles } from "../../agent/harnesses/base-harness.js";
++import { filterWorkerTools } from "../../orchestration/local-worker.js";
++import type { AutomatonTool } from "../../types.js";
++
++describe("worker attempts", () => {
++  it("extracts files written by a previous attempt", () => {
++    const output = "Budget exhausted: reached max turns (25/25). Task \"X\" did not complete within the turn budget. " +
++      "Progress kept — files already written: /a/DEPLOYMENT.md, /a/app_fixed.py, /a/start.sh. Resume from these files instead of starting over.";
++    expect(extractProgressFiles(output)).toEqual(["/a/DEPLOYMENT.md", "/a/app_fixed.py", "/a/start.sh"]);
++    expect(extractProgressFiles("Budget exhausted: timeout")).toEqual([]);
++    expect(extractProgressFiles("files already written: /a/x.py (+3 more). Resume from these files")).toEqual(["/a/x.py"]);
++  });
++
++  it("hides Conway-only tools from workers when not registered with Conway", () => {
++    const tool = (name: string) => ({ name } as AutomatonTool);
++    const tools = [tool("list_sandboxes"), tool("check_credits"), tool("exec"), tool("write_file")];
++    expect(filterWorkerTools(tools, { registeredWithConway: false })!.map((t) => t.name)).toEqual(["exec", "write_file"]);
++    expect(filterWorkerTools(tools, { registeredWithConway: true })).toBe(tools);
++    expect(filterWorkerTools(tools, {})).toBe(tools);
++  });
++});
+diff --git a/src/agent/harnesses/base-harness.ts b/src/agent/harnesses/base-harness.ts
+index b726456..50369ea 100644
+--- a/src/agent/harnesses/base-harness.ts
++++ b/src/agent/harnesses/base-harness.ts
+@@ -21,6 +21,8 @@ export abstract class BaseHarness implements AgentHarness {
+   protected loopDetector!: LoopDetector;
+   protected messages: ChatMessage[] = [];
+   protected artifacts: string[] = [];
++  /** Files written by earlier attempts of the same task (from its last failure). */
++  protected priorArtifacts: string[] = [];
+ 
+   async initialize(task: TaskNode, context: HarnessContext): Promise<void> {
+     this.task = task;
+@@ -35,6 +37,7 @@ export abstract class BaseHarness implements AgentHarness {
+       { role: "user", content: this.buildTaskPrompt() },
+     ];
+     this.artifacts = [];
++    this.priorArtifacts = extractProgressFiles(task.result?.output ?? "");
+   }
+ 
+   abstract getToolDefs(): HarnessTool[];
+@@ -289,7 +292,9 @@ export abstract class BaseHarness implements AgentHarness {
+    */
+   private withProgress(error: unknown): Error {
+     const message = error instanceof Error ? error.message : String(error);
+-    const files = [...new Set(this.artifacts)];
++    // Include files from earlier attempts: each failure used to overwrite the
++    // previous one, so the next attempt lost track of older work.
++    const files = [...new Set([...this.priorArtifacts, ...this.artifacts])];
+     if (files.length === 0) {
+       return error instanceof Error ? error : new Error(message);
+     }
+@@ -329,3 +334,15 @@ export abstract class BaseHarness implements AgentHarness {
+     }
+   }
+ }
++
++const PROGRESS_MARKER = "files already written: ";
++
++/** Parse the file list written by withProgress() in a previous failure. */
++export function extractProgressFiles(output: string): string[] {
++  const start = output.indexOf(PROGRESS_MARKER);
++  if (start < 0) return [];
++  const rest = output.slice(start + PROGRESS_MARKER.length);
++  const end = rest.indexOf(". Resume from these files");
++  const list = (end >= 0 ? rest.slice(0, end) : rest).replace(/ \(\+\d+ more\)$/, "");
++  return list.split(", ").map((file) => file.trim()).filter(Boolean);
++}
+diff --git a/src/index.ts b/src/index.ts
+index 23c85e6..3b60ea5 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -402,6 +402,10 @@ async function run(): Promise<void> {
+   // The automaton alternates between running and sleeping.
+   // The heartbeat can wake it up.
+ 
++  // Last orchestrator phase logged during sleep; kept across sleep periods so
++  // "(sleeping) phase -> X" is only logged when the phase actually changes.
++  let lastOrchestratorPhase: string | null = null;
++
+   while (true) {
+     try {
+       // Reload skills (may have changed since last loop)
+@@ -457,7 +461,6 @@ async function run(): Promise<void> {
+         // Sleep, but check for wake requests periodically
+         const checkInterval = Math.min(sleepMs, 30_000);
+         const sleepStartedAt = Date.now();
+-        let lastOrchestratorPhase: string | null = null;
+         while (Date.now() - sleepStartedAt < sleepMs) {
+           await sleep(checkInterval);
+ 
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index a0d1aa7..a6e76e6 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -30,6 +30,29 @@ import type { PolicyEngine } from "../agent/policy-engine.js";
+ const logger = createLogger("orchestration.local-worker");
+ const DEFAULT_ALLOWED_EDIT_ROOT = process.cwd();
+ const DEFAULT_TASK_TIMEOUT_MS = 900_000;
++const DEFAULT_WORKER_MAX_TURNS = 25;
++
++/**
++ * Tools that only talk to the Conway API. When the automaton is not
++ * registered with Conway they always fail (401) and only waste worker turns.
++ */
++const CONWAY_ONLY_TOOLS = new Set([
++  "check_credits",
++  "create_sandbox",
++  "delete_sandbox",
++  "list_sandboxes",
++  "search_domains",
++  "register_domain",
++  "manage_dns",
++]);
++
++export function filterWorkerTools(
++  tools: AutomatonTool[] | undefined,
++  config: { registeredWithConway?: boolean } | undefined,
++): AutomatonTool[] | undefined {
++  if (!tools || config?.registeredWithConway !== false) return tools;
++  return tools.filter((tool) => !CONWAY_ONLY_TOOLS.has(tool.name));
++}
+ 
+ interface LocalWorkerConfig {
+   db: Database;
+@@ -133,7 +156,7 @@ export class LocalWorkerPool {
+       wisdom: buildWisdomFromGoal(this.config.db, task.goalId, workspace),
+       abortSignal: signal,
+       goalId: task.goalId,
+-      toolCatalog: this.config.tools,
++      toolCatalog: filterWorkerTools(this.config.tools, this.config.config),
+       toolContext: this.config.toolContext
+         ? {
+             ...this.config.toolContext,
+@@ -155,6 +178,16 @@ export class LocalWorkerPool {
+       context.budget.timeoutMs = Math.floor(configuredTimeout);
+     }
+ 
++    // Turn budget per attempt: 25 by default, configurable with
++    // `workerMaxTurns` in automaton.json.
++    const configuredTurns = Number(
++      (this.config.config as { workerMaxTurns?: number } | undefined)?.workerMaxTurns
++        ?? DEFAULT_WORKER_MAX_TURNS,
++    );
++    if (Number.isFinite(configuredTurns) && configuredTurns >= 1) {
++      context.budget.maxTurns = Math.floor(configuredTurns);
++    }
++
+     if (this.config.maxTurns) {
+       context.budget.maxTurns = this.config.maxTurns;
+     }

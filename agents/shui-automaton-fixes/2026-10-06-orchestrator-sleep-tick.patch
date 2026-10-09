@@ -1,0 +1,114 @@
+diff --git a/src/__tests__/orchestration/orchestrator-sleep-tick.test.ts b/src/__tests__/orchestration/orchestrator-sleep-tick.test.ts
+new file mode 100644
+index 0000000..5d68904
+--- /dev/null
++++ b/src/__tests__/orchestration/orchestrator-sleep-tick.test.ts
+@@ -0,0 +1,8 @@
++import { describe, expect, it } from "vitest";
++import { tickOrchestratorWhileSleeping } from "../../agent/loop.js";
++
++describe("tickOrchestratorWhileSleeping", () => {
++  it("is a no-op before any agent loop has created an orchestrator", async () => {
++    await expect(tickOrchestratorWhileSleeping()).resolves.toBeNull();
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 7771719..cc5673b 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -85,6 +85,32 @@ const MAX_REPETITIVE_TURNS = 3;
+ // subsequent wake cycles can still recognize workers that are running.
+ let persistentLocalWorkerPool: LocalWorkerPool | undefined;
+ 
++// The orchestrator used to advance only during agent turns. When the agent
++// slept (e.g. 3600s right after create_goal, told "the orchestrator will pick
++// this up on the next tick"), goals and workers stalled until the next wake.
++// Keep the last orchestrator so the main sleep loop can keep ticking it.
++let persistentOrchestrator: Orchestrator | undefined;
++let backgroundTickInFlight = false;
++
++/**
++ * Advance the orchestrator while the agent sleeps, without waking the agent.
++ * Returns null when there is no orchestrator or a tick is already running.
++ */
++export async function tickOrchestratorWhileSleeping(): Promise<
++  Awaited<ReturnType<Orchestrator["tick"]>> | null
++> {
++  if (!persistentOrchestrator || backgroundTickInFlight) {
++    return null;
++  }
++
++  backgroundTickInFlight = true;
++  try {
++    return await persistentOrchestrator.tick();
++  } finally {
++    backgroundTickInFlight = false;
++  }
++}
++
+ export interface AgentLoopOptions {
+   identity: AutomatonIdentity;
+   config: AutomatonConfig;
+@@ -385,6 +411,7 @@ export async function runAgentLoop(
+       orchestrator = undefined;
+     }
+   }
++  persistentOrchestrator = orchestrator;
+ 
+   // Set start time
+   if (!db.getKV("start_time")) {
+diff --git a/src/index.ts b/src/index.ts
+index 1e476fb..23c85e6 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -21,7 +21,7 @@ import {
+   syncHeartbeatToDb,
+ } from "./heartbeat/config.js";
+ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+-import { runAgentLoop } from "./agent/loop.js";
++import { runAgentLoop, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+ import { loadSkills } from "./skills/loader.js";
+ import { initStateRepo } from "./git/state-versioning.js";
+@@ -456,10 +456,10 @@ async function run(): Promise<void> {
+ 
+         // Sleep, but check for wake requests periodically
+         const checkInterval = Math.min(sleepMs, 30_000);
+-        let slept = 0;
+-        while (slept < sleepMs) {
++        const sleepStartedAt = Date.now();
++        let lastOrchestratorPhase: string | null = null;
++        while (Date.now() - sleepStartedAt < sleepMs) {
+           await sleep(checkInterval);
+-          slept += checkInterval;
+ 
+           // Phase 1.1: Check for wake events from wake_events table (atomic consume)
+           const wakeEvent = consumeNextWakeEvent(db.raw);
+@@ -470,6 +470,27 @@ async function run(): Promise<void> {
+             db.deleteKV("sleep_until");
+             break;
+           }
++
++          // Keep goals and local workers moving while the agent sleeps.
++          try {
++            const tick = await tickOrchestratorWhileSleeping();
++            if (tick) {
++              db.setKV("orchestrator.last_tick", JSON.stringify(tick));
++              if (tick.phase !== lastOrchestratorPhase) {
++                if (lastOrchestratorPhase !== null || tick.phase !== "idle") {
++                  logger.info(`[ORCHESTRATOR] (sleeping) phase -> ${tick.phase}`);
++                }
++                lastOrchestratorPhase = tick.phase;
++              }
++              if (tick.tasksAssigned > 0 || tick.tasksCompleted > 0 || tick.tasksFailed > 0) {
++                logger.info(
++                  `[ORCHESTRATOR] (sleeping) phase=${tick.phase} assigned=${tick.tasksAssigned} completed=${tick.tasksCompleted} failed=${tick.tasksFailed}`,
++                );
++              }
++            }
++          } catch (err: any) {
++            logger.warn(`[ORCHESTRATOR] Background tick failed: ${err?.message ?? String(err)}`);
++          }
+         }
+ 
+         // Clear sleep state

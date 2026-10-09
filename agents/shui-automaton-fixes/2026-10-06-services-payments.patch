@@ -1,0 +1,660 @@
+diff --git a/src/__tests__/services-payments.test.ts b/src/__tests__/services-payments.test.ts
+new file mode 100644
+index 0000000..2dc2d81
+--- /dev/null
++++ b/src/__tests__/services-payments.test.ts
+@@ -0,0 +1,77 @@
++import { describe, expect, it, vi } from "vitest";
++import { createServiceTools, isValidServiceName, isValidServicePort } from "../services/service-tools.js";
++import { buildSolanaPayUrl, createPaymentTools, PAYMENT_USDC_MINT, usdcReceived } from "../solana/payment-tools.js";
++
++const ctx = () => {
++  const kv = new Map<string, string>();
++  return {
++    identity: { address: "BqAnQqVdgz1CgDcfFprQ1CLfyEjbUUzVsS4szaZ49Rbo", chainIdentity: { address: "BqAnQqVdgz1CgDcfFprQ1CLfyEjbUUzVsS4szaZ49Rbo" } },
++    db: { getKV: (k: string) => kv.get(k), setKV: (k: string, v: string) => { kv.set(k, v); } },
++  } as any;
++};
++
++describe("service tools", () => {
++  it("validates names and ports before calling the root helper", async () => {
++    expect(isValidServiceName("arb-api")).toBe(true);
++    expect(isValidServiceName("x;rm -rf /")).toBe(false);
++    expect(isValidServicePort(8100)).toBe(true);
++    expect(isValidServicePort(22)).toBe(false);
++    const runner = vi.fn().mockResolvedValue({ ok: true, output: "url: https://a" });
++    const deploy = createServiceTools(runner).find((t) => t.name === "service_deploy")!;
++    expect(await deploy.execute({ name: "Bad Name", port: 8100 }, ctx())).toMatch(/^Blocked/);
++    expect(await deploy.execute({ name: "arb", port: 3333 }, ctx())).toMatch(/^Blocked/);
++    expect(runner).not.toHaveBeenCalled();
++  });
++
++  it("explains how to prepare run.sh when it is missing", async () => {
++    const runner = vi.fn();
++    const deploy = createServiceTools(runner).find((t) => t.name === "service_deploy")!;
++    const out = await deploy.execute({ name: "no-such-service-xyz", port: 8100 }, ctx());
++    expect(out).toContain("run.sh");
++    expect(out).toContain("127.0.0.1:$PORT");
++    expect(runner).not.toHaveBeenCalled();
++  });
++
++  it("lists services through the helper", async () => {
++    const runner = vi.fn().mockResolvedValue({ ok: true, output: "no published service" });
++    const status = createServiceTools(runner).find((t) => t.name === "service_status")!;
++    expect(await status.execute({}, ctx())).toBe("no published service");
++    expect(runner).toHaveBeenCalledWith(["list"]);
++  });
++});
++
++describe("payment tools (Solana Pay, USDC)", () => {
++  it("builds a Solana Pay URL to the central wallet", () => {
++    const url = buildSolanaPayUrl({ recipient: "WALLET", amountUsdc: 2.5, reference: "REF", label: "Arb API", message: "1 month" });
++    expect(url.startsWith("solana:WALLET?")).toBe(true);
++    expect(url).toContain("amount=2.5");
++    expect(url).toContain(`spl-token=${PAYMENT_USDC_MINT}`);
++    expect(url).toContain("reference=REF");
++  });
++
++  it("measures USDC received by the wallet in a transaction", () => {
++    const tx = { meta: { err: null,
++      preTokenBalances: [{ mint: PAYMENT_USDC_MINT, owner: "W", uiTokenAmount: { amount: "1000000" } }],
++      postTokenBalances: [{ mint: PAYMENT_USDC_MINT, owner: "W", uiTokenAmount: { amount: "3500000" } }] } };
++    expect(usdcReceived(tx, "W")).toBe(2.5);
++    expect(usdcReceived(tx, "OTHER")).toBe(0);
++    expect(usdcReceived({ meta: { ...tx.meta, err: { x: 1 } } }, "W")).toBe(0);
++  });
++
++  it("creates a request and confirms it once paid on-chain", async () => {
++    const c = ctx();
++    const chain = {
++      findSignatures: vi.fn().mockResolvedValue(["SIG"]),
++      getParsed: vi.fn().mockResolvedValue({ meta: { err: null,
++        preTokenBalances: [],
++        postTokenBalances: [{ mint: PAYMENT_USDC_MINT, owner: c.identity.address, uiTokenAmount: { amount: "2000000" } }] } }),
++    };
++    const [request, check] = createPaymentTools(() => chain);
++    const created = JSON.parse(await request.execute({ amountUsdc: 2, label: "Arb API" }, c));
++    expect(created.url).toContain(`solana:${c.identity.address}?`);
++    const paid = JSON.parse(await check.execute({ reference: created.reference }, c));
++    expect(paid.status).toBe("paid");
++    expect(paid.signature).toBe("SIG");
++    expect(await request.execute({ amountUsdc: -1 }, c)).toMatch(/^Blocked/);
++  });
++});
+diff --git a/src/agent/harnesses/coding-harness.ts b/src/agent/harnesses/coding-harness.ts
+index a42936f..a05f1ea 100644
+--- a/src/agent/harnesses/coding-harness.ts
++++ b/src/agent/harnesses/coding-harness.ts
+@@ -4,6 +4,7 @@ import path from "node:path";
+ import type { TaskResult } from "../../orchestration/task-graph.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { SERVICES_ROOT } from "../../services/service-tools.js";
+ import { buildWorkerEnvironmentSection, isProtectedForWorker } from "./worker-environment.js";
+ import type { HarnessTool } from "../harness-types.js";
+ import { getForbiddenCommandMatch, isForbiddenCommand } from "../policy-rules/command-safety.js";
+@@ -296,7 +297,7 @@ function confineToWorkspace(
+     : filePath;
+   const resolved = path.resolve(baseRoot, expanded);
+   const isInside = (root: string) => resolved === root || resolved.startsWith(root + path.sep);
+-  if (!isInside(allowedRoot) && !isInside(baseRoot)) {
++  if (!isInside(allowedRoot) && !isInside(baseRoot) && !isInside(SERVICES_ROOT)) {
+     return { error: `Blocked: path "${filePath}" resolves outside workspace (${baseRoot})` };
+   }
+   return resolved;
+diff --git a/src/agent/harnesses/general-harness.ts b/src/agent/harnesses/general-harness.ts
+index aef5fc0..d9ff7a5 100644
+--- a/src/agent/harnesses/general-harness.ts
++++ b/src/agent/harnesses/general-harness.ts
+@@ -4,6 +4,8 @@ import path from "node:path";
+ import type { AutomatonTool, SpendTrackerInterface } from "../../types.js";
+ import { isProtectedFile } from "../../self-mod/code.js";
+ import { BaseHarness } from "./base-harness.js";
++import { readOnlyWebFetch } from "../web-fetch.js";
++import { SERVICES_ROOT } from "../../services/service-tools.js";
+ import { buildWorkerEnvironmentSection, isProtectedForWorker } from "./worker-environment.js";
+ import type { HarnessTool } from "../harness-types.js";
+ import { sanitizeToolResult } from "../injection-defense.js";
+@@ -496,60 +498,6 @@ When calling task_done, provide:
+   }
+ }
+ 
+-const WEB_FETCH_TIMEOUT_MS = 20_000;
+-const WEB_FETCH_MAX_CHARS = 12_000;
+-
+-/**
+- * Plain read-only GET for workers. web_fetch used to be an alias of
+- * x402_fetch (a payment tool whose allowlist only contains conway.tech), so
+- * workers could not read any market API and wrote services on invented data.
+- * Local and private network addresses stay blocked.
+- */
+-export async function readOnlyWebFetch(rawUrl: string): Promise<string> {
+-  let url: URL;
+-  try {
+-    url = new URL(rawUrl.trim());
+-  } catch {
+-    return `Error: invalid URL "${rawUrl}"`;
+-  }
+-  if (url.protocol !== "https:" && url.protocol !== "http:") {
+-    return `Error: only http(s) URLs are allowed`;
+-  }
+-  if (isPrivateHost(url.hostname)) {
+-    return `Error: local or private network addresses are not allowed (${url.hostname})`;
+-  }
+-  try {
+-    const response = await fetch(url, {
+-      method: "GET",
+-      redirect: "follow",
+-      signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+-      headers: { "User-Agent": "shui-worker/1.0", Accept: "application/json, text/*;q=0.9, */*;q=0.5" },
+-    });
+-    const body = await response.text();
+-    const truncated = body.length > WEB_FETCH_MAX_CHARS
+-      ? `${body.slice(0, WEB_FETCH_MAX_CHARS)}\n[truncated: ${body.length} chars total]`
+-      : body;
+-    return `HTTP ${response.status} ${response.statusText}\n${truncated}`;
+-  } catch (error) {
+-    return `Error: fetch failed: ${error instanceof Error ? error.message : String(error)}`;
+-  }
+-}
+-
+-function isPrivateHost(hostname: string): boolean {
+-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
+-    return true;
+-  }
+-  if (host === "::1" || host === "::" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) {
+-    return host.includes(":");
+-  }
+-  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+-  if (!m) return false;
+-  const [a, b] = [Number(m[1]), Number(m[2])];
+-  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+-    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+-}
+-
+ function confineToWorkspace(
+   filePath: string,
+   allowedRoot: string,
+@@ -574,7 +522,8 @@ function confineToWorkspace(
+ 
+   if (
+     !isInside(resolved, normalizedAllowedRoot) &&
+-    !(normalizedWorkspaceRoot && isInside(resolved, normalizedWorkspaceRoot))
++    !(normalizedWorkspaceRoot && isInside(resolved, normalizedWorkspaceRoot)) &&
++    !isInside(resolved, SERVICES_ROOT)
+   ) {
+     return {
+       error: `Blocked: path "${filePath}" resolves outside allowed roots`,
+diff --git a/src/agent/harnesses/worker-environment.ts b/src/agent/harnesses/worker-environment.ts
+index d2742e9..7fb7c4f 100644
+--- a/src/agent/harnesses/worker-environment.ts
++++ b/src/agent/harnesses/worker-environment.ts
+@@ -26,8 +26,10 @@ export function buildWorkerEnvironmentSection(workspaceRoot: string): string {
+   Services you write should call such APIs at runtime the same way.
+ - Never invent, hardcode or simulate market data, balances or trades and present
+   them as real. If you cannot get real data, say so in task_done.
+-- Listening ports on this server are not reachable from the internet; do not
+-  claim a public URL.`;
++- To publish a service on the internet: put it in /srv/shui/services/<name>/ with an
++  executable run.sh that starts it in the foreground on 127.0.0.1:$PORT, then call
++  service_deploy (name, port 8100-8199). Only service_deploy gives a public URL;
++  other ports are not reachable. To get paid, use payment_request (USDC, Solana Pay).`;
+ }
+ 
+ /**
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 99f62be..0ce5db5 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -950,6 +950,8 @@ export async function runAgentLoop(
+         "message_child",
+         "remember_fact",
+         "recall_facts",
++        "web_fetch",
++        "service_status",
+       ]);
+ 
+       const toolGroups: Record<string, string[]> = {
+@@ -961,6 +963,8 @@ export async function runAgentLoop(
+           "solana_transfer",
+           "solana_get_transactions",
+           "check_usdc_balance",
++          "payment_request",
++          "payment_check",
+         ],
+         finance: [
+           "check_credits",
+@@ -1019,6 +1023,10 @@ export async function runAgentLoop(
+           "register_domain",
+           "manage_dns",
+           "install_mcp_server",
++          "service_deploy",
++          "service_stop",
++          "service_status",
++          "service_logs",
+         ],
+         skills: [
+           "list_skills",
+@@ -1098,7 +1106,7 @@ export async function runAgentLoop(
+       activate("goals", /goal|objective|plan|task|orchestrat|mission|todo/);
+       activate("agents", /agent|worker|child|delegate|delegat|message|reputation/);
+       activate("development", /code|coding|develop|api|typescript|javascript|node|npm|file|git|build|test|debug|service|software/);
+-      activate("infrastructure", /sandbox|server|port|domain|dns|deploy|hosting|infrastructure|mcp/);
++      activate("infrastructure", /sandbox|server|port|domain|dns|deploy|hosting|infrastructure|mcp|service|publish|website|web app|customer|sell/);
+       activate("skills", /skill|capabilit|plugin/);
+       activate("memory", /memory|remember|recall|procedure|fact|forget/);
+       activate("self", /soul|genesis|heartbeat|identity|self[- ]mod|low.compute/);
+diff --git a/src/agent/system-prompt.ts b/src/agent/system-prompt.ts
+index c2ae15f..7815a62 100644
+--- a/src/agent/system-prompt.ts
++++ b/src/agent/system-prompt.ts
+@@ -50,8 +50,8 @@ self-modification, continuous operation. Conway services are optional and
+ currently unavailable to you.
+ 
+ Machine facts: no root, no Docker, no \`solana\` command-line tool. Python works through
+-\`python3 -m venv\` (system pip is blocked). Ports you open are not reachable from the
+-internet unless your creator exposes them.${chainType === "solana" ? " Your wallet can hold and trade any SPL token; 0.01 SOL always stays reserved for network fees and token-account rent." : ""}
++\`python3 -m venv\` (system pip is blocked). To put a service on the internet, use
++service_deploy (HTTPS URL); other ports are not reachable. To get paid, use payment_request.${chainType === "solana" ? " Your wallet can hold and trade any SPL token; 0.01 SOL always stays reserved for network fees and token-account rent." : ""}
+ 
+ If you create value, you live longer. If you don't, your life runs out.`;
+ }
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index fdf9157..8991e01 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -1,4 +1,7 @@
+ import { createRaydiumSwapTool } from "../solana/swap-tool.js";
++import { createPaymentTools } from "../solana/payment-tools.js";
++import { createServiceTools } from "../services/service-tools.js";
++import { readOnlyWebFetch } from "./web-fetch.js";
+ import { createSolanaTransactionsTool, createSolanaTransferTool } from "../solana/wallet-tools.js";
+ /**
+  * Automaton Tool System
+@@ -117,6 +120,22 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
+     createRaydiumSwapTool(),
+     createSolanaTransferTool(),
+     createSolanaTransactionsTool(),
++    ...createPaymentTools(),
++    ...createServiceTools(),
++    {
++      name: "web_fetch",
++      description:
++        "Read a public web page or JSON API with an HTTP GET (no payment, no request body): documentation, " +
++        "market data (Raydium, Jupiter, CoinGecko...), competitors. Returns the HTTP status and the start of the body.",
++      category: "vm",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: { url: { type: "string", description: "Full http(s) URL to read" } },
++        required: ["url"],
++      },
++      execute: async (args) => readOnlyWebFetch(String(args.url ?? "")),
++    },
+     // ── Solana Read-Only Tools ─────────────────────────────────
+     {
+       name: "solana_get_balance",
+diff --git a/src/agent/web-fetch.ts b/src/agent/web-fetch.ts
+new file mode 100644
+index 0000000..320fc9d
+--- /dev/null
++++ b/src/agent/web-fetch.ts
+@@ -0,0 +1,56 @@
++// Read-only HTTP GET shared by SHUI and its workers.
++
++const WEB_FETCH_TIMEOUT_MS = 20_000;
++const WEB_FETCH_MAX_CHARS = 12_000;
++
++/**
++ * Plain read-only GET for workers. web_fetch used to be an alias of
++ * x402_fetch (a payment tool whose allowlist only contains conway.tech), so
++ * workers could not read any market API and wrote services on invented data.
++ * Local and private network addresses stay blocked.
++ */
++export async function readOnlyWebFetch(rawUrl: string): Promise<string> {
++  let url: URL;
++  try {
++    url = new URL(rawUrl.trim());
++  } catch {
++    return `Error: invalid URL "${rawUrl}"`;
++  }
++  if (url.protocol !== "https:" && url.protocol !== "http:") {
++    return `Error: only http(s) URLs are allowed`;
++  }
++  if (isPrivateHost(url.hostname)) {
++    return `Error: local or private network addresses are not allowed (${url.hostname})`;
++  }
++  try {
++    const response = await fetch(url, {
++      method: "GET",
++      redirect: "follow",
++      signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
++      headers: { "User-Agent": "shui-worker/1.0", Accept: "application/json, text/*;q=0.9, */*;q=0.5" },
++    });
++    const body = await response.text();
++    const truncated = body.length > WEB_FETCH_MAX_CHARS
++      ? `${body.slice(0, WEB_FETCH_MAX_CHARS)}\n[truncated: ${body.length} chars total]`
++      : body;
++    return `HTTP ${response.status} ${response.statusText}\n${truncated}`;
++  } catch (error) {
++    return `Error: fetch failed: ${error instanceof Error ? error.message : String(error)}`;
++  }
++}
++
++function isPrivateHost(hostname: string): boolean {
++  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
++  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
++    return true;
++  }
++  if (host === "::1" || host === "::" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) {
++    return host.includes(":");
++  }
++  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
++  if (!m) return false;
++  const [a, b] = [Number(m[1]), Number(m[2])];
++  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
++    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
++}
++
+diff --git a/src/services/service-tools.ts b/src/services/service-tools.ts
+new file mode 100644
+index 0000000..36fbbc2
+--- /dev/null
++++ b/src/services/service-tools.ts
+@@ -0,0 +1,133 @@
++import { execFile } from "node:child_process";
++import { promises as fs, constants as fsConstants } from "node:fs";
++import path from "node:path";
++import type { AutomatonTool } from "../types.js";
++
++/**
++ * Public services for SHUI. The creator installs, once and as root, a helper
++ * (/usr/local/sbin/shui-service) that SHUI may run through sudo and nothing
++ * else. The helper runs each service as the unprivileged user `shui-svc` in a
++ * systemd sandbox without access to /home (the wallet key stays out of reach
++ * even if a service is compromised) and publishes it over HTTPS with Caddy.
++ */
++export const SERVICES_ROOT = "/srv/shui/services";
++export const SERVICE_HELPER = "/usr/local/sbin/shui-service";
++export const SERVICE_PORT_MIN = 8100;
++export const SERVICE_PORT_MAX = 8199;
++const NAME_PATTERN = /^[a-z][a-z0-9-]{1,30}$/;
++const HELPER_TIMEOUT_MS = 90_000;
++
++export function isValidServiceName(name: string): boolean {
++  return NAME_PATTERN.test(name);
++}
++
++export function isValidServicePort(port: number): boolean {
++  return Number.isInteger(port) && port >= SERVICE_PORT_MIN && port <= SERVICE_PORT_MAX;
++}
++
++export type HelperRunner = (args: string[]) => Promise<{ ok: boolean; output: string }>;
++
++export const runServiceHelper: HelperRunner = (args) =>
++  new Promise((resolve) => {
++    execFile("sudo", ["-n", SERVICE_HELPER, ...args], { timeout: HELPER_TIMEOUT_MS, maxBuffer: 512 * 1024 }, (error, stdout, stderr) => {
++      const output = `${stdout ?? ""}${stderr ? `\n${stderr}` : ""}`.trim();
++      if (error && /a password is required|no tty present|not allowed|command not found|No such file/i.test(output + error.message)) {
++        resolve({
++          ok: false,
++          output: "Service hosting is not installed on this server yet (the creator must run setup-services.sh once). " + output,
++        });
++        return;
++      }
++      resolve({ ok: !error, output: output || (error ? error.message : "ok") });
++    });
++  });
++
++async function checkRunScript(name: string): Promise<string | null> {
++  const runScript = path.join(SERVICES_ROOT, name, "run.sh");
++  try {
++    await fs.access(runScript, fsConstants.X_OK);
++    return null;
++  } catch {
++    return `Missing ${runScript} (or not executable). Put the service in ${path.join(SERVICES_ROOT, name)}/ ` +
++      `with an executable run.sh (chmod 755) that starts it in the foreground and listens on 127.0.0.1:$PORT ` +
++      `(for Python: create .venv there and use .venv/bin/python). Then call service_deploy again.`;
++  }
++}
++
++export function createServiceTools(runner: HelperRunner = runServiceHelper): AutomatonTool[] {
++  const nameParam = { type: "string", description: "Service name: lowercase letters, digits, dashes (2-31 chars)." };
++  return [
++    {
++      name: "service_deploy",
++      description:
++        `Publish a service on the internet over HTTPS so that people can use it (and pay for it). ` +
++        `Put the code in ${SERVICES_ROOT}/<name>/ with an executable run.sh that starts it in the foreground on ` +
++        `127.0.0.1:$PORT. It runs as a sandboxed user with no access to /home, restarts on failure and survives ` +
++        `reboots. Returns the public URL. Port must be ${SERVICE_PORT_MIN}-${SERVICE_PORT_MAX}. Redeploy to restart it.`,
++      category: "vm",
++      riskLevel: "caution",
++      parameters: {
++        type: "object",
++        properties: {
++          name: nameParam,
++          port: { type: "number", description: `Local port ${SERVICE_PORT_MIN}-${SERVICE_PORT_MAX}, passed to run.sh as $PORT.` },
++        },
++        required: ["name", "port"],
++      },
++      execute: async (args) => {
++        const name = String(args.name ?? "");
++        const port = Number(args.port);
++        if (!isValidServiceName(name)) return "Blocked: invalid service name.";
++        if (!isValidServicePort(port)) return `Blocked: port must be an integer between ${SERVICE_PORT_MIN} and ${SERVICE_PORT_MAX}.`;
++        const missing = await checkRunScript(name);
++        if (missing) return missing;
++        const result = await runner(["deploy", name, String(port)]);
++        return result.ok ? result.output : `Deploy failed: ${result.output}`;
++      },
++    },
++    {
++      name: "service_stop",
++      description: "Stop a published service and remove its public URL. Its files are kept.",
++      category: "vm",
++      riskLevel: "caution",
++      parameters: { type: "object", properties: { name: nameParam }, required: ["name"] },
++      execute: async (args) => {
++        const name = String(args.name ?? "");
++        if (!isValidServiceName(name)) return "Blocked: invalid service name.";
++        const result = await runner(["stop", name]);
++        return result.ok ? result.output : `Stop failed: ${result.output}`;
++      },
++    },
++    {
++      name: "service_status",
++      description: "List published services with their state, port and public URL (or one service if name is given).",
++      category: "vm",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: { name: nameParam } },
++      execute: async (args) => {
++        const name = args.name === undefined ? "" : String(args.name);
++        if (name && !isValidServiceName(name)) return "Blocked: invalid service name.";
++        const result = await runner(name ? ["status", name] : ["list"]);
++        return result.output;
++      },
++    },
++    {
++      name: "service_logs",
++      description: "Read the last log lines of a published service (to debug it).",
++      category: "vm",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: { name: nameParam, lines: { type: "number", description: "Number of lines (max 200)." } },
++        required: ["name"],
++      },
++      execute: async (args) => {
++        const name = String(args.name ?? "");
++        if (!isValidServiceName(name)) return "Blocked: invalid service name.";
++        const lines = Math.min(200, Math.max(1, Math.floor(Number(args.lines ?? 80)) || 80));
++        const result = await runner(["logs", name, String(lines)]);
++        return result.output;
++      },
++    },
++  ];
++}
+diff --git a/src/solana/payment-tools.ts b/src/solana/payment-tools.ts
+new file mode 100644
+index 0000000..db64acc
+--- /dev/null
++++ b/src/solana/payment-tools.ts
+@@ -0,0 +1,156 @@
++import { Connection, Keypair, PublicKey } from "@solana/web3.js";
++import type { AutomatonDatabase, AutomatonTool, ToolContext } from "../types.js";
++import { DEFAULT_SOLANA_RPC } from "./trading.js";
++
++/**
++ * Solana Pay payment requests in USDC to SHUI's central wallet. A customer
++ * pays from any Solana wallet; incoming USDC is already counted as revenue by
++ * the ledger scan, these tools only create the link and confirm a payment.
++ */
++export const PAYMENT_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const USDC_DECIMALS = 6;
++const KV_PREFIX = "payment.request.";
++
++export interface PaymentRequest {
++  reference: string;
++  recipient: string;
++  amountUsdc: number;
++  label: string;
++  message: string;
++  createdAt: string;
++  status: "pending" | "paid";
++  signature?: string;
++  receivedUsdc?: number;
++}
++
++function walletAddress(ctx: ToolContext): string {
++  return ctx.identity.chainIdentity?.address ?? ctx.identity.address;
++}
++
++export function buildSolanaPayUrl(request: Pick<PaymentRequest, "recipient" | "amountUsdc" | "reference" | "label" | "message">): string {
++  const params = new URLSearchParams({
++    amount: request.amountUsdc.toFixed(USDC_DECIMALS).replace(/\.?0+$/, ""),
++    "spl-token": PAYMENT_USDC_MINT,
++    reference: request.reference,
++  });
++  if (request.label) params.set("label", request.label);
++  if (request.message) params.set("message", request.message);
++  return `solana:${request.recipient}?${params.toString()}`;
++}
++
++function save(db: AutomatonDatabase, request: PaymentRequest): void {
++  db.setKV(KV_PREFIX + request.reference, JSON.stringify(request));
++}
++
++function load(db: AutomatonDatabase, reference: string): PaymentRequest | null {
++  const raw = db.getKV(KV_PREFIX + reference);
++  if (!raw) return null;
++  try {
++    return JSON.parse(raw) as PaymentRequest;
++  } catch {
++    return null;
++  }
++}
++
++type ParsedTx = {
++  meta?: {
++    err?: unknown;
++    preTokenBalances?: Array<{ mint: string; owner?: string; uiTokenAmount: { amount: string } }>;
++    postTokenBalances?: Array<{ mint: string; owner?: string; uiTokenAmount: { amount: string } }>;
++  } | null;
++} | null;
++
++/** USDC received by `owner` in a parsed transaction (post - pre), in USDC. */
++export function usdcReceived(tx: ParsedTx, owner: string): number {
++  if (!tx?.meta || tx.meta.err) return 0;
++  const sum = (list?: Array<{ mint: string; owner?: string; uiTokenAmount: { amount: string } }>) =>
++    (list ?? [])
++      .filter((b) => b.mint === PAYMENT_USDC_MINT && b.owner === owner)
++      .reduce((total, b) => total + BigInt(b.uiTokenAmount.amount), 0n);
++  const delta = sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances);
++  return delta > 0n ? Number(delta) / 10 ** USDC_DECIMALS : 0;
++}
++
++export interface PaymentChain {
++  findSignatures(reference: string): Promise<string[]>;
++  getParsed(signature: string): Promise<ParsedTx>;
++}
++
++function rpcChain(): PaymentChain {
++  const connection = new Connection(DEFAULT_SOLANA_RPC, "confirmed");
++  return {
++    findSignatures: async (reference) =>
++      (await connection.getSignaturesForAddress(new PublicKey(reference), { limit: 10 }, "confirmed"))
++        .filter((s) => !s.err)
++        .map((s) => s.signature),
++    getParsed: async (signature) =>
++      (await connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" })) as ParsedTx,
++  };
++}
++
++export function createPaymentTools(chain: () => PaymentChain = rpcChain): AutomatonTool[] {
++  return [
++    {
++      name: "payment_request",
++      description:
++        "Create a Solana Pay payment link asking a customer to pay an amount of USDC to your central wallet " +
++        "(works with Phantom, Solflare, etc.; show it as a link or QR code in your service). Returns the URL and a " +
++        "reference to check the payment with payment_check. Received USDC counts as revenue in your daily gain.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: {
++          amountUsdc: { type: "number", description: "Amount to request in USDC, e.g. 2.5" },
++          label: { type: "string", description: "Short name shown to the payer (your service name)." },
++          message: { type: "string", description: "What the payment is for." },
++        },
++        required: ["amountUsdc"],
++      },
++      execute: async (args, ctx) => {
++        const amountUsdc = Number(args.amountUsdc);
++        if (!Number.isFinite(amountUsdc) || amountUsdc <= 0 || amountUsdc > 1_000_000) {
++          return "Blocked: amountUsdc must be a positive number.";
++        }
++        const request: PaymentRequest = {
++          reference: Keypair.generate().publicKey.toBase58(),
++          recipient: walletAddress(ctx),
++          amountUsdc: Math.round(amountUsdc * 10 ** USDC_DECIMALS) / 10 ** USDC_DECIMALS,
++          label: String(args.label ?? "SHUI").slice(0, 60),
++          message: String(args.message ?? "").slice(0, 140),
++          createdAt: new Date().toISOString(),
++          status: "pending",
++        };
++        save(ctx.db, request);
++        return JSON.stringify({ url: buildSolanaPayUrl(request), reference: request.reference, amountUsdc: request.amountUsdc });
++      },
++    },
++    {
++      name: "payment_check",
++      description: "Check whether a payment request created with payment_request has been paid on-chain.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: { reference: { type: "string", description: "Reference returned by payment_request." } },
++        required: ["reference"],
++      },
++      execute: async (args, ctx) => {
++        const reference = String(args.reference ?? "");
++        const request = load(ctx.db, reference);
++        if (!request) return `Unknown payment reference "${reference}".`;
++        if (request.status === "paid") return JSON.stringify(request);
++        const rpc = chain();
++        for (const signature of await rpc.findSignatures(reference)) {
++          const received = usdcReceived(await rpc.getParsed(signature), request.recipient);
++          if (received + 1e-9 >= request.amountUsdc) {
++            const paid: PaymentRequest = { ...request, status: "paid", signature, receivedUsdc: received };
++            save(ctx.db, paid);
++            return JSON.stringify(paid);
++          }
++        }
++        return JSON.stringify({ ...request, status: "pending" });
++      },
++    },
++  ];
++}

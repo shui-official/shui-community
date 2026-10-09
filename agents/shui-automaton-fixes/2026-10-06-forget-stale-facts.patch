@@ -1,0 +1,109 @@
+diff --git a/src/__tests__/janitor.test.ts b/src/__tests__/janitor.test.ts
+index fd65271..d8e08bb 100644
+--- a/src/__tests__/janitor.test.ts
++++ b/src/__tests__/janitor.test.ts
+@@ -117,3 +117,30 @@ describe("janitor", () => {
+     expect(claimInboxMessages(db.raw, 10)).toHaveLength(0);
+   });
+ });
++
++describe("forgetting what is no longer true", () => {
++  it("forgets unpaid payment links older than 3 days, keeps paid and recent ones", async () => {
++    const { db, paths } = setup();
++    const ins = db.raw.prepare("INSERT INTO semantic_memory (id, category, key, value, source, updated_at) VALUES (?, 'financial', ?, ?, 's', ?)");
++    ins.run("1", "payment_request_5usdc_pending", "Created payment request for $5 (pending)", "2020-01-01 00:00:00");
++    ins.run("2", "payment_request_sale", "Payment request was paid: 3 USDC", "2020-01-01 00:00:00");
++    ins.run("3", "payment_request_new", "Created payment request for $1", new Date().toISOString().replace("T", " ").slice(0, 19));
++    ins.run("4", "initial_balance_usdc", "24.37", "2020-01-01 00:00:00");
++    const report = await runJanitor({ db: db.raw, paths, helper: noServices, untracked: async () => [] });
++    expect(report.forgottenPaymentFacts).toBe(1);
++    expect((db.raw.prepare("SELECT key FROM semantic_memory ORDER BY key").all() as any[]).map((r) => r.key))
++      .toEqual(["initial_balance_usdc", "payment_request_new", "payment_request_sale"]);
++  });
++
++  it("forgets a tool's recorded failures once the tool works again", async () => {
++    const { MemoryIngestionPipeline } = await import("../memory/ingestion.js");
++    const { db } = setup();
++    db.raw.prepare("INSERT INTO semantic_memory (id, category, key, value, source) VALUES ('e', 'environment', 'tool_error:raydium_swap:BUILD_FAILED', 'raydium_swap fails', 's')").run();
++    db.raw.prepare("INSERT INTO semantic_memory (id, category, key, value, source) VALUES ('f', 'environment', 'tool_error:jupiter_swap:RATE_LIMIT', 'jupiter fails', 's')").run();
++    const turn = { id: "t", timestamp: new Date().toISOString(), state: "running", thinking: "", tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, costCents: 0,
++      toolCalls: [{ id: "c", name: "raydium_swap", arguments: {}, result: '{"dryRun":true,"wouldSucceed":true}', durationMs: 1 }] } as any;
++    new MemoryIngestionPipeline(db.raw).ingest("s", turn, turn.toolCalls);
++    expect((db.raw.prepare("SELECT key FROM semantic_memory WHERE key LIKE 'tool_error:%'").all() as any[]).map((r) => r.key))
++      .toEqual(["tool_error:jupiter_swap:RATE_LIMIT"]);
++  });
++});
+diff --git a/src/maintenance/janitor.ts b/src/maintenance/janitor.ts
+index 2140e78..7e76632 100644
+--- a/src/maintenance/janitor.ts
++++ b/src/maintenance/janitor.ts
+@@ -24,6 +24,7 @@ const BROKEN_SERVICE_MIN_CHECKS = 3;
+ const UNDEPLOYED_SERVICE_MS = 48 * HOUR;
+ const EVENT_KEEP_MS = 3 * 24 * HOUR;
+ const ARCHIVE_KEEP_DAYS = 14;
++const PAYMENT_FACT_DAYS = 3;
+ const REPO_JUNK = /arbitrage|trader|trading|api[_-]?server|defi|revenue|monetiz|deploy_service|value_creation|final_deployment|dashboard|analy[sz]er|scanner|monitor|bot[_-]/i;
+ 
+ export interface JanitorPaths {
+@@ -66,6 +67,7 @@ export interface JanitorReport {
+   archivedRepoFiles: string[];
+   prunedEvents: number;
+   deletedArchives: string[];
++  forgottenPaymentFacts: number;
+ }
+ 
+ const defaultProbe = async (url: string): Promise<number | null> => {
+@@ -160,7 +162,7 @@ export async function runJanitor(deps: JanitorDeps): Promise<JanitorReport> {
+   const archiveDir = path.join(paths.archiveRoot, `janitor-${now.toISOString().slice(0, 10)}`);
+   const report: JanitorReport = {
+     cancelledGoals: [], archivedWorkspaces: [], stoppedServices: [], archivedServiceFolders: [],
+-    archivedRepoFiles: [], prunedEvents: 0, deletedArchives: [],
++    archivedRepoFiles: [], prunedEvents: 0, deletedArchives: [], forgottenPaymentFacts: 0,
+   };
+ 
+   // c) Abandoned goals: active, but no task completed for STALE_GOAL_MS.
+@@ -257,6 +259,16 @@ export async function runJanitor(deps: JanitorDeps): Promise<JanitorReport> {
+     if (await moveToArchive(path.join(paths.repoRoot, name), archiveDir)) report.archivedRepoFiles.push(name);
+   }
+ 
++  // g) Remembered payment links never paid after PAYMENT_FACT_DAYS: they read
++  //    like money to come. Ledger and the payment requests themselves stay.
++  if (tableExists(db, "semantic_memory")) {
++    const cutoff = new Date(now.getTime() - PAYMENT_FACT_DAYS * 24 * HOUR).toISOString().replace("T", " ").slice(0, 19);
++    report.forgottenPaymentFacts = db.prepare(
++      `DELETE FROM semantic_memory WHERE category = 'financial' AND key LIKE 'payment_request%'
++       AND updated_at < ? AND lower(value) NOT LIKE '% paid%'`,
++    ).run(cutoff).changes;
++  }
++
+   // e) Old planner "recent outcomes".
+   if (tableExists(db, "event_stream")) {
+     const cutoff = new Date(now.getTime() - EVENT_KEEP_MS).toISOString();
+@@ -288,6 +300,7 @@ export function summarizeJanitor(r: JanitorReport): string {
+   if (r.archivedServiceFolders.length) parts.push(`archived service folder(s): ${r.archivedServiceFolders.join(", ")}`);
+   if (r.archivedWorkspaces.length) parts.push(`archived ${r.archivedWorkspaces.length} old work folder(s)`);
+   if (r.archivedRepoFiles.length) parts.push(`archived stray files from your code folder: ${r.archivedRepoFiles.join(", ")}`);
++  if (r.forgottenPaymentFacts) parts.push(`forgot ${r.forgottenPaymentFacts} unpaid payment link(s) older than 3 days (they were never revenue)`);
+   if (r.prunedEvents) parts.push(`forgot ${r.prunedEvents} planner events older than 3 days`);
+   if (r.deletedArchives.length) parts.push(`deleted archives older than 14 days: ${r.deletedArchives.join(", ")}`);
+   if (parts.length === 0) return "";
+diff --git a/src/memory/ingestion.ts b/src/memory/ingestion.ts
+index 89731c4..3b3b337 100644
+--- a/src/memory/ingestion.ts
++++ b/src/memory/ingestion.ts
+@@ -647,6 +647,15 @@ export class MemoryIngestionPipeline {
+           continue;
+         }
+ 
++        // The tool works now: forget its old failures, which otherwise kept
++        // steering SHUI away from a fixed tool (raydium_swap after its fix).
++        try {
++          this.db.prepare("DELETE FROM semantic_memory WHERE category = 'environment' AND key LIKE ?")
++            .run(`tool_error:${tc.name}:%`);
++        } catch (errForget) {
++          logger.error("Forgetting fixed tool errors failed", errForget instanceof Error ? errForget : undefined);
++        }
++
+         // Extract facts from specific tool results
+         if (tc.name === "check_credits" && tc.result) {
+           this.semantic.store({

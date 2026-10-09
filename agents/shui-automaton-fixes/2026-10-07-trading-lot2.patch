@@ -1,0 +1,878 @@
+diff --git a/src/__tests__/lot2-trading.test.ts b/src/__tests__/lot2-trading.test.ts
+new file mode 100644
+index 0000000..32074a9
+--- /dev/null
++++ b/src/__tests__/lot2-trading.test.ts
+@@ -0,0 +1,102 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import { createDatabase, claimInboxMessages } from "../state/database.js";
++import { atrSeries, backtest, entrySignals, rsiSeries } from "../solana/backtest.js";
++import { listStrategies, runStrategyTick, saveStrategy, type Strategy } from "../solana/strategies.js";
++import { listOrders, runOrderTick, saveOrder } from "../solana/orders.js";
++import { classifyRegime } from "../solana/market-regime.js";
++import type { Candle } from "../solana/technical-analysis.js";
++
++const TOKEN = "TokenMint1111111111111111111111111111111111";
++const mk = (closes: number[]): Candle[] => closes.map((c, i) => ({ t: i * 3600, o: c, h: c * 1.01, l: c * 0.99, c, v: 100 }));
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot2-")), "s.db"));
++
++describe("backtest", () => {
++  it("computes indicator series without look-ahead and finds EMA cross signals", () => {
++    const closes = [...Array.from({ length: 40 }, (_, i) => 100 - i * 0.5), ...Array.from({ length: 40 }, (_, i) => 80 + i)];
++    const candles = mk(closes);
++    expect(rsiSeries(closes)[13]).toBeNull();
++    expect(atrSeries(candles)[20]).toBeGreaterThan(0);
++    const signals = entrySignals("ema_cross", candles);
++    expect(signals.filter(Boolean).length).toBeGreaterThanOrEqual(1);
++    expect(signals.slice(0, 40).some(Boolean)).toBe(false);
++  });
++
++  it("scores a trending market as winning and a falling one as losing, net of fees", () => {
++    const up = mk(Array.from({ length: 300 }, (_, i) => 100 + i * 0.4 + Math.sin(i / 6) * 8));
++    const rUp = backtest("ema_cross", up, { rr: 2 });
++    expect(rUp.trades.length).toBeGreaterThan(3);
++    expect(rUp.totalReturnPct).toBeGreaterThan(0);
++    const down = mk(Array.from({ length: 300 }, (_, i) => 300 - i * 0.4 + Math.sin(i / 6) * 8));
++    const rDown = backtest("ema_cross", down, { rr: 2 });
++    expect(rDown.totalReturnPct).toBeLessThan(0);
++    expect(rDown.maxDrawdownPct).toBeGreaterThan(0);
++  });
++});
++
++describe("strategy runner", () => {
++  const strategy = (over: Partial<Strategy> = {}): Strategy => ({
++    id: "stgA", mint: TOKEN, symbol: "TKN", timeframe: "1h", rule: "ema_cross", params: {}, sizeUsd: 5, active: true,
++    state: "flat", group: null, lastSignalTs: null, trades: 0, note: "", lastError: null, createdAt: "", updatedAt: "", ...over,
++  });
++  // Last closed candle is an EMA9/EMA21 cross up; the final (forming) candle is ignored.
++  const crossing = (): Candle[] => {
++    const closes = [...Array.from({ length: 60 }, (_, i) => 100 - i * 0.3), ...Array.from({ length: 8 }, (_, i) => 82 + i * 1.5)];
++    const candles = mk(closes);
++    const sig = entrySignals("ema_cross", candles);
++    const last = sig.lastIndexOf(true);
++    return candles.slice(0, last + 2);
++  };
++
++  it("buys on a new closed-candle signal and protects the position with OCO orders, once per candle", async () => {
++    const db = freshDb();
++    saveStrategy(db.raw, strategy());
++    const swap = vi.fn(async () => JSON.stringify({ success: true, signature: "SIG", journal: { outputAmountRaw: "4200" } }));
++    const deps = { db, chainIdentity: {} as any, candles: async () => crossing(), swap };
++    expect(await runStrategyTick(deps)).toEqual(["stgA"]);
++    expect(swap).toHaveBeenCalledWith(expect.objectContaining({ id: "stgA" }), "5000000");
++    const orders = listOrders(db.raw);
++    expect(orders.map((o) => o.kind).sort()).toEqual(["stop_loss", "take_profit"]);
++    expect(orders.every((o) => o.amount === "4200" && o.group === orders[0].group)).toBe(true);
++    const [stop, tp] = [orders.find((o) => o.kind === "stop_loss")!, orders.find((o) => o.kind === "take_profit")!];
++    expect(stop.triggerPriceUsd).toBeLessThan(tp.triggerPriceUsd);
++    expect(listStrategies(db.raw)[0]).toMatchObject({ state: "long", trades: 1 });
++    expect(claimInboxMessages(db.raw, 5)[0].content).toMatch(/BOUGHT \$5/);
++    expect(await runStrategyTick(deps)).toEqual([]); // still long: no second buy
++  });
++
++  it("goes back to flat when its OCO orders are closed, and records a refused buy without retrying the candle", async () => {
++    const db = freshDb();
++    saveStrategy(db.raw, strategy({ state: "long", group: "g1" }));
++    saveOrder(db.raw, { id: "g1_stop", kind: "stop_loss", inputMint: TOKEN, outputMint: TOKEN, amount: "1", watchMint: TOKEN, condition: "below", triggerPriceUsd: 1, slippageBps: 100, venue: "jupiter", note: "", createdAt: "", expiresAt: null, status: "filled", attempts: 1, updatedAt: "", group: "g1" });
++    const swap = vi.fn(async () => JSON.stringify({ success: false, blocked: true, reason: "DRAWDOWN_PAUSE" }));
++    const deps = { db, chainIdentity: {} as any, candles: async () => crossing(), swap };
++    await runStrategyTick(deps);
++    expect(listStrategies(db.raw)[0]).toMatchObject({ state: "flat", lastError: "DRAWDOWN_PAUSE" });
++    await runStrategyTick(deps);
++    expect(swap).toHaveBeenCalledTimes(1);
++  });
++});
++
++describe("price alerts", () => {
++  it("wakes SHUI without trading", async () => {
++    const db = freshDb();
++    saveOrder(db.raw, { id: "alr1", kind: "alert", inputMint: TOKEN, outputMint: TOKEN, amount: "0", watchMint: TOKEN, condition: "above", triggerPriceUsd: 2, slippageBps: 0, venue: "jupiter", note: "check breakout", createdAt: "", expiresAt: null, status: "open", attempts: 0, updatedAt: new Date().toISOString() });
++    const swap = vi.fn();
++    await runOrderTick({ db, chainIdentity: {} as any, prices: async () => ({ [TOKEN]: 2.1 }), swap });
++    expect(swap).not.toHaveBeenCalled();
++    expect(listOrders(db.raw)[0].status).toBe("filled");
++    expect(claimInboxMessages(db.raw, 5)[0].content).toMatch(/PRICE ALERT alr1.*check breakout/);
++  });
++});
++
++describe("market regime", () => {
++  it("classifies tailwinds and headwinds", () => {
++    const base = { btc24h: null, sol24h: null, solDexVolume24h: null };
++    expect(classifyRegime({ ...base, btc7d: 5, sol7d: 8, fearGreed: { value: 60, label: "Greed" }, solDexVolumeChange7d: 10, solDailyTrendUp: true }).regime).toBe("RISK-ON");
++    expect(classifyRegime({ ...base, btc7d: -6, sol7d: -12, fearGreed: { value: 20, label: "Extreme Fear" }, solDexVolumeChange7d: -40, solDailyTrendUp: false }).regime).toBe("RISK-OFF");
++    expect(classifyRegime({ ...base, btc7d: null, sol7d: null, fearGreed: null, solDexVolumeChange7d: null, solDailyTrendUp: null }).regime).toBe("NEUTRAL");
++  });
++});
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 66cf910..3311b86 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -1011,6 +1011,12 @@ export async function runAgentLoop(
+           "positions",
+           "token_safety",
+           "protect_position",
++          "price_alert",
++          "backtest",
++          "strategy_create",
++          "strategy_list",
++          "strategy_stop",
++          "market_regime",
+           "order_create",
+           "order_list",
+           "order_cancel",
+diff --git a/src/agent/tools.ts b/src/agent/tools.ts
+index f2c8a38..d56e7a6 100644
+--- a/src/agent/tools.ts
++++ b/src/agent/tools.ts
+@@ -5,6 +5,9 @@ import { createJupiterSwapTool } from "../solana/jupiter.js";
+ import { createMarketScanTool } from "../solana/market-scan.js";
+ import { createTechnicalAnalysisTools } from "../solana/technical-analysis.js";
+ import { createPortfolioTools } from "../solana/portfolio.js";
++import { createBacktestTool } from "../solana/backtest.js";
++import { createStrategyTools } from "../solana/strategies.js";
++import { createMarketRegimeTool } from "../solana/market-regime.js";
+ import { createTradingDeskTools, isTradingFocus, TRADING_FOCUS_HIDDEN_TOOLS } from "../solana/trading-desk.js";
+ import { createOrderTools } from "../solana/orders.js";
+ import { createPaymentTools } from "../solana/payment-tools.js";
+@@ -142,6 +145,9 @@ function createAllBuiltinTools(sandboxId: string): AutomatonTool[] {
+     ...createTechnicalAnalysisTools(),
+     ...createTradingDeskTools(),
+     ...createPortfolioTools(),
++    createBacktestTool(),
++    ...createStrategyTools(),
++    createMarketRegimeTool(),
+     ...createOrderTools(),
+     {
+       name: "web_fetch",
+diff --git a/src/index.ts b/src/index.ts
+index 815f550..17e4e1c 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -23,6 +23,7 @@ import {
+ import { consumeNextWakeEvent, insertWakeEvent } from "./state/database.js";
+ import { startCreatorChatServer } from "./integration/creator-chat.js";
+ import { startOrderExecutor } from "./solana/orders.js";
++import { startStrategyRunner } from "./solana/strategies.js";
+ import { startJanitor } from "./maintenance/janitor.js";
+ import { runAgentLoop, runLifespanTick, tickOrchestratorWhileSleeping } from "./agent/loop.js";
+ import { ModelRegistry } from "./inference/registry.js";
+@@ -398,6 +399,7 @@ async function run(): Promise<void> {
+   // Automatic orders (stop-loss, take-profit, buy_below) run without the model.
+   if (resolvedChainType === "solana" && chainIdentity.chainType === "solana") {
+     startOrderExecutor({ db, chainIdentity, log: (message) => logger.info(message) });
++    startStrategyRunner({ db, chainIdentity, log: (message) => logger.info(message) });
+   }
+ 
+   // Handle graceful shutdown
+diff --git a/src/orchestration/local-worker.ts b/src/orchestration/local-worker.ts
+index e6ec6b7..3a94a33 100644
+--- a/src/orchestration/local-worker.ts
++++ b/src/orchestration/local-worker.ts
+@@ -61,6 +61,8 @@ const WORKER_EXCLUDED_TOOLS = new Set([
+   "order_create",
+   "order_cancel",
+   "protect_position",
++  "strategy_create",
++  "strategy_stop",
+   "revert_last_edit",
+   "reset_to_upstream",
+   "review_upstream_changes",
+diff --git a/src/solana/backtest.ts b/src/solana/backtest.ts
+new file mode 100644
+index 0000000..9f3dada
+--- /dev/null
++++ b/src/solana/backtest.ts
+@@ -0,0 +1,226 @@
++/**
++ * Backtest: test a simple long-only rule on past candles before risking
++ * money. Signals are computed on closed candles only (no look-ahead). Each
++ * trade gets a stop at entry - stopAtr x ATR and a target at rr x the risk;
++ * if both are touched in the same candle the stop counts (pessimistic).
++ * Fees and slippage: feePct per side. Shared with the strategy runner.
++ */
++import type { AutomatonTool } from "../types.js";
++import { emaSeries, fetchCandles, type Candle, type Fetcher, defaultFetcher } from "./technical-analysis.js";
++
++export type Rule = "ema_cross" | "rsi_rebound" | "breakout";
++export const RULES: Rule[] = ["ema_cross", "rsi_rebound", "breakout"];
++
++export interface RuleParams {
++  fast?: number;
++  slow?: number;
++  rsiLevel?: number;
++  lookback?: number;
++  stopAtr?: number;
++  rr?: number;
++  maxBars?: number;
++  feePct?: number;
++}
++
++const defaults = (p: RuleParams) => ({
++  fast: p.fast ?? 9,
++  slow: p.slow ?? 21,
++  rsiLevel: p.rsiLevel ?? 30,
++  lookback: p.lookback ?? 20,
++  stopAtr: p.stopAtr ?? 1.5,
++  rr: p.rr ?? 2,
++  maxBars: p.maxBars ?? 48,
++  feePct: p.feePct ?? 0.25,
++});
++
++export function rsiSeries(closes: number[], n = 14): Array<number | null> {
++  const out: Array<number | null> = closes.map(() => null);
++  if (closes.length <= n) return out;
++  let gain = 0;
++  let loss = 0;
++  for (let i = 1; i <= n; i++) {
++    const d = closes[i] - closes[i - 1];
++    if (d >= 0) gain += d; else loss -= d;
++  }
++  gain /= n;
++  loss /= n;
++  out[n] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
++  for (let i = n + 1; i < closes.length; i++) {
++    const d = closes[i] - closes[i - 1];
++    gain = (gain * (n - 1) + Math.max(d, 0)) / n;
++    loss = (loss * (n - 1) + Math.max(-d, 0)) / n;
++    out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
++  }
++  return out;
++}
++
++export function atrSeries(candles: Candle[], n = 14): Array<number | null> {
++  const out: Array<number | null> = candles.map(() => null);
++  if (candles.length <= n) return out;
++  const tr = candles.map((c, i) => (i === 0 ? c.h - c.l : Math.max(c.h - c.l, Math.abs(c.h - candles[i - 1].c), Math.abs(c.l - candles[i - 1].c))));
++  let value = tr.slice(1, n + 1).reduce((s, x) => s + x, 0) / n;
++  out[n] = value;
++  for (let i = n + 1; i < candles.length; i++) {
++    value = (value * (n - 1) + tr[i]) / n;
++    out[i] = value;
++  }
++  return out;
++}
++
++/** Entry signals (true at index i = enter at the close of candle i). */
++export function entrySignals(rule: Rule, candles: Candle[], params: RuleParams = {}): boolean[] {
++  const p = defaults(params);
++  const closes = candles.map((c) => c.c);
++  const signals = candles.map(() => false);
++  if (rule === "ema_cross") {
++    const f = emaSeries(closes, p.fast);
++    const s = emaSeries(closes, p.slow);
++    for (let i = Math.max(p.slow, 1); i < candles.length; i++) signals[i] = f[i - 1] <= s[i - 1] && f[i] > s[i];
++  } else if (rule === "rsi_rebound") {
++    const r = rsiSeries(closes);
++    for (let i = 1; i < candles.length; i++) {
++      const a = r[i - 1];
++      const b = r[i];
++      signals[i] = a !== null && b !== null && a < p.rsiLevel && b >= p.rsiLevel;
++    }
++  } else if (rule === "breakout") {
++    const vols = candles.map((c) => c.v);
++    for (let i = p.lookback; i < candles.length; i++) {
++      const prevHigh = Math.max(...candles.slice(i - p.lookback, i).map((c) => c.h));
++      const avgVol = vols.slice(i - p.lookback, i).reduce((s, x) => s + x, 0) / p.lookback;
++      signals[i] = candles[i].c > prevHigh && (avgVol === 0 || candles[i].v >= avgVol);
++    }
++  }
++  return signals;
++}
++
++export interface BacktestTrade {
++  entryIndex: number;
++  exitIndex: number;
++  entry: number;
++  exit: number;
++  outcome: "target" | "stop" | "time";
++  returnPct: number;
++}
++
++export interface BacktestResult {
++  trades: BacktestTrade[];
++  winRate: number | null;
++  avgReturnPct: number | null;
++  totalReturnPct: number;
++  maxDrawdownPct: number;
++  buyHoldPct: number;
++  candles: number;
++}
++
++export function backtest(rule: Rule, candles: Candle[], params: RuleParams = {}): BacktestResult {
++  const p = defaults(params);
++  const signals = entrySignals(rule, candles, params);
++  const atr = atrSeries(candles);
++  const trades: BacktestTrade[] = [];
++  let i = 0;
++  while (i < candles.length - 1) {
++    const a = atr[i];
++    if (!signals[i] || a === null) {
++      i += 1;
++      continue;
++    }
++    const entry = candles[i].c;
++    const stop = entry - p.stopAtr * a;
++    const target = entry + p.rr * (entry - stop);
++    let exitIndex = Math.min(candles.length - 1, i + p.maxBars);
++    let exit = candles[exitIndex].c;
++    let outcome: BacktestTrade["outcome"] = "time";
++    for (let j = i + 1; j <= Math.min(candles.length - 1, i + p.maxBars); j++) {
++      if (candles[j].l <= stop) { exitIndex = j; exit = stop; outcome = "stop"; break; }
++      if (candles[j].h >= target) { exitIndex = j; exit = target; outcome = "target"; break; }
++    }
++    const returnPct = ((exit / entry) - 1) * 100 - 2 * p.feePct;
++    trades.push({ entryIndex: i, exitIndex, entry, exit, outcome, returnPct });
++    i = exitIndex + 1;
++  }
++  let equity = 1;
++  let peak = 1;
++  let maxDd = 0;
++  for (const t of trades) {
++    equity *= 1 + t.returnPct / 100;
++    peak = Math.max(peak, equity);
++    maxDd = Math.max(maxDd, (1 - equity / peak) * 100);
++  }
++  const wins = trades.filter((t) => t.returnPct > 0).length;
++  return {
++    trades,
++    winRate: trades.length ? wins / trades.length : null,
++    avgReturnPct: trades.length ? trades.reduce((s, t) => s + t.returnPct, 0) / trades.length : null,
++    totalReturnPct: (equity - 1) * 100,
++    maxDrawdownPct: maxDd,
++    buyHoldPct: candles.length > 1 ? ((candles[candles.length - 1].c / candles[0].c) - 1) * 100 : 0,
++    candles: candles.length,
++  };
++}
++
++export function formatBacktest(symbol: string, timeframe: string, rule: Rule, r: BacktestResult, params: RuleParams): string {
++  const p = defaults(params);
++  const pct = (x: number | null) => (x === null ? "?" : `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`);
++  const verdict = r.trades.length < 5
++    ? "TOO FEW TRADES to conclude: try another timeframe or rule."
++    : r.totalReturnPct > 0 && r.totalReturnPct > r.buyHoldPct && (r.avgReturnPct ?? 0) > 0
++      ? "PROMISING: positive and better than holding. Still small sample: size small."
++      : r.totalReturnPct > 0
++        ? "POSITIVE but no better than simply holding."
++        : "LOSING on this history: do not use it as is.";
++  return `Backtest ${symbol} ${timeframe} rule=${rule} (stop ${p.stopAtr} ATR, target ${p.rr}R, max ${p.maxBars} candles, fees ${p.feePct}%/side) over ${r.candles} candles:\n` +
++    `trades ${r.trades.length} | win rate ${r.winRate === null ? "?" : `${(r.winRate * 100).toFixed(0)}%`} | avg/trade ${pct(r.avgReturnPct)} | ` +
++    `total ${pct(r.totalReturnPct)} | max drawdown -${r.maxDrawdownPct.toFixed(2)}% | buy & hold ${pct(r.buyHoldPct)}\n` +
++    `exits: ${r.trades.filter((t) => t.outcome === "target").length} target, ${r.trades.filter((t) => t.outcome === "stop").length} stop, ${r.trades.filter((t) => t.outcome === "time").length} time\n` +
++    `Verdict: ${verdict} Past results do not guarantee future ones.`;
++}
++
++export async function runBacktest(
++  args: { mint?: string; timeframe?: string; rule?: string } & RuleParams,
++  fetcher: Fetcher = defaultFetcher,
++): Promise<string> {
++  const mint = String(args.mint ?? "").trim();
++  const rule = String(args.rule ?? "ema_cross") as Rule;
++  if (!mint) return "Blocked: mint is required.";
++  if (!RULES.includes(rule)) return `Blocked: rule must be one of ${RULES.join(", ")}.`;
++  const market = await fetchCandles(mint, String(args.timeframe ?? "1h"), fetcher);
++  if (!market || market.candles.length < 60) return `Not enough history for ${mint}.`;
++  const params: RuleParams = {
++    fast: args.fast, slow: args.slow, rsiLevel: args.rsiLevel, lookback: args.lookback,
++    stopAtr: args.stopAtr, rr: args.rr, maxBars: args.maxBars, feePct: args.feePct,
++  };
++  return formatBacktest(market.symbol, market.timeframe, rule, backtest(rule, market.candles, params), params);
++}
++
++export const RULE_PARAM_SCHEMA = {
++  rule: { type: "string", description: '"ema_cross" (fast EMA crosses above slow), "rsi_rebound" (RSI crosses back above rsiLevel), "breakout" (close above the lookback high with volume).' },
++  timeframe: { type: "string", description: '"15m", "1h" (default), "4h" or "1d".' },
++  fast: { type: "number", description: "ema_cross fast EMA (default 9)." },
++  slow: { type: "number", description: "ema_cross slow EMA (default 21)." },
++  rsiLevel: { type: "number", description: "rsi_rebound level (default 30)." },
++  lookback: { type: "number", description: "breakout lookback candles (default 20)." },
++  stopAtr: { type: "number", description: "Stop distance in ATR (default 1.5)." },
++  rr: { type: "number", description: "Target in multiples of the risk (default 2)." },
++  maxBars: { type: "number", description: "Max candles in a trade before exiting at the close (default 48)." },
++};
++
++export function createBacktestTool(): AutomatonTool {
++  return {
++    name: "backtest",
++    description:
++      "Test a trading rule on the last ~300 real candles of a token before risking money: number of trades, win rate, " +
++      "average and total return after fees, max drawdown, comparison with simply holding, and a verdict. Use it before " +
++      "strategy_create or before trading a new pattern.",
++    category: "financial",
++    riskLevel: "safe",
++    parameters: { type: "object", properties: { mint: { type: "string" }, ...RULE_PARAM_SCHEMA }, required: ["mint"] },
++    execute: async (args) => {
++      try {
++        return await runBacktest(args as Parameters<typeof runBacktest>[0]);
++      } catch (error) {
++        return `backtest failed: ${error instanceof Error ? error.message : String(error)}`;
++      }
++    },
++  };
++}
+diff --git a/src/solana/market-regime.ts b/src/solana/market-regime.ts
+new file mode 100644
+index 0000000..36dc23b
+--- /dev/null
++++ b/src/solana/market-regime.ts
+@@ -0,0 +1,110 @@
++/**
++ * Market regime: is the whole market a tailwind or a headwind? Altcoins
++ * mostly follow SOL and BTC; buying them while both fall is fighting the
++ * tide. Free public sources (no key): CoinGecko (BTC/SOL 24h and 7d),
++ * alternative.me (Fear & Greed), DefiLlama (Solana DEX volume), SOL daily
++ * candles (trend). Each source can fail independently.
++ */
++import type { AutomatonTool } from "../types.js";
++import { fetchJson } from "./http-json.js";
++import { emaSeries, fetchCandles } from "./technical-analysis.js";
++
++export interface RegimeInputs {
++  btc7d: number | null;
++  btc24h: number | null;
++  sol7d: number | null;
++  sol24h: number | null;
++  fearGreed: { value: number; label: string } | null;
++  solDexVolume24h: number | null;
++  solDexVolumeChange7d: number | null;
++  solDailyTrendUp: boolean | null;
++}
++
++export function classifyRegime(x: RegimeInputs): { regime: "RISK-ON" | "NEUTRAL" | "RISK-OFF"; score: number; reasons: string[] } {
++  let score = 0;
++  const reasons: string[] = [];
++  if (x.solDailyTrendUp !== null) {
++    score += x.solDailyTrendUp ? 1 : -1;
++    reasons.push(`SOL daily trend ${x.solDailyTrendUp ? "up (EMA20 > EMA50)" : "down (EMA20 < EMA50)"}`);
++  }
++  if (x.sol7d !== null) { score += x.sol7d > 0 ? 1 : -1; reasons.push(`SOL 7d ${x.sol7d.toFixed(1)}%`); }
++  if (x.btc7d !== null) { score += x.btc7d > 0 ? 1 : -1; reasons.push(`BTC 7d ${x.btc7d.toFixed(1)}%`); }
++  if (x.fearGreed) {
++    reasons.push(`Fear & Greed ${x.fearGreed.value} (${x.fearGreed.label})`);
++    if (x.fearGreed.value >= 80) { score -= 1; reasons.push("extreme greed: tops form here, tighten stops"); }
++  }
++  if (x.solDexVolumeChange7d !== null) {
++    reasons.push(`Solana DEX volume 7d ${x.solDexVolumeChange7d >= 0 ? "+" : ""}${x.solDexVolumeChange7d.toFixed(1)}%`);
++    if (x.solDexVolumeChange7d < -30) score -= 1;
++  }
++  const regime = score >= 2 ? "RISK-ON" : score <= -2 ? "RISK-OFF" : "NEUTRAL";
++  return { regime, score, reasons };
++}
++
++export async function readRegimeInputs(get: (url: string) => Promise<unknown> = async (u) => (await fetchJson(u)).body): Promise<RegimeInputs> {
++  const out: RegimeInputs = {
++    btc7d: null, btc24h: null, sol7d: null, sol24h: null, fearGreed: null,
++    solDexVolume24h: null, solDexVolumeChange7d: null, solDailyTrendUp: null,
++  };
++  await Promise.all([
++    get("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,solana&price_change_percentage=24h,7d")
++      .then((body) => {
++        for (const c of (Array.isArray(body) ? body : []) as Array<Record<string, any>>) {
++          const d7 = Number(c.price_change_percentage_7d_in_currency);
++          const d1 = Number(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h);
++          if (c.id === "bitcoin") { out.btc7d = Number.isFinite(d7) ? d7 : null; out.btc24h = Number.isFinite(d1) ? d1 : null; }
++          if (c.id === "solana") { out.sol7d = Number.isFinite(d7) ? d7 : null; out.sol24h = Number.isFinite(d1) ? d1 : null; }
++        }
++      }).catch(() => undefined),
++    get("https://api.alternative.me/fng/?limit=1")
++      .then((body) => {
++        const d = (body as { data?: Array<{ value: string; value_classification: string }> }).data?.[0];
++        if (d) out.fearGreed = { value: Number(d.value), label: d.value_classification };
++      }).catch(() => undefined),
++    get("https://api.llama.fi/overview/dexs/solana?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true")
++      .then((body) => {
++        const b = body as { total24h?: number; change_7d?: number; change_7dover7d?: number };
++        out.solDexVolume24h = typeof b.total24h === "number" ? b.total24h : null;
++        const c7 = b.change_7dover7d ?? b.change_7d;
++        out.solDexVolumeChange7d = typeof c7 === "number" ? c7 : null;
++      }).catch(() => undefined),
++  ]);
++  return out;
++}
++
++export async function marketRegime(): Promise<string> {
++  const inputs = await readRegimeInputs();
++  try {
++    const sol = await fetchCandles("So11111111111111111111111111111111111111112", "1d");
++    if (sol && sol.candles.length >= 50) {
++      const closes = sol.candles.map((c) => c.c);
++      inputs.solDailyTrendUp = emaSeries(closes, 20).at(-1)! > emaSeries(closes, 50).at(-1)!;
++    }
++  } catch {
++    // trend unavailable
++  }
++  const r = classifyRegime(inputs);
++  const advice = r.regime === "RISK-ON"
++    ? "Tailwind: setups on SOL and liquid altcoins are favoured; keep normal size and stops."
++    : r.regime === "RISK-OFF"
++      ? "Headwind: most altcoins fall with the market. Prefer USDC, or only the strongest setups at half size."
++      : "Mixed: trade only clean setups, normal size, no memecoins.";
++  return `Market regime: ${r.regime} (score ${r.score}). ${r.reasons.join("; ") || "no data"}.\n${advice}`;
++}
++
++export function createMarketRegimeTool(): AutomatonTool {
++  return {
++    name: "market_regime",
++    description: "Overall market weather before trading: SOL daily trend, SOL and BTC 7-day moves, Fear & Greed index, Solana DEX volume. Returns RISK-ON / NEUTRAL / RISK-OFF with advice. Check it once per cycle.",
++    category: "financial",
++    riskLevel: "safe",
++    parameters: { type: "object", properties: {} },
++    execute: async () => {
++      try {
++        return await marketRegime();
++      } catch (error) {
++        return `market_regime failed: ${error instanceof Error ? error.message : String(error)}`;
++      }
++    },
++  };
++}
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 2bb9148..af3095a 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -28,7 +28,7 @@ export type OrderStatus = "open" | "executing" | "filled" | "failed" | "cancelle
+ 
+ export interface Order {
+   id: string;
+-  kind: "stop_loss" | "take_profit" | "buy_below" | "trailing_stop" | "custom";
++  kind: "stop_loss" | "take_profit" | "buy_below" | "trailing_stop" | "alert" | "custom";
+   inputMint: string;
+   outputMint: string;
+   /** Raw input units, or "all" (whole balance of a non-SOL input at trigger time). */
+@@ -177,6 +177,15 @@ export async function runOrderTick(deps: OrderExecutorDeps): Promise<string[]> {
+     }
+     if (!isTriggered(order, price)) continue;
+ 
++    if (order.kind === "alert") {
++      // Price alert: no trade, just wake SHUI.
++      saveOrder(db, { ...order, status: "filled", triggeredPriceUsd: price, result: "alert", updatedAt: now.toISOString() });
++      changed.push(order.id);
++      queueSystemNotice(db, "system:alerts",
++        `PRICE ALERT ${order.id}: ${order.watchMint} is ${order.condition} $${order.triggerPriceUsd} (now $${price}). ${order.note}`.trim());
++      continue;
++    }
++
+     saveOrder(db, { ...order, status: "executing", triggeredPriceUsd: price, updatedAt: now.toISOString() });
+     let text: string;
+     try {
+@@ -423,6 +432,42 @@ export function createOrderTools(): AutomatonTool[] {
+           `take_profit at $${tp} (+${reward.toFixed(2)}%), reward/risk ${(reward / risk).toFixed(2)}. Current price $${price}.`;
+       },
+     },
++    {
++      name: "price_alert",
++      description: "Wake you up when a token's price crosses a level (no trade). You get an inbox notice. Use it to watch an entry or a level while you sleep.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string" },
++          condition: { type: "string", description: '"above" or "below".' },
++          priceUsd: { type: "number" },
++          note: { type: "string", description: "What to do when it triggers." },
++          expiresHours: { type: "number" },
++        },
++        required: ["mint", "condition", "priceUsd"],
++      },
++      execute: async (args, ctx) => {
++        const mint = String(args.mint ?? "");
++        const condition = args.condition === "above" ? "above" : args.condition === "below" ? "below" : null;
++        const price = Number(args.priceUsd);
++        if (!validMint(mint) || !condition || !(price > 0)) return 'Blocked: give a valid mint, condition "above"/"below" and a positive priceUsd.';
++        const db = ctx.db.raw;
++        if (listOrders(db).filter((o) => o.status === "open").length >= MAX_OPEN_ORDERS) return "Blocked: too many open orders and alerts.";
++        const now = new Date();
++        const hours = Number(args.expiresHours);
++        const alert: Order = {
++          id: `alr_${now.getTime().toString(36)}_${randomUUID().slice(0, 4)}`,
++          kind: "alert", inputMint: mint, outputMint: mint, amount: "0", watchMint: mint, condition, triggerPriceUsd: price,
++          slippageBps: 0, venue: "jupiter", note: String(args.note ?? "").slice(0, 200), createdAt: now.toISOString(),
++          expiresAt: hours > 0 ? new Date(now.getTime() + hours * 3_600_000).toISOString() : null,
++          status: "open", attempts: 0, updatedAt: now.toISOString(),
++        };
++        saveOrder(db, alert);
++        return `Alert ${alert.id} set: ${mint} ${condition} $${price}.`;
++      },
++    },
+     {
+       name: "order_list",
+       description: "List your automatic orders (open first) with their status, trigger and last error.",
+diff --git a/src/solana/strategies.ts b/src/solana/strategies.ts
+new file mode 100644
+index 0000000..85e979c
+--- /dev/null
++++ b/src/solana/strategies.ts
+@@ -0,0 +1,246 @@
++/**
++ * Automatic strategies: SHUI designs a rule, the code runs it. A model turn
++ * takes minutes and SHUI sleeps between turns; a strategy checks its token
++ * every few minutes on closed candles and, on an entry signal, buys a fixed
++ * USDC size through the safe swap engine and immediately protects the
++ * position with a linked stop-loss / take-profit (OCO). One position per
++ * strategy at a time. Creation runs a backtest first.
++ */
++import { randomUUID } from "node:crypto";
++import { PublicKey } from "@solana/web3.js";
++import type { Database } from "better-sqlite3";
++import type { AutomatonDatabase, AutomatonTool } from "../types.js";
++import type { ChainIdentity } from "../identity/chain.js";
++import { fetchCandles, type Candle } from "./technical-analysis.js";
++import { atrSeries, backtest, entrySignals, RULE_PARAM_SCHEMA, RULES, type Rule, type RuleParams } from "./backtest.js";
++import { runSwap } from "./swap-engine.js";
++import { jupiterVenue } from "./jupiter.js";
++import { USDC_MINT } from "./raydium.js";
++import { listOrders, saveOrder, type Order } from "./orders.js";
++import { queueSystemNotice } from "../integration/creator-chat.js";
++
++const PREFIX = "strategy.";
++export const MAX_ACTIVE_STRATEGIES = 3;
++export const STRATEGY_CHECK_MS = 5 * 60_000;
++
++export interface Strategy {
++  id: string;
++  mint: string;
++  symbol: string;
++  timeframe: string;
++  rule: Rule;
++  params: RuleParams;
++  sizeUsd: number;
++  active: boolean;
++  state: "flat" | "long";
++  group: string | null;
++  lastSignalTs: number | null;
++  trades: number;
++  note: string;
++  lastError: string | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export function saveStrategy(db: Database, s: Strategy): void {
++  db.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(`${PREFIX}${s.id}`, JSON.stringify(s));
++}
++
++export function listStrategies(db: Database): Strategy[] {
++  const rows = db.prepare("SELECT value FROM kv WHERE key LIKE 'strategy.%' ORDER BY key").all() as Array<{ value: string }>;
++  const out: Strategy[] = [];
++  for (const r of rows) {
++    try {
++      out.push(JSON.parse(r.value) as Strategy);
++    } catch {
++      // skip
++    }
++  }
++  return out;
++}
++
++export interface StrategyDeps {
++  db: AutomatonDatabase;
++  chainIdentity: ChainIdentity;
++  candles?: (mint: string, timeframe: string) => Promise<Candle[] | null>;
++  swap?: (s: Strategy, amountRaw: string) => Promise<string>;
++  now?: () => Date;
++  log?: (message: string) => void;
++}
++
++/** One pass over active strategies. Returns ids that acted. */
++export async function runStrategyTick(deps: StrategyDeps): Promise<string[]> {
++  const db = deps.db.raw;
++  const now = (deps.now ?? (() => new Date()))();
++  const acted: string[] = [];
++  for (const strategy of listStrategies(db).filter((s) => s.active)) {
++    let s = strategy;
++    if (s.state === "long") {
++      const stillOpen = s.group && listOrders(db).some((o) => o.group === s.group && (o.status === "open" || o.status === "executing"));
++      if (stillOpen) continue;
++      s = { ...s, state: "flat", group: null, updatedAt: now.toISOString() };
++      saveStrategy(db, s);
++    }
++    let candles: Candle[] | null;
++    try {
++      candles = deps.candles
++        ? await deps.candles(s.mint, s.timeframe)
++        : (await fetchCandles(s.mint, s.timeframe))?.candles ?? null;
++    } catch (error) {
++      saveStrategy(db, { ...s, lastError: `data: ${error instanceof Error ? error.message : String(error)}`, updatedAt: now.toISOString() });
++      continue;
++    }
++    if (!candles || candles.length < 60) continue;
++    const closed = candles.slice(0, -1); // the last candle may still be forming
++    const i = closed.length - 1;
++    if (s.lastSignalTs === closed[i].t) continue;
++    if (!entrySignals(s.rule, closed, s.params)[i]) continue;
++    const atr = atrSeries(closed)[i];
++    if (!atr) continue;
++
++    s = { ...s, lastSignalTs: closed[i].t, updatedAt: now.toISOString() };
++    saveStrategy(db, s); // never retry the same candle, whatever happens next
++    const amountRaw = String(Math.floor(s.sizeUsd * 1_000_000));
++    let text: string;
++    try {
++      text = await (deps.swap ?? ((st, amount) => runSwap(
++        { db: deps.db, chainIdentity: deps.chainIdentity },
++        { inputMint: USDC_MINT, outputMint: st.mint, amount, slippageBps: 100 },
++        jupiterVenue,
++      )))(s, amountRaw);
++    } catch (error) {
++      text = `error: ${error instanceof Error ? error.message : String(error)}`;
++    }
++    let parsed: Record<string, any> | null = null;
++    try {
++      parsed = JSON.parse(text);
++    } catch {
++      parsed = null;
++    }
++    if (parsed?.success !== true) {
++      const reason = String(parsed?.reason ?? text).slice(0, 200);
++      saveStrategy(db, { ...s, lastError: reason });
++      queueSystemNotice(db, "system:strategies", `Strategy ${s.id} (${s.symbol} ${s.rule}) had an entry signal but the buy did not happen: ${reason}`);
++      acted.push(s.id);
++      continue;
++    }
++    const bought = String(parsed.journal?.outputAmountRaw ?? parsed.quotedOutputAmount ?? "0");
++    const entry = closed[i].c;
++    const stopAtr = s.params.stopAtr ?? 1.5;
++    const rr = s.params.rr ?? 2;
++    const stop = entry - stopAtr * atr;
++    const target = entry + rr * (entry - stop);
++    const group = `stg_${s.id}_${now.getTime().toString(36)}`;
++    const base = {
++      inputMint: s.mint, outputMint: USDC_MINT, amount: bought, watchMint: s.mint, slippageBps: 150, venue: "jupiter" as const,
++      note: `strategy ${s.id}`, createdAt: now.toISOString(), expiresAt: null, status: "open" as const, attempts: 0,
++      updatedAt: now.toISOString(), group,
++    };
++    const stopOrder: Order = { ...base, id: `${group}_stop`, kind: "stop_loss", condition: "below", triggerPriceUsd: stop };
++    const tpOrder: Order = { ...base, id: `${group}_tp`, kind: "take_profit", condition: "above", triggerPriceUsd: target };
++    saveOrder(db, stopOrder);
++    saveOrder(db, tpOrder);
++    saveStrategy(db, { ...s, state: "long", group, trades: s.trades + 1, lastError: null });
++    acted.push(s.id);
++    deps.log?.(`[STRATEGY] ${s.id} bought ${s.symbol} ~${entry} (stop ${stop}, target ${target})`);
++    queueSystemNotice(db, "system:strategies",
++      `Strategy ${s.id} (${s.symbol} ${s.rule} ${s.timeframe}) BOUGHT $${s.sizeUsd} at ~${entry.toPrecision(6)}: ` +
++      `stop ${stop.toPrecision(6)}, target ${target.toPrecision(6)} (OCO ${group}). signature ${parsed.signature}. Write a journal plan.`);
++  }
++  return acted;
++}
++
++export function startStrategyRunner(deps: StrategyDeps): () => void {
++  let running = false;
++  const timer = setInterval(() => {
++    if (running) return;
++    running = true;
++    runStrategyTick(deps)
++      .catch((error) => deps.log?.(`[STRATEGY] tick failed: ${error instanceof Error ? error.message : String(error)}`))
++      .finally(() => { running = false; });
++  }, STRATEGY_CHECK_MS);
++  timer.unref?.();
++  return () => clearInterval(timer);
++}
++
++export function createStrategyTools(): AutomatonTool[] {
++  return [
++    {
++      name: "strategy_create",
++      description:
++        "Hand a tested rule to the code: it watches the token on closed candles every 5 min and, on each entry signal, " +
++        "buys sizeUsd of USDC worth of the token and protects it with a linked stop-loss/take-profit (OCO), one position " +
++        "at a time. A backtest runs first; a losing backtest is refused unless force=true. Max 3 active strategies. " +
++        "Size it so the stop loses at most 2% of the wallet.",
++      category: "financial",
++      riskLevel: "dangerous",
++      parameters: {
++        type: "object",
++        properties: {
++          mint: { type: "string" },
++          sizeUsd: { type: "number", description: "USDC spent per entry." },
++          ...RULE_PARAM_SCHEMA,
++          note: { type: "string" },
++          force: { type: "boolean", description: "Accept a strategy whose backtest is negative." },
++        },
++        required: ["mint", "rule", "sizeUsd"],
++      },
++      execute: async (args, ctx) => {
++        const mint = String(args.mint ?? "");
++        try { new PublicKey(mint); } catch { return "Blocked: invalid mint."; }
++        if (mint === USDC_MINT) return "Blocked: the strategy buys a token with USDC; mint cannot be USDC.";
++        const rule = String(args.rule ?? "") as Rule;
++        if (!RULES.includes(rule)) return `Blocked: rule must be one of ${RULES.join(", ")}.`;
++        const sizeUsd = Number(args.sizeUsd);
++        if (!(sizeUsd >= 1)) return "Blocked: sizeUsd must be at least 1 USDC.";
++        const db = ctx.db.raw;
++        if (listStrategies(db).filter((s) => s.active).length >= MAX_ACTIVE_STRATEGIES) return `Blocked: ${MAX_ACTIVE_STRATEGIES} strategies already active; stop one first.`;
++        const timeframe = ["15m", "1h", "4h", "1d"].includes(String(args.timeframe)) ? String(args.timeframe) : "1h";
++        const params: RuleParams = {
++          fast: args.fast as number | undefined, slow: args.slow as number | undefined, rsiLevel: args.rsiLevel as number | undefined,
++          lookback: args.lookback as number | undefined, stopAtr: args.stopAtr as number | undefined, rr: args.rr as number | undefined,
++          maxBars: args.maxBars as number | undefined,
++        };
++        const market = await fetchCandles(mint, timeframe).catch(() => null);
++        if (!market || market.candles.length < 60) return "Blocked: not enough market history for this token.";
++        const bt = backtest(rule, market.candles, params);
++        const summary = `backtest: ${bt.trades.length} trades, win rate ${bt.winRate === null ? "?" : (bt.winRate * 100).toFixed(0)}%, total ${bt.totalReturnPct.toFixed(2)}%, max drawdown -${bt.maxDrawdownPct.toFixed(2)}%`;
++        if (bt.totalReturnPct <= 0 && args.force !== true) return `Refused: ${summary}. This rule lost money on recent history. Change it, or pass force=true if you have a reason.`;
++        const now = new Date();
++        const strategy: Strategy = {
++          id: `stg${now.getTime().toString(36)}${randomUUID().slice(0, 3)}`,
++          mint, symbol: market.symbol, timeframe, rule, params, sizeUsd, active: true, state: "flat", group: null,
++          lastSignalTs: market.candles.length > 1 ? market.candles[market.candles.length - 2].t : null,
++          trades: 0, note: String(args.note ?? "").slice(0, 200), lastError: null, createdAt: now.toISOString(), updatedAt: now.toISOString(),
++        };
++        saveStrategy(db, strategy);
++        return `Strategy ${strategy.id} active: ${market.symbol} ${rule} ${timeframe}, $${sizeUsd} per entry (${summary}). It acts on the next new signal.`;
++      },
++    },
++    {
++      name: "strategy_list",
++      description: "List your automatic strategies: rule, state (flat/long), trades, last error.",
++      category: "financial",
++      riskLevel: "safe",
++      parameters: { type: "object", properties: {} },
++      execute: async (_args, ctx) => {
++        const all = listStrategies(ctx.db.raw);
++        if (!all.length) return "No strategy.";
++        return all.map((s) => `${s.id} ${s.active ? "ACTIVE" : "stopped"} ${s.symbol} ${s.rule} ${s.timeframe} $${s.sizeUsd} | ${s.state}${s.group ? ` (${s.group})` : ""} | trades ${s.trades}${s.lastError ? ` | last error: ${s.lastError}` : ""}`).join("\n");
++      },
++    },
++    {
++      name: "strategy_stop",
++      description: "Stop a strategy (no new entries). An open position keeps its stop-loss/take-profit.",
++      category: "financial",
++      riskLevel: "caution",
++      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
++      execute: async (args, ctx) => {
++        const s = listStrategies(ctx.db.raw).find((x) => x.id === String(args.id ?? ""));
++        if (!s) return "Unknown strategy.";
++        saveStrategy(ctx.db.raw, { ...s, active: false, updatedAt: new Date().toISOString() });
++        return `Strategy ${s.id} stopped.${s.state === "long" ? " Its open position keeps its OCO orders." : ""}`;
++      },
++    },
++  ];
++}
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index 664cb0f..81577c1 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -26,7 +26,8 @@ export const TRADING_FOCUS_PROMPT = `--- FOCUS: TRADING ONLY (set by your creato
+ Your only activity is trading the tokens of your Solana wallet to grow its value in USDC. Do not build
+ services, websites or payment pages. Realized profit (selling a token for more USDC than it cost) is what
+ counts. Work calmly: a week without a good setup costs you nothing; a bad trade does. Your method, every cycle:
+-1. trade_stats and positions: know your results and what you hold. After 2 losing trades today, stop until tomorrow.
++1. trade_stats, positions and market_regime: know your results, what you hold and the market weather.
++   After 2 losing trades today, stop until tomorrow. In RISK-OFF, prefer USDC.
+ 2. setup_scan: find setups that follow the playbook (4h trend up, 1h entry, reward/risk >= 2).
+    No setup = stay in USDC and sleep 1-4 h; waiting is a valid decision.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+@@ -34,7 +35,8 @@ counts. Work calmly: a week without a good setup costs you nothing; a bad trade
+ 5. Buy with jupiter_swap (or raydium_swap), sized so that hitting the stop loses at most 2% of the wallet.
+ 6. Immediately protect_position (stop-loss or trailing stop + take-profit, linked OCO).
+ 7. When an order executes you get an inbox notice: journal_add kind=lesson with what you learned.
+-Never swap SOL <-> USDC back and forth: it only costs fees.
++To act while you sleep: price_alert wakes you at a level; backtest a rule, then strategy_create lets the code
++trade it for you (buy + automatic OCO protection). Never swap SOL <-> USDC back and forth: it only costs fees.
+ If the wallet falls 15% below its peak, new buys pause for 24 h automatically: use that time to review.`;
+ 
+ export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [

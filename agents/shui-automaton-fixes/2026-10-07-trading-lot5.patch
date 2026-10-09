@@ -1,0 +1,508 @@
+diff --git a/src/__tests__/lot5-trading.test.ts b/src/__tests__/lot5-trading.test.ts
+new file mode 100644
+index 0000000..988c062
+--- /dev/null
++++ b/src/__tests__/lot5-trading.test.ts
+@@ -0,0 +1,87 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++import { evaluateShortSetup, setupScan, computeTradeStats } from "../solana/trading-desk.js";
++import { lossStopUntil, lossStreakToday, meaningfulLossUsd } from "../survival/risk-guard.js";
++import { classifySwapResult } from "../solana/orders.js";
++import { validatePerpOpen } from "../solana/perps.js";
++import type { Candle } from "../solana/technical-analysis.js";
++
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++const SOL = "So11111111111111111111111111111111111111112";
++const candles = (closes: number[], wick = 0.01): Candle[] =>
++  closes.map((c, i) => ({ t: i, o: c, h: c * (1 + wick), l: c * (1 - wick), c, v: 100 }));
++const uptrend = (n: number) => Array.from({ length: n }, (_, i) => 100 + i * 0.6 + Math.sin(i / 2.5) * 4);
++const mirror = (xs: number[]) => xs.map((x) => 400 - x);
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot5-")), "s.db"));
++
++function ledgerWith(pnls: number[], day: string) {
++  const db = freshDb();
++  ensureLedgerSchema(db.raw);
++  const ins = db.raw.prepare(
++    "INSERT INTO shui_ledger (signature, ts, day, kind, input_mint, input_amount_raw, output_mint, output_amount_raw, realized_pnl_usd) VALUES (?, ?, ?, 'swap', 'TOKEN', '1', ?, '1', ?)",
++  );
++  pnls.forEach((p, i) => ins.run(`s${i}`, `${day}T0${i + 1}:00:00Z`, day, USDC, p));
++  return db;
++}
++
++describe("short setups", () => {
++  it("mirrors the long rules in a 4h downtrend: stop above, target below, R/R >= 2", () => {
++    const h4 = candles(mirror(uptrend(120)));
++    const h1 = candles(mirror(uptrend(120).map((c, i) => (i > 112 ? c - (i - 112) * 1.2 : c))));
++    const r = evaluateShortSetup("SOL", SOL, "SOL-PERP", h4, h1, 2_000_000);
++    expect(r.side).toBe("short");
++    if (r.plan) {
++      expect(r.plan.stop).toBeGreaterThan(r.plan.entry);
++      expect(r.plan.target).toBeLessThan(r.plan.entry);
++      expect(r.ok).toBe(r.plan.rr >= 2);
++    } else {
++      expect(r.reason).toMatch(/short/);
++    }
++    expect(evaluateShortSetup("SOL", SOL, "SOL-PERP", candles(uptrend(120)), candles(uptrend(120)), 2_000_000).reason)
++      .toMatch(/not down either/);
++  });
++
++  it("checks shorts only for tokens with a Drift market", async () => {
++    const ohlcv = (closes: number[]) => ({ data: { attributes: { ohlcv_list: closes.map((c, i) => [i, c, c * 1.01, c * 0.99, c, 10]) } } });
++    const fetcher = async (url: string) => url.includes("dexscreener")
++      ? [{ chainId: "solana", pairAddress: "P", dexId: "orca", liquidity: { usd: 5_000_000 }, baseToken: { symbol: "SOL" } }]
++      : ohlcv(uptrend(120).reverse());
++    const sol = await setupScan({ mints: [SOL] }, fetcher, 0);
++    expect(sol).toMatch(/SHORT SETUP SOL|SOL: (short|4h trend not down)/);
++    expect(sol).not.toMatch(/SOL: 4h trend not up/);
++    const other = await setupScan({ mints: ["JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"] }, fetcher, 0);
++    expect(other).not.toMatch(/SHORT/);
++  });
++});
++
++describe("loss-streak stop", () => {
++  const day = "2026-10-07";
++  const noon = new Date(`${day}T12:00:00Z`);
++
++  it("ignores dust losses and counts only losses above 0.5% of capital", () => {
++    expect(meaningfulLossUsd(34)).toBeCloseTo(0.17);
++    expect(meaningfulLossUsd(null)).toBe(0.05);
++    expect(lossStreakToday(ledgerWith([-0.012, -0.012], day).raw, noon, 34)).toBe(0); // this morning's test swaps
++    expect(lossStreakToday(ledgerWith([-0.3, -0.01, -0.5], day).raw, noon, 34)).toBe(2);
++    expect(lossStreakToday(ledgerWith([-0.3, 0.2, -0.5], day).raw, noon, 34)).toBe(1); // a win resets
++    expect(computeTradeStats(ledgerWith([-0.012, -0.012], day).raw, day, 34).lossStreakToday).toBe(0);
++  });
++
++  it("blocks new entries until 00:00 UTC, not 24 h", () => {
++    const db = ledgerWith([-0.3, -0.4], day);
++    db.raw.prepare("INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('last_known_balance', ?, datetime('now'))")
++      .run(JSON.stringify({ walletValueUsd: 34, walletValueComplete: true }));
++    expect(lossStopUntil(db.raw, noon)).toBe("2026-10-08T00:00:00.000Z");
++    expect(lossStopUntil(db.raw, new Date("2026-10-08T00:00:01Z"))).toBeNull();
++    expect(classifySwapResult(JSON.stringify({ success: false, reason: "LOSS_STREAK_STOP", message: "x" }))).toMatchObject({ transient: true });
++    const v = validatePerpOpen({
++      direction: "short", entryPrice: 100, sizeUsd: 10, stopPrice: 102, capitalUsd: 100, accountValueUsd: 20,
++      otherNotionalUsd: 0, liqPrice: null, openedCount: 0, pausedUntil: null, lossStopUntil: "2026-10-08T00:00:00.000Z",
++    });
++    expect(v.reasons.join()).toMatch(/2 losing trades today/);
++  });
++});
+diff --git a/src/__tests__/trading-desk.test.ts b/src/__tests__/trading-desk.test.ts
+index 2d3c0c5..bb115cf 100644
+--- a/src/__tests__/trading-desk.test.ts
++++ b/src/__tests__/trading-desk.test.ts
+@@ -47,7 +47,7 @@ describe("setup evaluation", () => {
+       ? [{ chainId: "solana", pairAddress: "P", dexId: "orca", liquidity: { usd: 5_000_000 }, baseToken: { symbol: "DOWN" } }]
+       : ohlcv(uptrend(120).reverse());
+     const text = await setupScan({ mints: ["MINT1"] }, fetcher, 0);
+-    expect(text).toMatch(/No setup follows the playbook/);
++    expect(text).toMatch(/No real setup right now/);
+     expect(text).toMatch(/DOWN: 4h trend not up/);
+   });
+ });
+@@ -70,7 +70,7 @@ describe("journal and stats", () => {
+     addJournalEntry(db.raw, { kind: "plan", text: "buy JUP at 0.5, stop 0.48, target 0.56", mint: "JUPy" });
+     const text = formatTradeStats(s, recentJournal(db.raw));
+     expect(text).toMatch(/win rate 33%/);
+-    expect(text).toMatch(/STOP: 2 losing trades in a row today/);
++    expect(text).toMatch(/STOP: 2 real losing trades today.*blocked by code until/);
+     expect(text).toMatch(/\[plan\] JUPy/);
+   });
+ });
+diff --git a/src/solana/orders.ts b/src/solana/orders.ts
+index 577392b..9f9de1a 100644
+--- a/src/solana/orders.ts
++++ b/src/solana/orders.ts
+@@ -139,7 +139,7 @@ export function classifySwapResult(text: string): { done: boolean; transient: bo
+   }
+   if (parsed?.success === true) return { done: true, transient: false, message: `filled, signature ${String(parsed.signature)}` };
+   // A previous transaction still unresolved: try again on a later tick.
+-  if (typeof parsed?.reason === "string" && (parsed.reason.startsWith("PREVIOUS_TRANSACTION") || parsed.reason === "DRAWDOWN_PAUSE")) {
++  if (typeof parsed?.reason === "string" && (parsed.reason.startsWith("PREVIOUS_TRANSACTION") || parsed.reason === "DRAWDOWN_PAUSE" || parsed.reason === "LOSS_STREAK_STOP")) {
+     return { done: false, transient: true, message: String(parsed.message ?? parsed.reason) };
+   }
+   return { done: false, transient: false, message: (parsed?.reason ? String(parsed.reason) : text).slice(0, 300) };
+diff --git a/src/solana/perps.ts b/src/solana/perps.ts
+index 3cff29d..b57590f 100644
+--- a/src/solana/perps.ts
++++ b/src/solana/perps.ts
+@@ -22,7 +22,7 @@ import type { Database } from "better-sqlite3";
+ import type { AutomatonTool } from "../types.js";
+ import type { ChainIdentity } from "../identity/chain.js";
+ import { recordPerpPnl, recordPerpTransfer } from "./ledger.js";
+-import { tradingPausedUntil } from "../survival/risk-guard.js";
++import { lastCapitalUsd, lossStopUntil, tradingPausedUntil } from "../survival/risk-guard.js";
+ import { queueSystemNotice } from "../integration/creator-chat.js";
+ 
+ export const PERP_LIMITS = {
+@@ -120,6 +120,8 @@ export interface PerpOpenCheck {
+   liqPrice: number | null;
+   openedCount: number;
+   pausedUntil: string | null;
++  /** Set after 2 meaningful losses today (until 00:00 UTC). */
++  lossStopUntil?: string | null;
+ }
+ 
+ export interface PerpOpenVerdict {
+@@ -142,6 +144,7 @@ export function validatePerpOpen(c: PerpOpenCheck): PerpOpenVerdict {
+   const maxRiskUsd = (c.capitalUsd * PERP_LIMITS.maxRiskPct) / 100;
+ 
+   if (c.pausedUntil) reasons.push(`circuit breaker active until ${c.pausedUntil}: no new positions (closing still works)`);
++  if (c.lossStopUntil) reasons.push(`2 losing trades today: no new positions until ${c.lossStopUntil} (closing still works)`);
+   if (!(c.capitalUsd > 0)) reasons.push("total capital unknown: wait for a fresh wallet valuation");
+   if (!(stopDistance > 0)) {
+     reasons.push(c.direction === "long" ? "a long needs stopPrice below the entry price" : "a short needs stopPrice above the entry price");
+@@ -272,19 +275,7 @@ export function formatPerpAccount(account: DriftAccountView, db: Database): stri
+   return lines.join("\n");
+ }
+ 
+-/** Total capital (wallet incl. Drift) from the last valuation, or null. */
+-export function lastCapitalUsd(db: Database): number | null {
+-  try {
+-    const raw = getKv(db, "last_known_balance");
+-    if (!raw) return null;
+-    const parsed = JSON.parse(raw) as { walletValueUsd?: number | null; walletValueComplete?: boolean };
+-    return parsed.walletValueComplete && typeof parsed.walletValueUsd === "number" && parsed.walletValueUsd > 0
+-      ? parsed.walletValueUsd
+-      : null;
+-  } catch {
+-    return null;
+-  }
+-}
++export { lastCapitalUsd };
+ 
+ // ─── Real adapter (Drift SDK, loaded on demand) ─────────────────
+ 
+@@ -604,6 +595,7 @@ export function createPerpTools(factory: AdapterFactory = sdkAdapterFactory): Au
+               liqPrice,
+               openedCount: num(db, OPENED_COUNT_KEY),
+               pausedUntil: tradingPausedUntil(db),
++              lossStopUntil: lossStopUntil(db),
+             });
+             const summary =
+               `${marketName(marketIndex)} ${direction.toUpperCase()} ${baseAmount} units (~$${realSize.toFixed(2)}) at ~$${entryPrice.toPrecision(6)}, ` +
+diff --git a/src/solana/swap-engine.ts b/src/solana/swap-engine.ts
+index 5a92c49..36944c3 100644
+--- a/src/solana/swap-engine.ts
++++ b/src/solana/swap-engine.ts
+@@ -15,7 +15,7 @@ import {
+ } from "./trading.js";
+ import { checkPendingTransaction, recordPendingTransaction } from "./pending-tx.js";
+ import { journalConfirmedSwap, journalResolvedPending } from "./journal.js";
+-import { isBuy, tradingPausedUntil } from "../survival/risk-guard.js";
++import { isBuy, lossStopUntil, tradingPausedUntil } from "../survival/risk-guard.js";
+ 
+ export interface SwapExpectation {
+   inputMint: string;
+@@ -78,6 +78,16 @@ export async function runSwap(
+       message: "New buys are paused by the drawdown circuit breaker. Sales into USDC or SOL are still allowed.",
+     });
+   }
++  const lossStop = isBuy(outputMint) ? lossStopUntil(ctx.db.raw) : null;
++  if (lossStop) {
++    return JSON.stringify({
++      success: false,
++      blocked: true,
++      reason: "LOSS_STREAK_STOP",
++      pausedUntil: lossStop,
++      message: `2 losing trades today (playbook rule 12): new buys are blocked until ${lossStop}. Sales into USDC or SOL are still allowed.`,
++    });
++  }
+ 
+   // Never trust model arithmetic: re-read the confirmed on-chain balance.
+   const solLamports = BigInt((await service.getSolBalance()).lamports);
+diff --git a/src/solana/technical-analysis.ts b/src/solana/technical-analysis.ts
+index 4910da9..08e286e 100644
+--- a/src/solana/technical-analysis.ts
++++ b/src/solana/technical-analysis.ts
+@@ -371,7 +371,8 @@ export const TRADING_PLAYBOOK = `Trading playbook (rules of experienced traders;
+ 9. Most new memecoins go to zero (rug pulls, dev dumps). Treat them as lottery tickets, tiny size only.
+ 10. Keep a journal: every trade's reason, entry, stop, target and result (remember_fact). Review it: repeat what worked, drop what did not.
+ 11. No trade is a position too. Sitting in USDC while waiting for a clean setup costs nothing.
+-12. Revenge trading after a loss is forbidden: after 2 losing trades in a row, stop trading for the day.`;
++12. Revenge trading after a loss is forbidden: after 2 real losing trades in a row (> 0.5% of capital each), no new entry until 00:00 UTC (enforced by code).
++13. In a 4h downtrend, the trend is your friend too: short SOL/BTC/ETH on Drift after a fading bounce, stop above resistance.`;
+ 
+ export function createTechnicalAnalysisTools(): AutomatonTool[] {
+   return [
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index a72e76d..069fe9f 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -1,10 +1,11 @@
+ /**
+  * Trading desk: the tools SHUI needs when its only activity is trading.
+  * - setup_scan: scans a watchlist of liquid Solana tokens (4h trend + 1h
+- *   entry) and returns only long setups that follow the playbook.
++ *   entry) and returns the setups that follow the playbook: long setups in a
++ *   4h uptrend, and short setups (Drift perpetuals) in a 4h downtrend for the
++ *   tokens that have a perp market (SOL, BTC, ETH).
+  * - journal_add / trade_stats: a trade journal and real performance stats
+  *   computed from the ledger (realized PnL of every sale into USDC).
+- * Spot only: in a downtrend the right position is USDC.
+  */
+ import { randomUUID } from "node:crypto";
+ import type { Database } from "better-sqlite3";
+@@ -13,6 +14,7 @@ import {
+   atr, emaSeries, fetchCandles, fibonacci, macd, rsi, swings, type Candle, type Fetcher, defaultFetcher,
+ } from "./technical-analysis.js";
+ import { USDC_MINT } from "./raydium.js";
++import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+ 
+ export const TRADING_FOCUS_HIDDEN_TOOLS = new Set([
+   "service_deploy", "service_stop", "service_status", "service_logs", "payment_request", "payment_check",
+@@ -27,9 +29,11 @@ Your only activity is trading the tokens of your Solana wallet to grow its value
+ services, websites or payment pages. Realized profit (selling a token for more USDC than it cost) is what
+ counts. Work calmly: a week without a good setup costs you nothing; a bad trade does. Your method, every cycle:
+ 1. trade_stats, positions and market_regime: know your results, what you hold and the market weather.
+-   After 2 losing trades today, stop until tomorrow. In RISK-OFF, prefer USDC.
+-2. setup_scan: find setups that follow the playbook (4h trend up, 1h entry, reward/risk >= 2).
+-   No setup = stay in USDC and sleep 1-4 h; waiting is a valid decision.
++   After 2 real losing trades today the code blocks new entries until 00:00 UTC (trade_stats gives the time):
++   never sleep longer than that. In RISK-OFF, prefer USDC or a short setup.
++2. setup_scan: find setups that follow the playbook (long in a 4h uptrend; SHORT on Drift for SOL/BTC/ETH in a
++   4h downtrend; 1h entry, reward/risk >= 2). No real setup = stay in USDC, but use the wait to learn: keep at
++   least one paper strategy running (backtest first) or paper_trade the closest near-setup, then sleep 1-4 h.
+ 3. technical_analysis on the chosen token (4h and 1h) to confirm; token_safety before any token other than majors.
+ 4. journal_add kind=plan BEFORE buying: token, entry, stop, target, size, reason.
+ 5. Buy with jupiter_swap (or raydium_swap), sized so that hitting the stop loses at most 2% of the wallet.
+@@ -45,8 +49,10 @@ then perp_open with a mandatory stopPrice (placed on Drift, works while you slee
+ (1x for your first 5 trades), 2% of capital lost at the stop, liquidation far beyond the stop. A short lets you profit
+ from a 4h downtrend. Leverage multiplies losses as much as gains: use it only on A+ setups. perp_positions, perp_close.`;
+ 
+-export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string }> = [
+-  { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
++export const DEFAULT_WATCHLIST: Array<{ symbol: string; mint: string; perp?: string }> = [
++  { symbol: "SOL", mint: "So11111111111111111111111111111111111111112", perp: "SOL-PERP" },
++  { symbol: "cbBTC", mint: "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij", perp: "BTC-PERP" },
++  { symbol: "ETH", mint: "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", perp: "ETH-PERP" },
+   { symbol: "JUP", mint: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN" },
+   { symbol: "RAY", mint: "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R" },
+   { symbol: "PYTH", mint: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3" },
+@@ -63,6 +69,9 @@ export interface SetupResult {
+   mint: string;
+   ok: boolean;
+   reason: string;
++  /** Set for short setups: the Drift market to use with perp_open. */
++  side?: "long" | "short";
++  perp?: string;
+   plan?: { entry: number; stop: number; target: number; rr: number; stopPct: number; targetPct: number };
+ }
+ 
+@@ -101,6 +110,45 @@ export function evaluateSetup(symbol: string, mint: string, h4: Candle[], h1: Ca
+   return { symbol, mint, ok: true, reason: `4h uptrend, 1h RSI ${r.toFixed(0)}, reward/risk ${rr.toFixed(2)}`, plan };
+ }
+ 
++/**
++ * Short setup (Drift perpetual) — the mirror of the long rules: 4h downtrend,
++ * 1h bounce that is fading (RSI 32-65, momentum turning down), stop above the
++ * nearest resistance, target at the next 4h swing low, reward/risk >= 2.
++ */
++export function evaluateShortSetup(symbol: string, mint: string, perp: string, h4: Candle[], h1: Candle[], liquidityUsd: number): SetupResult {
++  const no = (reason: string): SetupResult => ({ symbol, mint, ok: false, reason, side: "short", perp });
++  if (liquidityUsd < MIN_LIQUIDITY_USD) return no(`liquidity $${Math.round(liquidityUsd)} < $50k`);
++  if (h4.length < 50 || h1.length < 50) return no("not enough candles");
++  const c4 = h4.map((c) => c.c);
++  const c1 = h1.map((c) => c.c);
++  const ema20h4 = emaSeries(c4, 20).at(-1)!;
++  const ema50h4 = emaSeries(c4, 50).at(-1)!;
++  const price = c1.at(-1)!;
++  if (!(ema20h4 < ema50h4 && price < ema50h4)) return no("4h trend not down either: no short");
++  const r = rsi(c1);
++  if (r === null || r < 32) return no(`short: 1h RSI ${r?.toFixed(0) ?? "?"} too low, do not short an oversold market — wait for a bounce`);
++  if (r > 65) return no(`short: 1h RSI ${r.toFixed(0)}: bounce still strong, wait for it to fade`);
++  const m = macd(c1);
++  if (m && m.hist > 0 && m.hist > m.prevHist) return no("short: 1h momentum still rising (MACD histogram up)");
++  const a = atr(h1);
++  if (!a) return no("no volatility data");
++  const { highs } = swings(h1);
++  const resistance = highs.filter((h) => h > price).sort((x, y) => x - y)[0];
++  const stop = Math.min(resistance !== undefined ? resistance + 0.5 * a : Infinity, price + 2 * a);
++  const supports = swings(h4, 3).lows.filter((l) => l < price * 0.998).sort((x, y) => y - x);
++  const fib = fibonacci(h4);
++  const fibTarget = fib?.direction === "down" ? fib.extensions[0].price : NaN;
++  const target = supports[0] ?? (fibTarget > 0 ? fibTarget : price - 3 * a);
++  const rr = (price - target) / (stop - price);
++  const plan = {
++    entry: price, stop, target, rr,
++    stopPct: ((stop - price) / price) * 100,
++    targetPct: ((price - target) / price) * 100,
++  };
++  if (!(target > 0) || !(rr >= 2)) return { ...no(`short: reward/risk ${rr.toFixed(2)} < 2 (target ${fmt(target)} too close to support)`), plan };
++  return { symbol, mint, ok: true, side: "short", perp, reason: `4h downtrend, 1h bounce fading (RSI ${r.toFixed(0)}), reward/risk ${rr.toFixed(2)}`, plan };
++}
++
+ export async function setupScan(
+   args: { mints?: string[] },
+   fetcher: Fetcher = defaultFetcher,
+@@ -117,7 +165,12 @@ export async function setupScan(
+       if (!h4 || !h1) {
+         results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: "no liquid pool" });
+       } else {
+-        results.push(evaluateSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd));
++        const long = evaluateSetup(h4.symbol, token.mint, h4.candles, h1.candles, h4.liquidityUsd);
++        const perp = (token as { perp?: string }).perp;
++        // In a 4h downtrend, tokens with a Drift market are checked for a short.
++        results.push(!long.ok && perp && long.reason.startsWith("4h trend not up")
++          ? evaluateShortSetup(h4.symbol, token.mint, perp, h4.candles, h1.candles, h4.liquidityUsd)
++          : long);
+       }
+     } catch (error) {
+       results.push({ symbol: token.symbol, mint: token.mint, ok: false, reason: `data error: ${error instanceof Error ? error.message : String(error)}` });
+@@ -125,13 +178,17 @@ export async function setupScan(
+     if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+   }
+   const setups = results.filter((r) => r.ok).sort((a, b) => (b.plan?.rr ?? 0) - (a.plan?.rr ?? 0));
+-  const lines = setups.map((s) =>
+-    `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
+-    `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}`);
++  const lines = setups.map((s) => s.side === "short"
++    ? `SHORT SETUP ${s.symbol} (Drift ${s.perp}): entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (+${s.plan!.stopPct.toFixed(2)}%), ` +
++      `target ${fmt(s.plan!.target)} (-${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}. ` +
++      `Use perp_open market=${s.perp} direction=short stopPrice=${fmt(s.plan!.stop)} takeProfitPrice=${fmt(s.plan!.target)} (dryRun first).`
++    : `SETUP ${s.symbol} mint=${s.mint}: entry ~${fmt(s.plan!.entry)}, stop ${fmt(s.plan!.stop)} (-${s.plan!.stopPct.toFixed(2)}%), ` +
++      `target ${fmt(s.plan!.target)} (+${s.plan!.targetPct.toFixed(2)}%), R/R ${s.plan!.rr.toFixed(2)} — ${s.reason}`);
+   const skipped = results.filter((r) => !r.ok).map((r) => `- ${r.symbol}: ${r.reason}`);
+   return (setups.length
+-    ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before buying.`
+-    : "No setup follows the playbook right now: stay in USDC and check again later (sleep 1-4 h).") +
++    ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}\nConfirm with technical_analysis, then journal_add a plan before entering.`
++    : "No real setup right now: stay in USDC. Do not just sleep: keep a paper strategy running (backtest, then strategy_create paper=true) " +
++      "or paper_trade the closest near-setup, then check again in 1-4 h.") +
+     `\nSkipped:\n${skipped.join("\n")}`;
+ }
+ 
+@@ -165,7 +222,11 @@ export interface TradeStats {
+ }
+ 
+ /** Closed trades = sales into USDC recorded in the ledger (realized PnL). */
+-export function computeTradeStats(db: Database, today = new Date().toISOString().slice(0, 10)): TradeStats {
++export function computeTradeStats(
++  db: Database,
++  today = new Date().toISOString().slice(0, 10),
++  capitalUsd: number | null = lastCapitalUsd(db),
++): TradeStats {
+   let rows: Array<{ day: string; pnl: number }> = [];
+   try {
+     rows = db.prepare(
+@@ -179,10 +240,7 @@ export function computeTradeStats(db: Database, today = new Date().toISOString()
+   const losses = rows.filter((r) => r.pnl < 0);
+   const sum = (xs: Array<{ pnl: number }>) => xs.reduce((s, r) => s + r.pnl, 0);
+   const todayRows = rows.filter((r) => r.day === today);
+-  let streak = 0;
+-  for (const r of [...todayRows].reverse()) {
+-    if (r.pnl < 0) streak += 1; else break;
+-  }
++  const streak = lossStreakToday(db, new Date(`${today}T12:00:00Z`), capitalUsd);
+   const decided = wins.length + losses.length;
+   return {
+     closedTrades: rows.length,
+@@ -204,7 +262,16 @@ export function formatTradeStats(s: TradeStats, journal: ReturnType<typeof recen
+     `Closed trades (sales into USDC): ${s.closedTrades} | wins ${s.wins} / losses ${s.losses} | win rate ${s.winRate === null ? "?" : `${(s.winRate * 100).toFixed(0)}%`}`,
+     `Realized PnL total ${money(s.totalPnlUsd)} | today ${money(s.todayPnlUsd)} | avg win ${money(s.avgWinUsd)} | avg loss ${money(s.avgLossUsd)} | expectancy per trade ${money(s.expectancyUsd)}`,
+   ];
+-  if (s.lossStreakToday >= 2) lines.push(`STOP: ${s.lossStreakToday} losing trades in a row today. Playbook rule 12: no more trades until tomorrow.`);
++  if (s.lossStreakToday >= MAX_LOSS_STREAK) {
++    const until = new Date();
++    until.setUTCHours(24, 0, 0, 0);
++    const hours = Math.max(0, (until.getTime() - Date.now()) / 3_600_000);
++    lines.push(
++      `STOP: ${s.lossStreakToday} real losing trades today (losses under ${MEANINGFUL_LOSS_PCT}% of capital do not count). ` +
++      `New buys and perp_open are blocked by code until ${until.toISOString()} (in ${hours.toFixed(1)} h). ` +
++      "Sales and stops still work. Do not sleep longer than that: use the time for backtests and paper trading.",
++    );
++  }
+   else if (s.expectancyUsd !== null && s.closedTrades >= 10 && s.expectancyUsd < 0) {
+     lines.push("Your method loses money on average over 10+ trades: change it (stricter setups, wider targets) before trading more.");
+   }
+@@ -222,9 +289,10 @@ export function createTradingDeskTools(): AutomatonTool[] {
+     {
+       name: "setup_scan",
+       description:
+-        "Scan a watchlist of liquid Solana tokens (default SOL, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
+-        "and 1h (entry) and return only long setups that follow the playbook: 4h uptrend, 1h RSI 35-68, momentum turning, " +
+-        "liquidity >= $50k, reward/risk >= 2, with entry, stop and target. Takes ~30 s.",
++        "Scan a watchlist of liquid Solana tokens (default SOL, cbBTC, ETH, JUP, RAY, PYTH, ORCA, BONK, WIF; or pass mints) on 4h (trend) " +
++        "and 1h (entry) and return the setups that follow the playbook: LONG in a 4h uptrend (1h RSI 35-68, momentum turning), " +
++        "SHORT via Drift perpetuals for SOL/BTC/ETH in a 4h downtrend (1h bounce fading), liquidity >= $50k, reward/risk >= 2, " +
++        "with entry, stop and target. Takes ~40 s.",
+       category: "financial",
+       riskLevel: "safe",
+       parameters: { type: "object", properties: { mints: { type: "array", items: { type: "string" }, description: "Optional token mints (max 12)." } } },
+diff --git a/src/survival/risk-guard.ts b/src/survival/risk-guard.ts
+index f80428b..6906196 100644
+--- a/src/survival/risk-guard.ts
++++ b/src/survival/risk-guard.ts
+@@ -8,6 +8,8 @@
+ import type { Database } from "better-sqlite3";
+ import { queueSystemNotice } from "../integration/creator-chat.js";
+ 
++const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
++
+ export const MAX_DRAWDOWN_PCT = 15;
+ export const PAUSE_MS = 24 * 3_600_000;
+ const PEAK_KEY = "risk.peak_value_usd";
+@@ -52,3 +54,59 @@ export function updateDrawdownGuard(
+ export function isBuy(outputMint: string): boolean {
+   return outputMint !== "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" && outputMint !== "So11111111111111111111111111111111111111112";
+ }
++
++// ─── Loss-streak stop (playbook rule 12, enforced by code) ───────
++
++export const MEANINGFUL_LOSS_PCT = 0.5;
++const MIN_MEANINGFUL_LOSS_USD = 0.05;
++export const MAX_LOSS_STREAK = 2;
++
++/** Total capital (wallet incl. Drift) from the last complete valuation, or null. */
++export function lastCapitalUsd(db: Database): number | null {
++  try {
++    const raw = getKv(db, "last_known_balance");
++    if (!raw) return null;
++    const parsed = JSON.parse(raw) as { walletValueUsd?: number | null; walletValueComplete?: boolean };
++    return parsed.walletValueComplete && typeof parsed.walletValueUsd === "number" && parsed.walletValueUsd > 0
++      ? parsed.walletValueUsd
++      : null;
++  } catch {
++    return null;
++  }
++}
++
++/** A loss counts for the streak only above 0.5% of capital (dust test swaps do not). */
++export function meaningfulLossUsd(capitalUsd: number | null): number {
++  return capitalUsd && capitalUsd > 0 ? Math.max(MIN_MEANINGFUL_LOSS_USD, (capitalUsd * MEANINGFUL_LOSS_PCT) / 100) : MIN_MEANINGFUL_LOSS_USD;
++}
++
++/** Closed trades of a UTC day, oldest first (sales into USDC and Drift PnL). */
++function closedTradesOfDay(db: Database, day: string): number[] {
++  try {
++    return (db.prepare(
++      `SELECT realized_pnl_usd AS pnl FROM shui_ledger
++       WHERE day = ? AND ((kind = 'swap' AND output_mint = ? AND input_mint != ?) OR kind = 'perp_pnl') ORDER BY ts`,
++    ).all(day, USDC, USDC) as Array<{ pnl: number }>).map((r) => r.pnl);
++  } catch {
++    return [];
++  }
++}
++
++/** Consecutive meaningful losses today; a win resets it, tiny losses are ignored. */
++export function lossStreakToday(db: Database, now: Date = new Date(), capitalUsd: number | null = lastCapitalUsd(db)): number {
++  const threshold = meaningfulLossUsd(capitalUsd);
++  let streak = 0;
++  for (const pnl of closedTradesOfDay(db, now.toISOString().slice(0, 10))) {
++    if (pnl > 0) streak = 0;
++    else if (pnl <= -threshold) streak += 1;
++  }
++  return streak;
++}
++
++/** After 2 meaningful losses today, new entries are blocked until 00:00 UTC. */
++export function lossStopUntil(db: Database, now: Date = new Date()): string | null {
++  if (lossStreakToday(db, now) < MAX_LOSS_STREAK) return null;
++  const next = new Date(now);
++  next.setUTCHours(24, 0, 0, 0);
++  return next.toISOString();
++}

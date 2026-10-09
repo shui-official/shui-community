@@ -1,0 +1,139 @@
+diff --git a/src/__tests__/lot9c-held.test.ts b/src/__tests__/lot9c-held.test.ts
+new file mode 100644
+index 0000000..5b1c3ee
+--- /dev/null
++++ b/src/__tests__/lot9c-held.test.ts
+@@ -0,0 +1,29 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { describe, expect, it } from "vitest";
++import { createDatabase } from "../state/database.js";
++import { clampBuyUsd, decisionLine, heldCostUsd } from "../solana/decisions.js";
++import { ensureLedgerSchema } from "../solana/ledger.js";
++
++const ORCA = "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE";
++const freshDb = () => createDatabase(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lot9c-")), "s.db")).raw;
++
++describe("DECIDE size counts what is already held", () => {
++  it("leaves only the room under the 35% per-token cap", () => {
++    // 13:24 on 09/10: capital ~$67, ORCA held ~$15 (22%); the scan proposed $13.03 → 37.7%.
++    expect(clampBuyUsd(13.03, 67, {}, ORCA, 0)).toBe(13.03);
++    expect(clampBuyUsd(13.03, 67, {}, ORCA, 15)).toBe(8.44); // 35% of 67 = 23.45 - 15, rounded down to stay under the cap
++    expect(clampBuyUsd(13.03, 67, {}, ORCA, 20)).toBeNull(); // room $3.45 < $5
++  });
++
++  it("reads the held cost and says so in the DECIDE line", () => {
++    const db = freshDb();
++    ensureLedgerSchema(db);
++    expect(heldCostUsd(db, ORCA)).toBe(0);
++    db.prepare("INSERT INTO shui_cost_basis (mint, amount_raw, cost_usd) VALUES (?, '5051012', 12.18)").run(ORCA);
++    expect(heldCostUsd(db, ORCA)).toBe(12.18);
++    const line = decisionLine({ symbol: "ORCA", mint: ORCA, entry: 2.43, stop: 2.3, target: 3.08, rr: 5, amountUsd: 8.45, action: "buy", heldPct: 18.2 });
++    expect(line).toMatch(/^ORCA \(already held: 18\.2% of capital; this adds to it\): BUY → jupiter_swap .*amountUsd=8\.45/);
++  });
++});
+diff --git a/src/solana/decisions.ts b/src/solana/decisions.ts
+index 23d640d..7d771e6 100644
+--- a/src/solana/decisions.ts
++++ b/src/solana/decisions.ts
+@@ -33,6 +33,8 @@ export interface PendingSetup {
+   target: number;
+   rr: number;
+   amountUsd: number;
++  /** Lot 9c: share of capital already held in this token (at cost), if any. */
++  heldPct?: number;
+   /** "buy" = real trend trade; "paper" = range setup still being validated in paper. */
+   action?: "buy" | "paper";
+ }
+@@ -44,10 +46,15 @@ const setKv = (db: Database, key: string, value: string): void => {
+ };
+ 
+ /** Buy size within the code limits, or null when the limits leave less than the minimum. */
+-export function clampBuyUsd(sizeUsd: number | null | undefined, capitalUsd: number | null, env: NodeJS.ProcessEnv = process.env, mint = ""): number | null {
++export function clampBuyUsd(
++  sizeUsd: number | null | undefined, capitalUsd: number | null, env: NodeJS.ProcessEnv = process.env, mint = "", heldUsd = 0,
++): number | null {
+   if (!capitalUsd || capitalUsd <= 0) return null;
+   const L = tradeLimits(env);
+-  const cap = (capitalUsd * (isMemecoin(mint) ? L.memePerTokenPct : L.maxTradePct)) / 100;
++  // Lot 9c: the per-token cap counts what is already held (a 13:24 re-buy of ORCA hit 37.7% > 35%).
++  const tokenRoom = (capitalUsd * (isMemecoin(mint) ? L.memePerTokenPct : L.maxTokenPct)) / 100 - Math.max(0, heldUsd);
++  const perBuy = isMemecoin(mint) ? tokenRoom : (capitalUsd * L.maxTradePct) / 100;
++  const cap = Math.min(perBuy, tokenRoom);
+   const size = Math.min(sizeUsd && sizeUsd > 0 ? sizeUsd : cap, cap);
+   const rounded = Math.floor(size * 100) / 100;
+   return rounded >= L.minTradeUsd ? rounded : null;
+@@ -58,6 +65,16 @@ export function recordPendingSetups(db: Database, setups: PendingSetup[], now: D
+   setKv(db, PENDING_KEY, JSON.stringify({ at: now.toISOString(), setups }));
+ }
+ 
++/** Lot 9c: what SHUI already holds in a token, at cost (0 when none). */
++export function heldCostUsd(db: Database, mint: string): number {
++  try {
++    const row = db.prepare("SELECT cost_usd FROM shui_cost_basis WHERE mint = ?").get(mint) as { cost_usd: number } | undefined;
++    return row && row.cost_usd > 0 ? row.cost_usd : 0;
++  } catch {
++    return 0;
++  }
++}
++
+ /** Mints SHUI holds as positions (cost basis), without SOL, USDC, jitoSOL and the creator token. */
+ export function openPositionMints(db: Database): string[] {
+   try {
+@@ -118,7 +135,8 @@ export function decisionLine(s: PendingSetup): string {
+       `stopPriceUsd=${fmt(s.stop)} takeProfitPriceUsd=${fmt(s.target)} (no funds move); ` +
+       `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
+   }
+-  return `${s.symbol}: BUY → jupiter_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
++  const held = s.heldPct ? ` (already held: ${s.heldPct.toFixed(1)}% of capital; this adds to it)` : "";
++  return `${s.symbol}${held}: BUY → jupiter_swap inputMint=${USDC_MINT} outputMint=${s.mint} amountUsd=${s.amountUsd}, ` +
+     `then protect_position mint=${s.mint} stopPriceUsd=${fmt(s.stop)} takeProfitPriceUsd=${fmt(s.target)}; ` +
+     `or SKIP → journal_add kind=note mint=${s.mint} text="skip: <your reason>"`;
+ }
+diff --git a/src/solana/trading-desk.ts b/src/solana/trading-desk.ts
+index dad6f48..612eb80 100644
+--- a/src/solana/trading-desk.ts
++++ b/src/solana/trading-desk.ts
+@@ -22,7 +22,7 @@ import { tokenSafety as tokenSafetyText } from "./portfolio.js";
+ import { listPaperTrades } from "./orders.js";
+ import { clenowMomentum, formatPerformance, performanceMetrics, volAdjustedRiskPct, yangZhang } from "./quant.js";
+ import { lastCapitalUsd, lossStreakToday, MAX_LOSS_STREAK, MEANINGFUL_LOSS_PCT } from "../survival/risk-guard.js";
+-import { buyStatus, clampBuyUsd, decisionLine, falseStopClaim, recordPendingSetups, type PendingSetup } from "./decisions.js";
++import { buyStatus, clampBuyUsd, decisionLine, falseStopClaim, heldCostUsd, recordPendingSetups, type PendingSetup } from "./decisions.js";
+ import { isMemecoin, tradeLimits } from "./trade-limits.js";
+ import { isStale } from "../memory/stale.js";
+ 
+@@ -384,19 +384,27 @@ export async function setupScan(
+   for (const s of setups) {
+     if (s.side === "short" || !s.plan) continue;
+     const paper = s.side === "range" && !rangeRecord.live;
+-    const amountUsd = paper ? 10 : clampBuyUsd(s.sizeUsd, capitalUsd, process.env, s.mint);
++    const heldUsd = options.db ? heldCostUsd(options.db, s.mint) : 0;
++    const heldPct = heldUsd > 0 && capitalUsd ? (heldUsd / capitalUsd) * 100 : 0;
++    const amountUsd = paper ? 10 : clampBuyUsd(s.sizeUsd, capitalUsd, process.env, s.mint, heldUsd);
+     if (amountUsd === null) {
+-      notBuyable.push(`- ${s.symbol}: the code limits leave less than the $${tradeLimits().minTradeUsd} minimum for this token` +
+-        `${isMemecoin(s.mint) ? ` (memecoin: max ${tradeLimits().memePerTokenPct}% of capital)` : ""}; not tradable now, no decision needed.`);
++      notBuyable.push(heldPct > 0
++        ? `- ${s.symbol}: already held (${heldPct.toFixed(1)}% of capital); the ${isMemecoin(s.mint) ? tradeLimits().memePerTokenPct : tradeLimits().maxTokenPct}% ` +
++          `per-token cap leaves less than the $${tradeLimits().minTradeUsd} minimum. Your position is protected; no decision needed.`
++        : `- ${s.symbol}: the code limits leave less than the $${tradeLimits().minTradeUsd} minimum for this token` +
++          `${isMemecoin(s.mint) ? ` (memecoin: max ${tradeLimits().memePerTokenPct}% of capital)` : ""}; not tradable now, no decision needed.`);
+       continue;
+     }
+-    live.push({ symbol: s.symbol, mint: s.mint, entry: s.plan.entry, stop: s.plan.stop, target: s.plan.target, rr: s.plan.rr, amountUsd, action: paper ? "paper" : "buy" });
++    live.push({
++      symbol: s.symbol, mint: s.mint, entry: s.plan.entry, stop: s.plan.stop, target: s.plan.target, rr: s.plan.rr, amountUsd,
++      action: paper ? "paper" : "buy", ...(heldPct > 0 ? { heldPct } : {}),
++    });
+   }
+   if (options.db) recordPendingSetups(options.db, live);
+   const decide = (live.length
+     ? `\nDECIDE NOW for each setup (sleep is refused until you do):\n${live.map((p) => `- ${decisionLine(p)}`).join("\n")}` +
+       (options.db ? `\n${buyStatus(options.db).line}` : "")
+-    : "") + (notBuyable.length ? `\nNot tradable with your capital:\n${notBuyable.join("\n")}` : "");
++    : "") + (notBuyable.length ? `\nNot tradable now:\n${notBuyable.join("\n")}` : "");
+   return (setups.length
+     ? `${setups.length} setup(s) following the playbook:\n${lines.join("\n")}${decide}`
+     : "No real setup right now: stay in USDC. Do not just sleep: keep a paper strategy running (backtest, then strategy_create paper=true) " +
